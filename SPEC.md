@@ -23,16 +23,16 @@ The system is meant to evolve as it learns about you, so most numbers in this sp
 
 | Policy value | Default | Bounds | Learned from |
 |---|---|---|---|
-| Offer wait when circling | 4 min | 1 min to 1 min less than the pause time | ignored vs accepted offers (§6) |
-| Offer wait when stalled | 6 min | same | same |
+| Offer wait when circling | 4 min | 1–20 min | ignored vs accepted offers (§6) |
+| Offer wait when stalled | 6 min | at least 1 min, and stall wait + re-offer delay below the pause time | same |
 | Re-offer delay | 3 min | 1–10 min | whether re-offers get accepted |
 | Pause after no activity | 10 min | 5–30 min | how long your real thinking gaps are before you resume |
-| End after time away | 60 min | 30–180 min | how often you come back after a pause |
+| End after time away | 60 min | at least 15 min more than the pause time, at most 180 min | when you come back after a pause, including returns after an auto-end |
 | Share of problems that get the complexity question | 50% | 0–100%, with the floor in §5 | how your `analysis` memory is doing |
-| Forecast hidden for | 3 weeks of practice | 2–6 weeks | how stable your weekly pace is |
+| Calendar weeks with practice before check-ins | 3 | 2–6 | how stable your weekly pace is |
 | Minimum days between check-ins | 7 | 3–14 | whether check-ins lead to a changed plan or are dismissed |
 
-The bounds keep a bad proposal harmless; the offer waits stay below the pause time so an offer can always fire before a pause.
+The defaults are reasoned starting points (heuristics), not values from literature; that's why they're tuned from your history. The bounds keep a bad proposal harmless. A stall offer and its re-offer must both fit before the pause; when the pause time is tuned down, the stall wait and re-offer delay are re-clamped to fit, and that's logged. Circling waits don't interact with the pause, because you're active.
 
 **How tuning works:**
 - Tunable values live in the `policy` table, each with its current value, default, and a history of changes.
@@ -51,7 +51,7 @@ Chrome extension (TypeScript, Manifest V3)
 
 Companion (Python, runs on localhost)
 ├── coordinator       session state machine; decides which agent runs, with what context
-├── agents            Observer, Speak gate, Tutor, Reflector, Planner, Card builder, Checker
+├── agents            Observer, Speak gate, Tutor, Grader, Reflector, Planner, Card builder, Checker
 ├── model client      one OpenAI-compatible client; per-role model config, rate limiter, fallback
 ├── speech            mlx-whisper (small) for speech to text, kokoro-onnx for voice
 ├── runner            sandboxed Python execution for verifying card solutions
@@ -91,16 +91,17 @@ Each page reader produces the same events regardless of site:
 
 ```
 idle ──start(minutes)──▶ planning ──plan accepted──▶ active
-active ──problem solved / given up──▶ between ──choice──▶ active | break | ended
+active ──problem solved or given up──▶ between ──choice──▶ active | break | ended
 active ──no activity for the pause time──▶ paused ──activity──▶ active
 break ──you resume──▶ active
-paused or break ──away for the end time in total──▶ ended (wrap-up waits for next panel open)
+paused ──away for the end time in total──▶ ended (wrap-up waits for next panel open)
 any ──stop──▶ ended ──▶ Reflector runs in the background
 ```
 
 - **Watching happens only in `active`.** Outside a session the page readers send nothing.
 - **Pause and end times** are policy values (§2): defaults 10 and 60 minutes.
-- **A break** is one you chose: the panel shows it, nothing counts toward the pause, and you resume when ready.
+- **A break** is one you chose: the panel shows it, nothing counts toward the pause, and it never ends by itself. When you next open the panel, you resume or end the session.
+- **Solved** means an accepted submission. **Given up** means you chose "move on" (or stop) on an unsolved problem in the panel.
 - **"No activity"** means no code changes, runs or messages. A hidden tab or blurred window counts toward the pause timer.
 - **Time budget is soft.** When it runs out, the panel asks "finish this one or stop?". Overruns are logged.
 - **Off-plan problems:** if you open a problem that isn't in the plan, it becomes the active problem and is logged as `off_plan`.
@@ -108,7 +109,7 @@ any ──stop──▶ ended ──▶ Reflector runs in the background
 ### Between problems
 
 After a solve, or once the tutor has walked you to the solution:
-1. **The complexity question (optional).** The Tutor decides whether to ask, the way an interviewer would: time, space, or both. You can skip it. How often it's asked is tuned policy, but it can't be reduced for a pattern whose `analysis` isn't mastered yet, and it's asked when that pattern's analysis recall is low; otherwise analysis evidence would dry up.
+1. **The complexity question (optional).** The Tutor decides whether to ask, the way an interviewer would: time, space, or both. You can skip it. How often it's asked is tuned policy (§2), with a floor: for a pattern whose `analysis` isn't mastered, it's always asked when that pattern has no analysis reviews yet or its analysis recall is low (§8). Otherwise analysis evidence would dry up.
 2. **A wrap-up** of one or two lines: the key insight, what tripped you up.
 3. **Choices**, generated by the Planner from the time left: next problem (with reason), take a break, one more past your time, stop. Clicking a problem opens it on the site where it's free.
 4. **Follow-up after a solution was shown:** the Planner schedules one, its judgment: the same problem a day or more later, an unseen one with the same idea, or both. The Reflector notes which kind works for you.
@@ -160,12 +161,12 @@ Each agent is one prompt template plus a context builder plus an output validato
 
 | Agent | Trigger | Input | Output | Model |
 |---|---|---|---|---|
-| Observer | each `code_changed`/`run_result` batch, at most every 5 s | card summary, the last 10 diffs, your recent messages, recent observations, recent results | `{approach_id or "new", state: progressing/circling/stalled/done, note}` | qwen3.5:9b, thinking off |
+| Observer | each `code_changed`/`run_result` batch, at most every 5 s | card summary, the diffs since its last call plus the current code, your recent messages, recent observations, recent results | `{approach_id or "new", state: progressing/circling/stalled/done, note}` | qwen3.5:9b, thinking off |
 | Speak gate | Observer reports circling/stalled | observation history, learned thresholds, time since last offer, quiet mode | `{offer: bool, channel: voice/panel, reason}` | qwen3.5:9b, thinking off |
 | Tutor | your message, an accepted offer, a solve | see §6 | reply text, optional spoken text, help kind, optional complexity question | GLM 5.3 Flash |
 | Reflector | session ended | full session event log, current learner model, teaching memory | session summary, hypotheses added/changed (each citing event ids), teaching-attempt outcomes, user-facing bullets, one focus for next time | GLM 5.3 Flash |
 | Planner | session start, between problems | learner summary (computed by code, §8), goal and forecast, minutes, unfinished problems, preferences | ordered problem list, each with reason and `diagnose`/`train`; or choices | GLM 5.3 Flash |
-| Grader | problem solved or given up; complexity answer given | card approaches (with complexity and `interview_expected`), your final code and runs, the help turns for this problem, your complexity answer and reasoning | `{approach_id or "new", best_approach_reached_without_help, complexity_verdict: right / right_after_followup / wrong / wrong_reasoning / no_reasoning}`; code turns these plus the logged help kinds into the grade (§8) | GLM 5.3 Flash |
+| Grader | problem solved or given up; complexity answer given | card approaches (with complexity and `interview_expected`), your final code and runs, the help turns for this problem, your complexity answer and reasoning | `{best_self_approach_id or "new", meets_expected: bool, complexity_verdict: right / right_after_followup / wrong / wrong_reasoning / no_reasoning}`. `meets_expected` says whether that approach is at least as good as the one the card marks as usually expected; the Grader judges a "new" approach against the card. Code turns this plus the logged help kinds into the grade (§8) | GLM 5.3 Flash |
 | Card builder | offline batch; on demand for drill problems | problem statement | card (§10) | GLM 5.3 Flash |
 | Checker | after Card builder; when the Tutor analyses a new approach | card or approach | agree/disagree per label, with reasons | qwen3.8:27b |
 
@@ -194,6 +195,8 @@ A clean solve after a gap grows stability, and a longer gap grows it more. Sever
 | Complexity answer wrong, or right with wrong reasoning | Again (`analysis`) |
 
 - An attempt is graded by the best approach you reached yourself in it, so writing brute force and then optimising it yourself counts as Good.
+- Only help given before that solution counts toward the grade. Help afterwards, such as working toward a better approach together, doesn't lower it.
+- An answer with no reasoning even after the Tutor asks for it is treated like skipping the question: no review.
 - The approach rule only applies when the card's `interview_expected` label isn't `needs_review`.
 - If you give a complexity answer without reasoning, the Tutor asks for the reasoning before it's graded.
 - Easy is never used: no signal for it is reliable enough.
@@ -201,7 +204,7 @@ A clean solve after a gap grows stability, and a longer gap grows it more. Sever
 - Help, approach and verdict labels come from the Grader (§7) and the logged help turns, never from the Observer's live guesses.
 - **Several patterns per problem:** a `solve` review goes to every pattern in the card's `patterns`, all needed for the solution; an `analysis` review goes to the same patterns.
 - **The pattern set is frozen** once built from the 150 (§10). Drills and card corrections map onto existing patterns; changing the set needs your OK, since it moves the measure.
-- **Recall now** uses the current time against the last review's timestamp, as `py-fsrs` computes retrievability. A pattern's analysis recall counts as low below 0.9, FSRS's own retention target.
+- **Recall now** uses the current time against the last review's timestamp, as `py-fsrs` computes retrievability. A pattern's analysis recall counts as low below 0.9, FSRS's default desired retention; this value is fixed and stored with the pinned parameters.
 - **You see every grade.** The between-problem wrap-up shows each review's grade with its reason, and you can correct it (for example "I didn't need that hint", or "that was a guess"). The correction changes the review log, and FSRS state is recomputed.
 - Drill problems count as unseen. Repeats of problems you've seen and imported prior solves are **not** reviews; they are inputs to the Planner and Reflector. The learner summary also lists prerequisite patterns implied by your strong patterns, as a plain list with no numbers.
 - **Unseen** means you haven't attempted the problem in a Leetotter session before. Imported past solves don't make a problem seen; if you clearly remember a specific solution, the Reflector can note it.
@@ -234,9 +237,9 @@ Every hypothesis cites event ids. A hypothesis that cites nothing is rejected by
   - A break alone doesn't remove mastered; the next attempt decides, and the Planner revisits rusty patterns first.
   - Before these values are used, they're checked against the real library on realistic schedules (§17).
 - **Pace:** learned from completed sessions: sessions per week, minutes per session, and problems per hour.
-- **Forecast:** simulated in code. Each unmastered (pattern, skill) is played forward with FSRS, using your observed pace, your observed share of Good, Hard and Again, and the problems left to do. Running it many times gives a range of finish dates. Calendar time matters, not just problem count, since stability needs spaced practice. Hidden for a policy-set period (§2, default 3 weeks).
+- **Forecast:** simulated in code. Each unmastered (pattern, skill) is played forward with FSRS, using your observed pace, your observed share of Good, Hard and Again, and the problems left to do. Running it many times gives a range of finish dates. Calendar time matters, not just problem count, since stability needs spaced practice. It's always shown as a range in the Progress tab, so early on it's honestly wide.
 - **Progress states:** strong = meets the mastered conditions for that (pattern, skill); weak = has reviews but doesn't; suspected weakness = an open Reflector hypothesis; no evidence = no reviews yet.
-- **Check-in:** at session start, only when the forecast's likely date passes the deadline. How often it raises it is tuned policy (default: at most once a week unless it gets worse). It offers concrete options:
+- **Check-in:** at session start, only when the forecast's likely date passes the deadline, and only after enough calendar weeks with practice (policy, §2, default 3). It's raised at most once per policy interval (default 7 days), or sooner if the likely date has slipped by a week or more since the last check-in. It offers concrete options:
   - move the date by N days
   - add about X problems a week, said as extra sessions at your usual length
   - narrow to the most-tested patterns
@@ -301,6 +304,7 @@ gate     = "qwen3.5:9b"      # thinking disabled
 tutor    = "x-test-1"        # GLM 5.3 Flash
 reflector= "x-test-1"
 planner  = "x-test-1"
+grader   = "x-test-1"
 cards    = "x-test-1"
 checker  = "qwen3.8:27b"
 
@@ -310,7 +314,7 @@ checker  = "qwen3.8:27b"
 
 - **Base URL and key** come from environment variables. They're never in the repo or the store.
 - **Rate limit: 90 requests per minute**, shared by everything through one limiter. The live roles get priority, and card building only uses spare capacity.
-- **Timeouts:** Observer and gate 10 s, Tutor 60 s (streamed), Reflector and Planner 180 s.
+- **Timeouts:** Observer and gate 10 s, Tutor 60 s (streamed), Grader 60 s, Reflector and Planner 180 s.
 - **Fallback is loud.** If a model fails twice in a row (or returns "model not found"), its roles switch to the fallback, and the panel shows "GLM 5.3 Flash isn't responding; using qwen3.8:27b". The switch is logged.
 - To verify at phase 1: the endpoint supports disabling thinking for `qwen3.5:9b`; whether JSON or structured-output mode is supported per model; the actual time-to-first-token of GLM 5.3 Flash on this endpoint.
 
@@ -331,7 +335,7 @@ checker  = "qwen3.8:27b"
 | Rate limit hit | Live roles queue briefly; card building backs off; never silently dropped |
 | Speech recognition mishears | You edit the text before sending (by design) |
 | Reflector fails after a session | Retried at next companion start; the session log is untouched |
-| Planner fails at session start | The panel says so and offers a code-ranked list instead (lowest recall now first); the failure is logged |
+| Planner fails at session start or between problems | The panel says so and offers a code-ranked list instead (lowest recall now first); the failure is logged |
 | Grader fails | The attempt is stored ungraded and shown in the wrap-up for you to grade; it's never guessed |
 | Profile drifts | Hypotheses must cite events; wrap-up bullets are shown every session for you to correct |
 | A site changes its page | Its reader's self-check fails loudly; the other site keeps working |
@@ -365,6 +369,6 @@ Listed in their phases above; collected here:
 - [ ] LeetCode editor access and run/submit responses (phase 3)
 - [ ] LeetCode accepted-submissions endpoint; NeetCode completion data (phase 4)
 - [ ] LeetCode "similar questions" and topic-tag data for drills (phase 4)
-- [ ] With the real `py-fsrs` library, simulate realistic schedules (about 7 problems a week with gaps of 2–7 days, plus a two-week and a three-month break, at 50%, 70% and 90% clean solves) and confirm that "mastered" (§9) is reachable and behaves sensibly. Include the limited supply of unseen problems per pattern, with and without drills. If not, stop and bring the results to the user (phase 4)
+- [ ] With the real `py-fsrs` library, simulate realistic schedules (about 7 problems a week with gaps of 2–7 days, plus a two-week and a three-month break, at 50%, 70% and 90% clean solves) and confirm that "mastered" (§9) is reachable and behaves sensibly. Include the limited supply of unseen problems per pattern, with and without drills, and the complexity question at its default share, to see whether analysis becomes the bottleneck. If not, stop and bring the results to the user (phase 4)
 - [ ] Microphone permission in the side panel (phase 6)
 - [ ] NeetCode's editor and results (phase 7)
