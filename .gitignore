@@ -1,0 +1,35 @@
+# Secrets
+.env
+.env.*
+
+# Learner data (SQLite store)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Models and audio
+models/
+*.gguf
+*.onnx
+*.safetensors
+*.bin
+*.wav
+*.mp3
+*.webm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node / extension build
+node_modules/
+dist/
+
+# OS / editor
+.DS_Store
+.vscode/

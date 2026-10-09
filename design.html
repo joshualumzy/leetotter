@@ -1,0 +1,525 @@
+<title>Leetotter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~68ch) with diagrams and tables allowed to run wider (960px). */
+:root {
+  --bg: #F2F4F6;
+  --surface: #FFFFFF;
+  --ink: #18202B;
+  --muted: #586473;
+  --line: #D3D9E0;
+  --accent: #1E6E5A;
+  --accent-soft: #DCEFE8;
+  --warn: #A86512;
+  --warn-soft: #F6E7D0;
+  --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151B; --surface: #192029; --ink: #E5E9EF; --muted: #97A3B2; --line: #2D3642;
+    --accent: #5CC3A3; --accent-soft: #173A31; --warn: #E2A653; --warn-soft: #3A2C17;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151B; --surface: #192029; --ink: #E5E9EF; --muted: #97A3B2; --line: #2D3642;
+  --accent: #5CC3A3; --accent-soft: #173A31; --warn: #E2A653; --warn-soft: #3A2C17;
+  color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--body); }
+.wrap { max-width: 960px; margin: 0 auto; padding-inline: 20px; padding-block: 48px 96px; display: grid; gap: 56px; }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 3rem); letter-spacing: -0.01em; }
+h2 { font-size: 1.6rem; }
+h3 { font-size: 1.1rem; font-family: var(--body); font-weight: 600; }
+p { margin: 0; }
+section { display: grid; gap: 18px; }
+.eyebrow { font: 500 0.75rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.125rem; color: var(--ink); }
+.muted { color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+ul, ol { margin: 0; padding-left: 1.25em; display: grid; gap: 6px; }
+strong { font-weight: 600; }
+
+header { display: grid; gap: 14px; border-bottom: 1px solid var(--line); padding-bottom: 32px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; font: 0.8rem var(--mono); color: var(--muted); }
+
+figure { margin: 0; display: grid; gap: 10px; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 16px; }
+.scroll svg { display: block; width: 100%; min-width: 720px; height: auto; color: var(--ink); }
+figcaption { font-size: 0.9rem; color: var(--muted); max-width: 68ch; }
+
+/* SVG classes (styled from the page so they follow the theme) */
+.box { fill: var(--surface); stroke: currentColor; stroke-width: 1.2; }
+.group { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.grouplabel { font: 500 11px var(--mono); fill: var(--muted); letter-spacing: 0.06em; }
+.t { font: 500 13px var(--body); fill: currentColor; }
+.s { font: 11px var(--body); fill: var(--muted); }
+.lab { font: 11px var(--mono); fill: var(--muted); }
+.edge { stroke: currentColor; stroke-width: 1.2; fill: none; }
+.dash { stroke-dasharray: 4 4; stroke: var(--muted); }
+.hot { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+.strong { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+.weak { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.6; }
+.guess { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.6; stroke-dasharray: 5 4; }
+.unknown { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 2 3; }
+.pill { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; }
+.thin { stroke: var(--line); stroke-width: 1.4; fill: none; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 0.85rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 22px; height: 14px; border-radius: 4px; display: inline-block; }
+.sw.strong { background: var(--accent-soft); border: 1.6px solid var(--accent); }
+.sw.weak { background: var(--warn-soft); border: 1.6px solid var(--warn); }
+.sw.guess { background: var(--warn-soft); border: 1.6px dashed var(--warn); }
+.sw.unknown { background: var(--surface); border: 1.2px dotted var(--muted); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font: 500 0.72rem var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+td:first-child { font-weight: 600; white-space: nowrap; }
+.tag { display: inline-block; font: 0.78rem var(--mono); padding: 1px 7px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); white-space: nowrap; }
+
+.rule { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; max-width: 68ch; }
+
+.steps { list-style: none; padding: 0; counter-reset: step; display: grid; gap: 14px; max-width: 72ch; }
+.steps li { counter-increment: step; display: grid; grid-template-columns: 2.2rem 1fr; gap: 12px; }
+.steps li::before { content: counter(step); font: 600 0.95rem var(--mono); color: var(--accent); border: 1.5px solid var(--accent); border-radius: 50%; width: 1.9rem; height: 1.9rem; display: grid; place-items: center; }
+.steps li > div { min-width: 0; }
+
+.phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.phase { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 6px; align-content: start; }
+.phase .eyebrow { color: var(--accent); }
+.phase p { font-size: 0.92rem; color: var(--muted); }
+
+.decisions { list-style: none; padding: 0; counter-reset: d; display: grid; gap: 12px; }
+.decisions li { counter-increment: d; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 6px; }
+.decisions li h3::before { content: "D" counter(d) "  "; font-family: var(--mono); color: var(--accent); white-space: pre; }
+.decisions .rec { font-size: 0.92rem; }
+.decisions .rec b { color: var(--accent); font-weight: 600; }
+.decisions .why { font-size: 0.9rem; color: var(--muted); }
+
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">System design · v2</span>
+  <h1>Leetotter</h1>
+  <p class="lede prose">A browser companion that watches you solve problems on LeetCode or NeetCode, talks with you by voice, and remembers everything across sessions. It studies you the way a researcher studies a subject, and uses what it learns to choose your next problem and decide how much to help.</p>
+  <div class="meta"><span>9 Oct 2026</span><span>Goal: master the NeetCode 150 and related problems</span><span>Python</span><span>System design prep comes later</span></div>
+</header>
+
+<section>
+  <span class="eyebrow">Principles</span>
+  <h2>What shapes every decision</h2>
+  <ul class="prose">
+    <li><strong>Judgment, not rules.</strong> No fixed schedules like "redo in 3 days." The model decides what to do next from the evidence it has.</li>
+    <li><strong>A fixed goal, an evolving approach.</strong> The goal and how progress is measured stay fixed, and only you change them. Everything about how to get there starts from sensible defaults and is tuned by the agents as they learn about you. Each change comes with a reason in the session wrap-up.</li>
+    <li><strong>Facts are recorded exactly.</strong> Everything that happens is logged as it happened. The model's beliefs about you must point back to those records.</li>
+    <li><strong>It doesn't start from zero.</strong> You already know a lot. Your past solves and the first few sessions place you; it doesn't teach basics.</li>
+    <li><strong>It remembers how it taught you,</strong> not just what you solved, and reuses the framings that worked.</li>
+    <li><strong>Small models get small jobs.</strong> Every model call answers one narrow question with good material in front of it.</li>
+    <li><strong>You can always ask "why?"</strong> and correct it. Your corrections count as evidence.</li>
+  </ul>
+</section>
+
+<section>
+  <span class="eyebrow">Working with it</span>
+  <h2>How you and the tutor interact</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Aspect</th><th>How it works</th></tr></thead>
+      <tbody>
+        <tr><td>Where you code</td><td>In the LeetCode or NeetCode web editor, in Python. The tutor sends you to whichever site has the problem free.</td></tr>
+        <tr><td>Talking</td><td>Push-to-talk turns your speech into text in the input box. You check it, fix anything misheard, and press Enter. You can also just type.</td></tr>
+        <tr><td>Replies</td><td>Text in the side panel, with code blocks and traces, so you can glance back at them. Voice is used for the "Want a hand?" offer, and for every reply when you switch on "speak replies": then it speaks a short version and leaves code in the panel. It never reads code aloud. Speech recognition and the voice both run on your laptop.</td></tr>
+        <tr><td>When it watches</td><td>Only during a session you start. Practising without a session is never recorded.</td></tr>
+        <tr><td>How it teaches</td><td>Socratic by default, direct and brief. It follows your approach and gives a hint to get you past exactly where you're stuck. On a blank page, it helps you build the basic intuition first.</td></tr>
+        <tr><td>How much help</td><td>Judged case by case, like a real tutor. A nudge ten minutes in; progressively more after a long struggle, including code and, if it comes to that, the full solution. It weighs the value of more struggle against the time left and what else you could cover. After a solution, it adds only the explanation you still need.</td></tr>
+        <tr><td>When it steps in</td><td>Only when you're clearly stuck. Wrong turns alone are left alone. It always offers ("Want a hand?") and waits for your yes. Active but going in circles (failing runs, undo-and-retry): a soft chime and a short spoken offer. No activity at all: only a silent message in the panel, since you might be thinking or away. Quiet mode makes every offer silent.</td></tr>
+        <tr><td>Your idea and complexity</td><td>You start "here's my idea" when you want to bounce it off the tutor. The tutor asks about complexity the way an interviewer would: not every time, sometimes only time or only space. You can skip it.</td></tr>
+        <tr><td>Choosing problems</td><td>It proposes a plan with a reason for each problem. You can accept, swap or skip; swaps are remembered as preferences. If you open a different problem, it follows you and logs it as your choice.</td></tr>
+        <tr><td>Between problems</td><td>A one- or two-line wrap-up, then choices: the next problem if there's time, a break, one more problem, or stop. Clicking a problem opens it on the right site.</td></tr>
+        <tr><td>Time and breaks</td><td>Your time budget is soft: at the end it asks whether to finish the problem or stop. If you regularly run over, it works out why and adjusts. After about 10 minutes of no activity the session pauses; after about an hour it ends and the debrief waits for you.</td></tr>
+        <tr><td>Feedback</td><td>Just talk to it naturally ("that analogy didn't help"). It also learns from what you do next. Each session ends with a few bullets on what it now thinks of you, which you can correct.</td></tr>
+        <tr><td>Progress</td><td>A Progress tab in the side panel: the pattern map, the deadline forecast and recent sessions.</td></tr>
+        <tr><td>Running it</td><td>A small service on your laptop, about 1 GB of memory while you practise and nothing when stopped. The AI models run on your provider's servers.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Architecture</span>
+  <h2>The system at a glance</h2>
+  <p class="prose">The extension is the eyes, ears and mouth. A small service running on your laptop is the brain and the memory. Models are called through your API.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 940 400" role="img" aria-label="The NeetCode tab sends code changes and run results to the extension's page reader. The extension's side panel handles voice and chat with you. The extension talks to a local companion service over a WebSocket. The companion holds the coordinator, the agents and speech processing, calls the model API, and reads and writes the SQLite memory.">
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+        </defs>
+        <!-- NeetCode tab -->
+        <rect class="group" x="20" y="60" width="160" height="170" rx="10"/>
+        <text class="grouplabel" x="30" y="50">LEETCODE / NEETCODE TAB</text>
+        <rect class="box" x="40" y="90" width="120" height="50" rx="6"/>
+        <text class="t" x="100" y="120" text-anchor="middle">Code editor</text>
+        <rect class="box" x="40" y="150" width="120" height="50" rx="6"/>
+        <text class="t" x="100" y="180" text-anchor="middle">Test results</text>
+
+        <!-- Extension -->
+        <rect class="group" x="260" y="60" width="180" height="250" rx="10"/>
+        <text class="grouplabel" x="270" y="50">CHROME EXTENSION</text>
+        <rect class="box" x="280" y="100" width="140" height="80" rx="6"/>
+        <text class="t" x="350" y="136" text-anchor="middle">Page reader</text>
+        <text class="s" x="350" y="154" text-anchor="middle">reads code, runs, idle</text>
+        <rect class="box" x="280" y="210" width="140" height="80" rx="6"/>
+        <text class="t" x="350" y="246" text-anchor="middle">Side panel</text>
+        <text class="s" x="350" y="264" text-anchor="middle">mic · speaker · chat</text>
+
+        <!-- Companion -->
+        <rect class="group" x="520" y="60" width="200" height="250" rx="10"/>
+        <text class="grouplabel" x="530" y="50">COMPANION (LOCALHOST)</text>
+        <rect class="hot" x="540" y="90" width="160" height="50" rx="6"/>
+        <text class="t" x="620" y="120" text-anchor="middle">Coordinator</text>
+        <rect class="box" x="540" y="155" width="160" height="50" rx="6"/>
+        <text class="t" x="620" y="185" text-anchor="middle">Agents</text>
+        <rect class="box" x="540" y="220" width="160" height="70" rx="6"/>
+        <text class="t" x="620" y="250" text-anchor="middle">Speech</text>
+        <text class="s" x="620" y="268" text-anchor="middle">speech-to-text · voice out</text>
+
+        <!-- Right column -->
+        <rect class="box" x="800" y="80" width="120" height="60" rx="6"/>
+        <text class="t" x="860" y="106" text-anchor="middle">Model API</text>
+        <text class="s" x="860" y="124" text-anchor="middle">your key</text>
+        <rect class="box" x="800" y="220" width="120" height="60" rx="6"/>
+        <text class="t" x="860" y="246" text-anchor="middle">Memory</text>
+        <text class="s" x="860" y="264" text-anchor="middle">SQLite file</text>
+
+        <!-- You -->
+        <rect class="box" x="290" y="345" width="120" height="40" rx="20"/>
+        <text class="t" x="350" y="370" text-anchor="middle">You</text>
+
+        <!-- Edges -->
+        <line class="edge" x1="160" y1="115" x2="278" y2="125" marker-end="url(#a1)"/>
+        <text class="lab" x="220" y="108" text-anchor="middle">code changes</text>
+        <line class="edge" x1="160" y1="175" x2="278" y2="160" marker-end="url(#a1)"/>
+        <text class="lab" x="220" y="186" text-anchor="middle">run results</text>
+
+        <line class="edge" x1="350" y1="343" x2="350" y2="292" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text class="lab" x="360" y="322">talk · listen</text>
+
+        <line class="edge" x1="442" y1="185" x2="518" y2="185" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text class="lab" x="480" y="176" text-anchor="middle">WebSocket</text>
+        <text class="lab" x="480" y="204" text-anchor="middle">events, audio</text>
+
+        <line class="edge" x1="722" y1="110" x2="798" y2="110" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text class="lab" x="760" y="101" text-anchor="middle">prompts</text>
+        <line class="edge" x1="722" y1="250" x2="798" y2="250" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text class="lab" x="760" y="241" text-anchor="middle">read/write</text>
+      </svg>
+    </div>
+    <figcaption>The extension stays thin: one page reader for LeetCode, one for NeetCode. Everything that learns about you lives in the companion and one local database file.</figcaption>
+  </figure>
+  <p class="prose muted">No screen capture is needed. Reading the editor directly gives exact code, every keystroke burst with a timestamp, and test results, at a fraction of the cost of screenshots.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Agents</span>
+  <h2>Two loops: one live, one between sessions</h2>
+  <p class="prose">The live loop runs every few seconds while you work. The slow loop runs when you start and when you leave. The event log connects them. One plain piece of code, the coordinator, decides which agent runs when and what context it gets. Agents never talk to each other directly.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 900 390" role="img" aria-label="Live loop: signals from the page go to the Observer, then the Speak gate, then the Tutor, then to you, and your actions produce new signals. Signals, observations and gate decisions are logged. Between sessions: after you leave, the Reflector reads the event log and updates the learner model and teaching memory. At the start of the next session, the Planner reads those, plus your time budget, and hands the plan to the Tutor.">
+        <defs>
+          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+        </defs>
+        <!-- Return path above -->
+        <polyline class="edge" points="810,58 810,28 90,28 90,56" marker-end="url(#a2)"/>
+        <text class="lab" x="450" y="20" text-anchor="middle">you code, talk, push back</text>
+
+        <!-- Live row -->
+        <rect class="box" x="20" y="60" width="140" height="62" rx="6"/>
+        <text class="t" x="90" y="87" text-anchor="middle">Signals</text>
+        <text class="s" x="90" y="105" text-anchor="middle">code, runs, idle, speech</text>
+
+        <rect class="box" x="200" y="60" width="140" height="62" rx="6"/>
+        <text class="t" x="270" y="87" text-anchor="middle">Observer</text>
+        <text class="s" x="270" y="105" text-anchor="middle">qwen3.5:9b · often</text>
+
+        <rect class="box" x="380" y="60" width="140" height="62" rx="6"/>
+        <text class="t" x="450" y="87" text-anchor="middle">Speak gate</text>
+        <text class="s" x="450" y="105" text-anchor="middle">qwen3.5:9b · on events</text>
+
+        <rect class="hot" x="560" y="60" width="140" height="62" rx="6"/>
+        <text class="t" x="630" y="87" text-anchor="middle">Tutor</text>
+        <text class="s" x="630" y="105" text-anchor="middle">GLM 5.3 Flash · text</text>
+
+        <rect class="box" x="740" y="60" width="140" height="62" rx="31"/>
+        <text class="t" x="810" y="96" text-anchor="middle">You</text>
+
+        <line class="edge" x1="160" y1="91" x2="198" y2="91" marker-end="url(#a2)"/>
+        <line class="edge" x1="340" y1="91" x2="378" y2="91" marker-end="url(#a2)"/>
+        <line class="edge" x1="520" y1="91" x2="558" y2="91" marker-end="url(#a2)"/>
+        <line class="edge" x1="700" y1="91" x2="738" y2="91" marker-end="url(#a2)"/>
+        <text class="lab" x="270" y="142" text-anchor="middle">"stuck on visited check"</text>
+        <text class="lab" x="450" y="142" text-anchor="middle">"speak now, small hint"</text>
+        <text class="lab" x="630" y="142" text-anchor="middle">question, trace, hint</text>
+
+        <!-- Event log -->
+        <line class="edge dash" x1="90" y1="122" x2="90" y2="188" marker-end="url(#a2)"/>
+        <line class="edge dash" x1="270" y1="150" x2="270" y2="188" marker-end="url(#a2)"/>
+        <line class="edge dash" x1="450" y1="150" x2="450" y2="188" marker-end="url(#a2)"/>
+        <rect class="box" x="20" y="190" width="500" height="44" rx="6"/>
+        <text class="t" x="270" y="217" text-anchor="middle">Event log: every signal, observation and hint</text>
+
+        <!-- Slow row -->
+        <line class="edge" x1="110" y1="234" x2="110" y2="298" marker-end="url(#a2)"/>
+        <text class="lab" x="118" y="270">after you leave</text>
+
+        <rect class="box" x="20" y="300" width="180" height="62" rx="6"/>
+        <text class="t" x="110" y="327" text-anchor="middle">Reflector</text>
+        <text class="s" x="110" y="345" text-anchor="middle">GLM 5.3 Flash · unhurried</text>
+
+        <line class="edge" x1="200" y1="331" x2="288" y2="331" marker-end="url(#a2)"/>
+        <text class="lab" x="244" y="322" text-anchor="middle">updates</text>
+
+        <rect class="box" x="290" y="300" width="200" height="62" rx="6"/>
+        <text class="t" x="390" y="327" text-anchor="middle">Learner model</text>
+        <text class="s" x="390" y="345" text-anchor="middle">+ teaching memory</text>
+
+        <line class="edge" x1="490" y1="331" x2="558" y2="331" marker-end="url(#a2)"/>
+        <text class="lab" x="524" y="322" text-anchor="middle">reads</text>
+
+        <rect class="box" x="560" y="300" width="140" height="62" rx="6"/>
+        <text class="t" x="630" y="327" text-anchor="middle">Planner</text>
+        <text class="s" x="630" y="345" text-anchor="middle">GLM 5.3 Flash · at start</text>
+
+        <rect class="box" x="740" y="300" width="140" height="62" rx="31"/>
+        <text class="t" x="810" y="327" text-anchor="middle">You</text>
+        <text class="s" x="810" y="345" text-anchor="middle">"I have 60 min"</text>
+        <line class="edge" x1="738" y1="331" x2="702" y2="331" marker-end="url(#a2)"/>
+
+        <line class="edge" x1="630" y1="298" x2="630" y2="152" marker-end="url(#a2)"/>
+        <text class="lab" x="640" y="230">today's plan</text>
+      </svg>
+    </div>
+    <figcaption>The Observer watches often and says little. The Speak gate decides whether interrupting you is worth it. Only the Tutor talks to you. Learning about you mostly happens afterwards, in the Reflector, where slow, careful thinking is affordable.</figcaption>
+  </figure>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Agent</th><th>Its one job</th><th>Runs</th><th>Model</th></tr></thead>
+      <tbody>
+        <tr><td>Observer</td><td>Turn raw code changes and speech into short observations: "rewrote the loop twice", "said the right idea, coded it wrong".</td><td>every few seconds while you work</td><td><span class="tag">qwen3.5:9b</span></td></tr>
+        <tr><td>Speak gate</td><td>Decide whether the Tutor should say something now, and roughly what kind of help.</td><td>when the Observer flags something</td><td><span class="tag">qwen3.5:9b</span></td></tr>
+        <tr><td>Tutor</td><td>Talk with you. Chooses how to help (a question, a trace, an analogy, a hint) using the problem card, your profile and the framings that worked before.</td><td>live, as text (voice optional)</td><td><span class="tag">x-test-1</span> (GLM 5.3 Flash)</td></tr>
+        <tr><td>Reflector</td><td>Re-read the whole session. Update beliefs about you, each citing evidence. Record which teaching attempts worked. Tell you what it changed.</td><td>after the session</td><td><span class="tag">x-test-1</span> (GLM 5.3 Flash)</td></tr>
+        <tr><td>Planner</td><td>Given your time budget and profile, propose today's problems and the reason for each.</td><td>at session start</td><td><span class="tag">x-test-1</span> (GLM 5.3 Flash)</td></tr>
+        <tr><td>Card builder</td><td>Prepare a problem card for each problem, and verify its solution by running the tests.</td><td>offline, once per problem</td><td><span class="tag">x-test-1</span> (GLM 5.3 Flash); checked by <span class="tag">qwen3.8:27b</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose muted">Three models in total. GLM 5.3 Flash does the thinking, <code>qwen3.5:9b</code> does the fast, frequent watching, and <code>qwen3.8:27b</code> double-checks GLM's work (card labels, complexity analysis) so checks always come from a different model. It is also the fallback: if <code>x-test-1</code> stops responding, each role switches to it and tells you. Each role's model is one line of configuration.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Memory</span>
+  <h2>Memory: five stores, each with a clear owner</h2>
+  <p class="rule">Facts are fixed; judgment is flexible. Only code writes the event log. Only the Reflector changes beliefs about you, and every belief links to the events behind it, so the memory can't drift into fiction.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Store</th><th>What's in it</th><th>Written by</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td>Map</td><td>Problem cards and the pattern graph. Same for everyone.</td><td>Card builder; solutions checked by tests, labels by a second model</td><td>#417 uses multi-source BFS; common bug: marking cells visited too late</td></tr>
+        <tr><td>Event log</td><td>Everything that happened, timestamped. Never edited.</td><td>Code only</td><td>14:02 ran tests, 3/5 pass; 14:04 hint level 2 given</td></tr>
+        <tr><td>Learner model</td><td>Your mastery per pattern, for solving and for complexity analysis separately, how confident it is, when it last saw evidence, and open hypotheses.</td><td>Reflector</td><td>"Visited marking: weak, medium confidence (#417, #130). Test again on a fresh problem."</td></tr>
+        <tr><td>Teaching memory</td><td>Each intuition it built with you: how it was framed, how much help it took, whether you recalled it later.</td><td>Reflector</td><td>"Pacific Atlantic clicked through 'water flowing uphill' plus a trace. Recalled it unprompted 5 days later."</td></tr>
+        <tr><td>Your notes</td><td>Your goal and deadline, preferences and corrections. These override the model's conclusions.</td><td>You</td><td>"Master the 150 by 31 March." "Don't give me code, ask me questions."</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h3>Keeping memory small as it grows</h3>
+  <p class="prose">The raw log grows by about 1 MB per session: code is stored as small diffs every few seconds, audio is never kept (only transcripts), and full model prompts are kept only for recent sessions. A year of regular practice comes to a few hundred MB, on top of a one-time install of about 1 to 2 GB, mostly the speech models. Models never read the raw log beyond the current session. They read the layers above it, so what they see stays the same size after 5 sessions or 500.</p>
+  <ol class="steps">
+    <li><div><strong>Event log:</strong> full detail. Read only by code and by the Reflector, one session at a time.</div></li>
+    <li><div><strong>Session summaries:</strong> one per session, written by the Reflector, each linking to the events behind it.</div></li>
+    <li><div><strong>Learner model and teaching memory:</strong> current beliefs about you. This is what the Planner and Tutor read.</div></li>
+  </ol>
+  <p class="prose muted">If the log ever gets large, old sessions are compacted: keystroke detail is dropped, while runs, submissions, hints, transcripts, final code and any event cited as evidence are kept.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Problem cards</span>
+  <h2>Background notes, not a script</h2>
+  <p class="prose">Every problem has a card: the tutor's background notes, like the notes a human tutor reads before a lesson. The Card builder writes them ahead of time with GLM 5.3 Flash, and every approach on a card is run against test cases. Labels that tests can't check, like complexity and "insight or trick", are reviewed by a second model, <code>qwen3.8:27b</code>. If something on a card seems wrong during a session, you say so and the card is corrected. Cards for the 150 are built in advance; cards for drill problems are built during session setup.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>A card holds</th><th>What it's for</th></tr></thead>
+      <tbody>
+        <tr><td>Every reasonable approach</td><td>Each with time and space complexity, labelled as an insight or a trick, whether interviewers expect it, and how big a jump it is from the next-best one.</td></tr>
+        <tr><td>Several explanations</td><td>Different ways into the core idea. Starting points only: your teaching memory overrides them.</td></tr>
+        <tr><td>Patterns and common mistakes</td><td>Links the problem into the pattern map, and helps the Observer recognise known bugs.</td></tr>
+        <tr><td>Hint ladder</td><td>From a vague nudge, through code, to the full solution for each approach. The Tutor climbs it only as far as the situation calls for.</td></tr>
+        <tr><td>Related problems</td><td>Unseen problems that drill the same patterns.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <figure>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#287 Find the Duplicate Number</th><th>Time</th><th>Space</th><th>Kind</th><th>Interviewers expect it?</th><th>Tutor's stance</th></tr></thead>
+        <tbody>
+          <tr><td>Hash set of seen values</td><td class="mono">O(n)</td><td class="mono">O(n)</td><td>core pattern</td><td>accepted first answer</td><td>fine; then ask about space</td></tr>
+          <tr><td>Binary search on the value range</td><td class="mono">O(n log n)</td><td class="mono">O(1)</td><td>insight</td><td>often</td><td>push: binary search on the answer reappears everywhere</td></tr>
+          <tr><td>Cycle detection on indices</td><td class="mono">O(n)</td><td class="mono">O(1)</td><td>trick</td><td>sometimes</td><td>mention and explain if asked; don't drill</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figcaption>An example card's approaches. Solving it with the hash set counts as solved. The follow-up conversation is about the approach worth learning, not the cleverest one.</figcaption>
+  </figure>
+  <h3>How the Tutor uses a card</h3>
+  <ul class="prose">
+    <li><strong>It follows your approach.</strong> The Observer works out which approach you're taking, including one that isn't on the card, and the Tutor helps you finish that one.</li>
+    <li><strong>The tests decide whether your code is correct,</strong> not how close it is to any reference. New approaches you find are added to the card.</li>
+    <li><strong>Once it works, complexity comes next.</strong> If a better approach exists and is worth it, the Tutor offers to work toward it with you.</li>
+    <li><strong>Worth it means real gain.</strong> Insights that transfer to unseen problems are pushed and practised. Tricks like KMP are mentioned, explained if you ask, and not drilled. Not knowing a trick doesn't count against mastery unless interviewers commonly expect it. You can always say "teach me anyway".</li>
+    <li><strong>Your way of understanding wins.</strong> If a card's explanation doesn't land, the Tutor tries another or builds from how you're thinking. Your own explanation becomes your personal version and is used first next time.</li>
+  </ul>
+</section>
+
+<section>
+  <span class="eyebrow">Choosing problems</span>
+  <h2>A map of patterns with your progress on top</h2>
+  <p class="prose">The map is built once from the problem cards. Your layer records mastery and confidence for each pattern. Evidence spreads along the links: solving a hard topological sort problem is also evidence that you know BFS.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 900 260" role="img" aria-label="Example knowledge graph. Grid traversal leads to BFS and DFS, both strong. BFS leads to multi-source BFS (weak), visited marking (a weak hypothesis, shared with DFS) and topological sort (no evidence yet). Problems link to the patterns they use: #994 and #417 to multi-source BFS, #417 and #130 to visited marking, #207 to topological sort.">
+        <defs>
+          <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+        </defs>
+        <!-- prerequisite edges -->
+        <line class="edge" x1="180" y1="130" x2="248" y2="84" marker-end="url(#a3)"/>
+        <line class="edge" x1="180" y1="130" x2="248" y2="176" marker-end="url(#a3)"/>
+        <line class="edge" x1="400" y1="80" x2="478" y2="42" marker-end="url(#a3)"/>
+        <line class="edge" x1="400" y1="80" x2="478" y2="126" marker-end="url(#a3)"/>
+        <line class="edge" x1="400" y1="80" x2="478" y2="216" marker-end="url(#a3)"/>
+        <line class="edge" x1="400" y1="180" x2="478" y2="134" marker-end="url(#a3)"/>
+        <!-- problem links -->
+        <line class="thin" x1="640" y1="40" x2="730" y2="30"/>
+        <line class="thin" x1="640" y1="40" x2="730" y2="90"/>
+        <line class="thin" x1="640" y1="130" x2="730" y2="90"/>
+        <line class="thin" x1="640" y1="130" x2="730" y2="150"/>
+        <line class="thin" x1="640" y1="220" x2="730" y2="220"/>
+
+        <rect class="strong" x="30" y="110" width="150" height="40" rx="8"/>
+        <text class="t" x="105" y="135" text-anchor="middle">Grid traversal</text>
+        <rect class="strong" x="250" y="60" width="150" height="40" rx="8"/>
+        <text class="t" x="325" y="85" text-anchor="middle">BFS</text>
+        <rect class="strong" x="250" y="160" width="150" height="40" rx="8"/>
+        <text class="t" x="325" y="185" text-anchor="middle">DFS</text>
+        <rect class="weak" x="480" y="20" width="160" height="40" rx="8"/>
+        <text class="t" x="560" y="45" text-anchor="middle">Multi-source BFS</text>
+        <rect class="guess" x="480" y="110" width="160" height="40" rx="8"/>
+        <text class="t" x="560" y="135" text-anchor="middle">Visited marking</text>
+        <rect class="unknown" x="480" y="200" width="160" height="40" rx="8"/>
+        <text class="t" x="560" y="225" text-anchor="middle">Topological sort</text>
+
+        <rect class="pill" x="730" y="14" width="160" height="32" rx="16"/>
+        <text class="s" x="810" y="34" text-anchor="middle">#994 Rotting Oranges</text>
+        <rect class="pill" x="730" y="74" width="160" height="32" rx="16"/>
+        <text class="s" x="810" y="94" text-anchor="middle">#417 Pacific Atlantic</text>
+        <rect class="pill" x="730" y="134" width="160" height="32" rx="16"/>
+        <text class="s" x="810" y="154" text-anchor="middle">#130 Surrounded Regions</text>
+        <rect class="pill" x="730" y="204" width="160" height="32" rx="16"/>
+        <text class="s" x="810" y="224" text-anchor="middle">#207 Course Schedule</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="sw strong"></i>strong</span>
+      <span><i class="sw weak"></i>weak</span>
+      <span><i class="sw guess"></i>suspected weakness, needs testing</span>
+      <span><i class="sw unknown"></i>no evidence yet</span>
+      <span>→ prerequisite · grey line: used in problem</span>
+    </div>
+    <figcaption>Here the next problem almost picks itself: one that tests visited marking without also needing multi-source BFS, to confirm or reject the guess.</figcaption>
+  </figure>
+  <ul class="prose">
+    <li><strong>Placement first, and it tells you.</strong> Your LeetCode and NeetCode history is imported as weak evidence of where to look. The first few sessions spread problems across all patterns with light help. The tutor decides when it has seen enough, and tells you. A quick, clean solve moves on immediately.</li>
+    <li><strong>Diagnose or train.</strong> Each pick either tests something it's unsure about or drills a known weakness at the right difficulty. The Planner says which, and why.</li>
+    <li><strong>Confidence fades with time.</strong> A pattern you haven't touched in weeks becomes uncertain, which makes it worth testing again. That's how revisiting happens without a schedule.</li>
+    <li><strong>Fresh problems beat repeats, but repeats have a use.</strong> Re-solving a problem you've seen may just be memory, so it counts as weaker evidence. Old solves make good refreshers, and after a solution was shown, the follow-up is the tutor's call: the same problem a day or more later, an unseen one with the same idea, or a mix. It learns which works for you.</li>
+    <li><strong>Two layers of problems.</strong> The NeetCode 150 is the core: mastering it means solving those well and handling unseen problems from the same patterns. Drills come from related LeetCode problems (via "similar questions" and topic tags), with cards built on demand during session setup.</li>
+    <li><strong>Code does the bookkeeping, the model decides.</strong> Code computes "weakest", "least certain", "not seen lately"; the model gets a short summary, not the whole graph.</li>
+  </ul>
+</section>
+
+<section>
+  <span class="eyebrow">Goal</span>
+  <h2>A deadline without a schedule</h2>
+  <p class="prose">You set a goal and a date, for example "master the NeetCode 150 by 31 March". You never commit to hours per week. The tutor learns your actual pace and tells you, in numbers, whether you're on track.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Part</th><th>How it works</th></tr></thead>
+      <tbody>
+        <tr><td>What "mastered" means</td><td>Every pattern in the 150 is rated strong with high confidence for both solving and complexity analysis, shown on unseen problems without help. And each of the 150 has been solved independently at least once: a correct solution of your own that passes the tests, even if it isn't the fastest approach.</td></tr>
+        <tr><td>Your rhythm</td><td>Learned from what you actually do: how often you practise, for how long, and how many problems you get through. It describes your pace, it doesn't set one.</td></tr>
+        <tr><td>Forecast</td><td>Code divides the remaining work by your observed pace and gives a range, e.g. "early April to mid-May". No warnings in the first two or three weeks, while pace is still noise.</td></tr>
+        <tr><td>Check-in</td><td>Only at the start of a session, never as messages in between. When the forecast slips past your deadline, it shows where you stand and offers concrete options: "move the date by 18 days", "about 4 more problems a week (one extra 45-minute session)", or "focus on the most-tested patterns first".</td></tr>
+        <tr><td>Planning around it</td><td>With plenty of time, plans explore and go deeper. As the deadline nears, they cover unfinished patterns first. If you're ahead, it says so and goes deeper.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h3>Complexity analysis is a skill of its own</h3>
+  <ul class="prose">
+    <li><strong>Tracked separately from solving.</strong> You can be strong at writing backtracking code and shaky on why it's O(2<sup>n</sup>). Your profile shows both.</li>
+    <li><strong>Judged against your approach,</strong> not the optimal one. A hash-set solution is correctly analysed as O(n) time and O(n) space. Approaches that aren't on the card are analysed by the tutor and double-checked by <code>qwen3.8:27b</code>.</li>
+    <li><strong>The reasoning counts.</strong> "O(n), because each element is pushed and popped at most once" is strong evidence. The right answer with the wrong reason is weak evidence.</li>
+    <li><strong>Asked like an interviewer would.</strong> Not after every problem, sometimes only time or only space, and less often once the tutor is confident about your analysis in a pattern.</li>
+    <li><strong>Analysis concepts are on the map,</strong> linked to the patterns where they come up: amortised cost (why a monotonic stack is O(n)), recursion depth as space, hidden Python costs like slicing and <code>in</code> on a list, heap operations at O(log k), backtracking bounds, and whether output counts as space.</li>
+  </ul>
+</section>
+
+<section>
+  <span class="eyebrow">Quality</span>
+  <h2>How small models get good enough</h2>
+  <ul class="prose">
+    <li><strong>Prepared background notes.</strong> The Tutor never has to solve the problem live. It reads a verified problem card, then follows your approach rather than the card's.</li>
+    <li><strong>Narrow questions.</strong> "Is the user stuck?" is reliable on a 9b model. "Watch everything and tutor me" isn't.</li>
+    <li><strong>Structured outputs.</strong> Observer, gate and Reflector return structured data that code checks before anything is stored.</li>
+    <li><strong>Personal history in the prompt.</strong> The Tutor gets the framings that worked for you on this pattern before, and how much support it took.</li>
+    <li><strong>Slow where it's safe.</strong> The Reflector and Planner aren't live, so they can use the biggest model and take their time.</li>
+    <li><strong>A teaching repertoire, not scripts.</strong> The Tutor knows how to do a trace, a Socratic question or an analogy well. It chooses by reading the moment; nothing triggers a fixed routine.</li>
+    <li><strong>What you do is the evidence.</strong> Test results, how much help you needed, and whether you recall an idea later say more than any rating. When you do explain your idea first, getting it right unprompted is strong evidence you own the intuition.</li>
+  </ul>
+</section>
+
+<section>
+  <span class="eyebrow">A session</span>
+  <h2>From "I have an hour" to the wrap-up</h2>
+  <ol class="steps">
+    <li><div><strong>You open the panel and say how long you have.</strong> The session starts and the tutor starts watching. If you're off track for your deadline, it opens with a short check-in. Then it proposes a few problems, each with a reason. You can swap or skip any of them.</div></li>
+    <li><div><strong>You open a problem with one click.</strong> If it's tricky, you might talk your idea through first. If it's easy, you just start.</div></li>
+    <li><div><strong>You code.</strong> The Observer watches quietly and wrong turns are left alone. If you're clearly stuck, the Tutor offers help and waits for your yes, then gives just enough to get you moving.</div></li>
+    <li><div><strong>You solve it, or the tutor eventually walks you there.</strong> It may ask about complexity, as an interviewer would. Then a one- or two-line wrap-up.</div></li>
+    <li><div><strong>You choose what's next:</strong> another problem, a break, one more past your time, or stop.</div></li>
+    <li><div><strong>The session ends</strong> when you stop, or after an hour away. A few bullets show what changed in its picture of you and one focus for next time. You can correct it.</div></li>
+  </ol>
+</section>
+
+
+
+
+
+</div>
