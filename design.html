@@ -323,7 +323,7 @@ a { color: var(--accent); }
       <thead><tr><th>Agent</th><th>Its one job</th><th>Runs</th><th>Model</th></tr></thead>
       <tbody>
         <tr><td>Observer</td><td>Turn raw code changes and speech into short observations: "rewrote the loop twice", "said the right idea, coded it wrong".</td><td>every few seconds while you work</td><td><span class="tag">qwen3.5:9b</span></td></tr>
-        <tr><td>Speak gate</td><td>Decide whether the Tutor should say something now, and roughly what kind of help.</td><td>when the Observer flags something</td><td><span class="tag">qwen3.5:9b</span></td></tr>
+        <tr><td>Speak gate</td><td>Decide whether the Tutor should offer help now, and whether by voice or in the panel.</td><td>when the Observer flags something</td><td><span class="tag">qwen3.5:9b</span></td></tr>
         <tr><td>Tutor</td><td>Talk with you. Chooses how to help (a question, a trace, an analogy, a hint) using the problem card, your profile and the framings that worked before.</td><td>live, as text (voice optional)</td><td><span class="tag">x-test-1</span> (GLM 5.3 Flash)</td></tr>
         <tr><td>Reflector</td><td>Re-read the whole session. Update beliefs about you, each citing evidence. Record which teaching attempts worked. Tell you what it changed.</td><td>after the session</td><td><span class="tag">x-test-1</span> (GLM 5.3 Flash)</td></tr>
         <tr><td>Planner</td><td>Given your time budget and profile, propose today's problems and the reason for each.</td><td>at session start</td><td><span class="tag">x-test-1</span> (GLM 5.3 Flash)</td></tr>
@@ -343,8 +343,8 @@ a { color: var(--accent); }
       <thead><tr><th>Store</th><th>What's in it</th><th>Written by</th><th>Example</th></tr></thead>
       <tbody>
         <tr><td>Map</td><td>Problem cards and the pattern graph. Same for everyone.</td><td>Card builder; solutions checked by tests, labels by a second model</td><td>#417 uses multi-source BFS; common bug: marking cells visited too late</td></tr>
-        <tr><td>Event log</td><td>Everything that happened, timestamped. Never edited.</td><td>Code only</td><td>14:02 ran tests, 3/5 pass; 14:04 hint level 2 given</td></tr>
-        <tr><td>Learner model</td><td>Your mastery per pattern, for solving and for complexity analysis separately, how confident it is, when it last saw evidence, and open hypotheses.</td><td>Reflector</td><td>"Visited marking: weak, medium confidence (#417, #130). Test again on a fresh problem."</td></tr>
+        <tr><td>Event log</td><td>Everything that happened, timestamped. Never edited.</td><td>Code only</td><td>14:02 ran tests, 3/5 pass; 14:04 hint given (a trace)</td></tr>
+        <tr><td>Learner model</td><td>Your memory strength per pattern, for solving and for complexity analysis separately: how long you'd likely remember it and how likely you are to recall it now. Plus open hypotheses.</td><td>Reflector</td><td>"Visited marking: suspected weak (#417, #130). Test again on a fresh problem."</td></tr>
         <tr><td>Teaching memory</td><td>Each intuition it built with you: how it was framed, how much help it took, whether you recalled it later.</td><td>Reflector</td><td>"Pacific Atlantic clicked through 'water flowing uphill' plus a trace. Recalled it unprompted 5 days later."</td></tr>
         <tr><td>Your notes</td><td>Your goal and deadline, preferences and corrections. These override the model's conclusions.</td><td>You</td><td>"Master the 150 by 31 March." "Don't give me code, ask me questions."</td></tr>
       </tbody>
@@ -371,7 +371,6 @@ a { color: var(--accent); }
         <tr><td>Every reasonable approach</td><td>Each with time and space complexity, labelled as an insight or a trick, whether interviewers expect it, and how big a jump it is from the next-best one.</td></tr>
         <tr><td>Several explanations</td><td>Different ways into the core idea. Starting points only: your teaching memory overrides them.</td></tr>
         <tr><td>Patterns and common mistakes</td><td>Links the problem into the pattern map, and helps the Observer recognise known bugs.</td></tr>
-        <tr><td>Hint ladder</td><td>From a vague nudge, through code, to the full solution for each approach. The Tutor climbs it only as far as the situation calls for.</td></tr>
         <tr><td>Related problems</td><td>Unseen problems that drill the same patterns.</td></tr>
       </tbody>
     </table>
@@ -402,7 +401,7 @@ a { color: var(--accent); }
 <section>
   <span class="eyebrow">Choosing problems</span>
   <h2>A map of patterns with your progress on top</h2>
-  <p class="prose">The map is built once from the problem cards. Your layer records mastery and confidence for each pattern. Evidence spreads along the links: solving a hard topological sort problem is also evidence that you know BFS.</p>
+  <p class="prose">The map is built once from the problem cards. Your layer records memory strength for each pattern. The links inform planning: solving a hard topological sort problem also suggests you know BFS.</p>
   <figure>
     <div class="scroll">
       <svg viewBox="0 0 900 260" role="img" aria-label="Example knowledge graph. Grid traversal leads to BFS and DFS, both strong. BFS leads to multi-source BFS (weak), visited marking (a weak hypothesis, shared with DFS) and topological sort (no evidence yet). Problems link to the patterns they use: #994 and #417 to multi-source BFS, #417 and #130 to visited marking, #207 to topological sort.">
@@ -456,10 +455,10 @@ a { color: var(--accent); }
     <figcaption>Here the next problem almost picks itself: one that tests visited marking without also needing multi-source BFS, to confirm or reject the guess.</figcaption>
   </figure>
   <ul class="prose">
-    <li><strong>Placement first, and it tells you.</strong> Your LeetCode and NeetCode history is imported as weak evidence of where to look. The first few sessions spread problems across all patterns with light help. The tutor decides when it has seen enough, and tells you. A quick, clean solve moves on immediately.</li>
+    <li><strong>Placement first, and it tells you.</strong> Your LeetCode and NeetCode history is imported as a hint of where to look. The first few sessions spread problems across all patterns with light help. The tutor decides when it has seen enough, and tells you. A quick, clean solve moves on immediately.</li>
     <li><strong>Diagnose or train.</strong> Each pick either tests something it's unsure about or drills a known weakness at the right difficulty. The Planner says which, and why.</li>
-    <li><strong>Confidence fades with time.</strong> A pattern you haven't touched in weeks becomes uncertain, which makes it worth testing again. That's how revisiting happens without a schedule.</li>
-    <li><strong>Fresh problems beat repeats, but repeats have a use.</strong> Re-solving a problem you've seen may just be memory, so it counts as weaker evidence. Old solves make good refreshers, and after a solution was shown, the follow-up is the tutor's call: the same problem a day or more later, an unseen one with the same idea, or a mix. It learns which works for you.</li>
+    <li><strong>Memory works like memory.</strong> Each pattern has a memory strength from FSRS, the well-tested model behind Anki. A clean solve after a gap makes it stronger; cramming adds little; a break makes it rustier without erasing it. Patterns most likely to be rusty get revisited first. That's how revisiting happens without a schedule, whatever your practice rhythm.</li>
+    <li><strong>Fresh problems beat repeats, but repeats have a use.</strong> Re-solving a problem you've seen may just be memory of that problem, so only unseen problems count toward memory strength. Old solves make good refreshers, and after a solution was shown, the follow-up is the tutor's call: the same problem a day or more later, an unseen one with the same idea, or a mix. It learns which works for you.</li>
     <li><strong>Two layers of problems.</strong> The NeetCode 150 is the core: mastering it means solving those well and handling unseen problems from the same patterns. Drills come from related LeetCode problems (via "similar questions" and topic tags), with cards built on demand during session setup.</li>
     <li><strong>Code does the bookkeeping, the model decides.</strong> Code computes "weakest", "least certain", "not seen lately"; the model gets a short summary, not the whole graph.</li>
   </ul>
@@ -473,7 +472,7 @@ a { color: var(--accent); }
     <table>
       <thead><tr><th>Part</th><th>How it works</th></tr></thead>
       <tbody>
-        <tr><td>What "mastered" means</td><td>Every pattern in the 150 is rated strong with high confidence for both solving and complexity analysis, shown on unseen problems without help. And each of the 150 has been solved independently at least once: a correct solution of your own that passes the tests, even if it isn't the fastest approach.</td></tr>
+        <tr><td>What "mastered" means</td><td>For every pattern, for both solving and complexity analysis: at least two clean solves of unseen problems, a memory that lasts at least a month, and no failure on the latest attempt. And each of the 150 has been solved independently at least once: a correct solution of your own that passes the tests, even if it isn't the fastest approach.</td></tr>
         <tr><td>Your rhythm</td><td>Learned from what you actually do: how often you practise, for how long, and how many problems you get through. It describes your pace, it doesn't set one.</td></tr>
         <tr><td>Forecast</td><td>Code divides the remaining work by your observed pace and gives a range, e.g. "early April to mid-May". No warnings in the first two or three weeks, while pace is still noise.</td></tr>
         <tr><td>Check-in</td><td>Only at the start of a session, never as messages in between. When the forecast slips past your deadline, it shows where you stand and offers concrete options: "move the date by 18 days", "about 4 more problems a week (one extra 45-minute session)", or "focus on the most-tested patterns first".</td></tr>
@@ -485,7 +484,7 @@ a { color: var(--accent); }
   <ul class="prose">
     <li><strong>Tracked separately from solving.</strong> You can be strong at writing backtracking code and shaky on why it's O(2<sup>n</sup>). Your profile shows both.</li>
     <li><strong>Judged against your approach,</strong> not the optimal one. A hash-set solution is correctly analysed as O(n) time and O(n) space. Approaches that aren't on the card are analysed by the tutor and double-checked by <code>qwen3.8:27b</code>.</li>
-    <li><strong>The reasoning counts.</strong> "O(n), because each element is pushed and popped at most once" is strong evidence. The right answer with the wrong reason is weak evidence.</li>
+    <li><strong>The reasoning counts.</strong> "O(n), because each element is pushed and popped at most once" is strong evidence. The right answer with the wrong reason counts as a miss.</li>
     <li><strong>Asked like an interviewer would.</strong> Not after every problem, sometimes only time or only space, and less often once the tutor is confident about your analysis in a pattern.</li>
     <li><strong>Analysis concepts are on the map,</strong> linked to the patterns where they come up: amortised cost (why a monotonic stack is O(n)), recursion depth as space, hidden Python costs like slicing and <code>in</code> on a list, heap operations at O(log k), backtracking bounds, and whether output counts as space.</li>
   </ul>
