@@ -40,7 +40,7 @@ fi
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 data_dir="$target_home/Library/Application Support/Leetotter"
 app_dir="$data_dir/app"
-launch="$app_dir/scripts/launch-companion.sh"
+launch="$app_dir/scripts/leetotter-companion"
 provider_env="$data_dir/provider.env"
 agent_dir="$target_home/Library/LaunchAgents"
 plist="$agent_dir/com.leetotter.companion.plist"
@@ -85,7 +85,7 @@ rsync -a --delete \
     --exclude='__pycache__/' --exclude='*.pyc' \
     --include='/companion/***' \
     --include='/roles.toml' --include='/pyproject.toml' --include='/uv.lock' \
-    --include='/scripts/' --include='/scripts/launch-companion.sh' \
+    --include='/scripts/' --include='/scripts/leetotter-companion' \
     --exclude='*' \
     "$repo/" "$stage/"
 rsync -a --delete --exclude='/.venv/' "$stage/" "$app_dir/"

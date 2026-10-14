@@ -14,7 +14,7 @@ APP_FILES = {
     "roles.toml",
     "pyproject.toml",
     "uv.lock",
-    "scripts/launch-companion.sh",
+    "scripts/leetotter-companion",
 }
 
 
@@ -43,7 +43,7 @@ def test_install_creates_launch_agent_without_secret(tmp_path):
     assert plist["ThrottleInterval"] > 0
     app = tmp_path / "Library/Application Support/Leetotter/app"
     assert plist["WorkingDirectory"] == str(app)
-    assert plist["ProgramArguments"] == [str(app / "scripts/launch-companion.sh")]
+    assert plist["ProgramArguments"] == [str(app / "scripts/leetotter-companion")]
     assert str(ROOT) not in plist_path.read_text()
     assert {str(path.relative_to(app)) for path in app.rglob("*") if path.is_file()} == APP_FILES
     log = str(tmp_path / "Library/Logs/Leetotter/companion.log")
@@ -98,7 +98,7 @@ def test_initial_install_requires_base_url(tmp_path):
 
 
 def test_launch_script_reads_only_documented_keychain_item():
-    script = (SCRIPTS / "launch-companion.sh").read_text()
+    script = (SCRIPTS / "leetotter-companion").read_text()
     assert 'security find-generic-password -a "$USER" -s NUS_SOCLAAS_API_KEY -w' in script
     assert script.count("find-generic-password") == 1
     assert "exec uv run python -m companion" in script
@@ -128,7 +128,7 @@ def test_launch_continues_without_key_using_fake_commands(tmp_path):
     env = os.environ.copy()
     env.update(HOME=str(tmp_path), USER="test-user", PATH=f"{bin_dir}:{env['PATH']}")
     result = subprocess.run(
-        ["bash", str(app / "scripts/launch-companion.sh")],
+        ["bash", str(app / "scripts/leetotter-companion")],
         env=env,
         text=True,
         capture_output=True,
@@ -136,3 +136,18 @@ def test_launch_continues_without_key_using_fake_commands(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "not in the Keychain" in result.stderr
     assert "provider.invalid" not in result.stderr
+
+
+def test_status_says_in_plain_words_whether_the_service_is_installed(tmp_path):
+    before = run_script("status.sh", tmp_path)
+    assert before.returncode == 0, before.stderr
+    assert "Leetotter companion service" in before.stdout
+    assert "Installed: no" in before.stdout
+
+    assert run_script("install.sh", tmp_path, "--base-url", "https://provider.invalid/v1").returncode == 0
+    after = run_script("status.sh", tmp_path)
+    assert after.returncode == 0, after.stderr
+    assert "Installed: yes" in after.stdout
+    assert str(tmp_path / "Library/LaunchAgents/com.leetotter.companion.plist") in after.stdout
+    assert str(tmp_path / "Library/Logs/Leetotter/companion.log") in after.stdout
+    assert "provider.invalid" not in after.stdout

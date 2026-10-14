@@ -117,7 +117,7 @@ line:
 security add-generic-password -a "$USER" -s NUS_SOCLAAS_API_KEY -w
 ```
 
-Then install the launch agent with your provider's base URL:
+Then install the Leetotter companion service with your provider's base URL:
 
 ```sh
 ./scripts/install.sh --base-url 'https://your-provider.example/v1'
@@ -125,7 +125,7 @@ Then install the launch agent with your provider's base URL:
 
 The installer copies the runnable companion to
 `~/Library/Application Support/Leetotter/app/` and installs its dependencies
-there. The launch agent runs that copy because macOS protects folders such as
+there. The service runs that copy because macOS protects folders such as
 `~/Documents` from background processes started by launchd. It writes the
 non-secret base URL to `~/Library/Application Support/Leetotter/provider.env`,
 starts the companion, and configures launchd to start it at login and restart
@@ -135,15 +135,21 @@ The log is at `~/Library/Logs/Leetotter/companion.log`. macOS may ask once wheth
 access to the Keychain item; choose **Always Allow** so login starts can read
 it. If the item is missing, the companion still starts and the log explains
 why model calls will fail. The key is never written to the provider file or
-launch agent plist.
+service's plist.
 
-To stop and remove the launch agent:
+To check on it at any time, in plain words (installed, running, answering, the last log lines):
+
+```sh
+./scripts/status.sh
+```
+
+In System Settings, under General → Login Items & Extensions, it appears as a background item named after its program, `leetotter-companion`. To stop and remove the service:
 
 ```sh
 ./scripts/uninstall.sh
 ```
 
-Uninstall removes the app copy and launch agent. It leaves the database,
+Uninstall removes the app copy and the service. It leaves the database,
 provider URL, log, and Keychain item in place.
 For a file-only rehearsal, set `LEETOTTER_HOME` to an existing directory
 outside your home and pass `--dry-run` to install or uninstall. Dry-run does

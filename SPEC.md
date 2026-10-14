@@ -47,7 +47,7 @@ Companion (Python, runs natively on localhost; starts at login)
 └── store             one SQLite file
 ```
 
-**The companion starts at login** through a macOS launch agent, so the extension always finds it. It's light when idle. If it isn't running, the side panel says so plainly ("Tutor service isn't running. Start it with …") and does nothing else.
+**The companion starts at login** through a macOS login service (installed by `scripts/install.sh`, inspected with `scripts/status.sh`), so the extension always finds it. It's light when idle. If it isn't running, the side panel says so plainly ("Tutor service isn't running. Start it with …") and does nothing else.
 
 **Nothing executes model-written code.** Leetotter never runs your code (NeetCode does, when you press Run or Submit) and keeps no solution code of its own (§10), so there's no code runner and no sandbox.
 
@@ -380,7 +380,7 @@ Everything is stored locally, in one SQLite file (§11). On your Mac, Leetotter 
 
 Each phase ends with something you can use.
 
-1. **Foundations.** Companion skeleton, SQLite schema, model client (roles, rate limiter, validation), the launch agent and Keychain launch script, and the phase-1 checks from §12.
+1. **Foundations.** Companion skeleton, SQLite schema, model client (roles, rate limiter, validation), the login service and Keychain launch script, and the phase-1 checks from §12.
    *Done when:* a test script calls every role's model and validates a structured reply, and the companion starts at login.
 2. **Problem references.** The Reference writer and Checker, run over the NeetCode 150.
    *Done when:* ≥ 95% of the 150 have checked references, and the rest are marked unchecked.
