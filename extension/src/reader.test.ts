@@ -28,6 +28,9 @@ describe("NeetCode captured traffic", () => {
       null,"wrong_answer","time_limit","compile_error","runtime_error","runtime_error","runtime_error","runtime_error","runtime_error","runtime_error","internal_error","unknown_99",
     ]);
   });
+  it("maps queued, processing and format errors", () => {
+    expect([1, 2, 14, 99].map(judgeError)).toEqual(["in_queue", "processing", "exec_format_error", "unknown_99"]);
+  });
   it("diffs lines against the previous snapshot", () => {
     expect(lineDiff("a\nb\nc", "a\nx\nc")).toEqual({ start_line: 2, removed: ["b"], added: ["x"] });
   });

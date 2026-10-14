@@ -32,9 +32,10 @@ export class CompanionConnection {
     this.connect();
   }
 
-  send(message: unknown): void {
-    if (!this.socket || this.socket.readyState !== 1) return;
-    this.socket.send(JSON.stringify(message));
+  send(message: unknown): boolean {
+    if (!this.socket || this.socket.readyState !== 1) return false;
+    try { this.socket.send(JSON.stringify(message)); return true; }
+    catch { this.socket.close(); return false; }
   }
 
   stop(): void {

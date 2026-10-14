@@ -7,11 +7,13 @@ const testButton = document.getElementById("reader-test");
 if (!status) throw new Error("Missing status element");
 if (!readerError || !testButton) throw new Error("Missing reader controls");
 
+let currentMode = "idle";
 function showMode(mode: string): void {
+  currentMode = mode;
   if (testButton) testButton.textContent = mode === "watching" ? "Reader test: stop watching" : "Reader test: start watching";
 }
 testButton.addEventListener("click", () => {
-  const next = testButton.textContent?.includes("stop") ? "idle" : "watching";
+  const next = currentMode === "watching" ? "idle" : "watching";
   chrome.runtime.sendMessage({ kind: "set_mode", mode: next });
   showMode(next);
 });

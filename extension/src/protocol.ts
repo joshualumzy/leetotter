@@ -15,7 +15,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 function nonempty(value: unknown): boolean { return typeof value === "string" && value.length > 0; }
 function failure(value: unknown): boolean {
-  if (value === undefined) return true;
+  if (value === undefined || value === null) return true;
   const item = record(value);
   return [item.input, item.expected, item.actual].every(v => typeof v === "string");
 }

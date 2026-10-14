@@ -33,6 +33,15 @@ appear by name in the panel. A Run or Submit without a response within 30
 seconds shows "Can't see run results on this page". The companion validates
 reader events but does not store them yet.
 
+The worker keeps the reader's watch mode and problem-tab state in Chrome session
+storage so a worker restart can restore the page mode. The NeetCode host
+permission limits tab URL access; the extension does not request the broader
+`tabs` permission.
+
+**Known risk:** Scripts running on neetcode.io can forge reader events because
+`window.postMessage` does not identify the sending script. This is accepted
+for this local personal tool.
+
 To check it by hand, start the companion, load `extension/dist` in Chrome, open
 the side panel, and visit a NeetCode problem. Press **Reader test: start
 watching**. The panel shows the latest event type. Type, Run, Submit, and

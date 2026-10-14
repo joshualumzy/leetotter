@@ -2,18 +2,28 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanionConnection } from "./connection";
 
 class FakeSocket {
+  readyState = 0;
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   sent: string[] = [];
   send(data: string) { this.sent.push(data); }
-  close() { this.onclose?.(); }
+  close() { this.readyState = 3; this.onclose?.(); }
 }
 
 afterEach(() => vi.useRealTimers());
 
 describe("companion connection", () => {
+  it("reports a dropped application event while the socket is closed", () => {
+    const socket = new FakeSocket();
+    const connection = new CompanionConnection("ws://127.0.0.1:8765", () => socket, () => {});
+    connection.start();
+    expect(connection.send({ type: "code_snapshot" })).toBe(false);
+    socket.readyState = 1;
+    expect(connection.send({ type: "code_snapshot" })).toBe(true);
+    connection.stop();
+  });
   it("reconnects after the companion starts or restarts", () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];

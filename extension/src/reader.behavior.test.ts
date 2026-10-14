@@ -26,10 +26,144 @@ function ready() {
   page.document.body.innerHTML = "<h1>Duplicate Integer</h1><div class='monaco-editor'></div>";
   page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "one\ntwo" }]));
 }
+async function flushUntil(test: () => boolean) { await vi.waitFor(() => { expect(test()).toBe(true); }); }
 
 describe("page reader", () => {
+  it("emits nothing while idle and cancels pending result checks on pause", () => {
+    reader.install();
+    vi.advanceTimersByTime(3000);
+    expect(events).toEqual([]);
+    ready(); reader.setMode("watching");
+    void page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
+    reader.setMode("paused");
+    const count = events.length;
+    vi.advanceTimersByTime(30000);
+    expect(events).toHaveLength(count);
+  });
+
+  it("recovers from a failed editor check with a snapshot and no duplicate open", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.localStorage.setItem("duplicate-integer_python_tabs", "[]");
+    expect(events.at(-1)?.payload.ok).toBe(false);
+    reader.setMode("paused");
+    ready(); reader.setMode("watching");
+    expect(events.at(-2)?.payload.ok).toBe(true);
+    expect(events.at(-1)?.type).toBe("code_snapshot");
+    expect(events.filter(e => e.type === "problem_opened")).toHaveLength(1);
+  });
+
+  it("does not read unrelated fetch bodies", async () => {
+    page.fetch = vi.fn(async () => new Response("ok"));
+    ready(); reader.install(); reader.setMode("watching");
+    const request = new Request("https://neetcode.io/api/other", { method: "POST", body: "unrelated" });
+    vi.spyOn(request, "clone").mockImplementation(() => { throw new Error("unrelated body read"); });
+    await expect(page.fetch(request)).resolves.toBeDefined();
+  });
+
+  it("reports a replaced fetch hook on its next poll", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.fetch = vi.fn(async () => new Response("ok"));
+    vi.advanceTimersByTime(1000);
+    expect(events.at(-1)?.payload.message).toBe("Can't see run results on this page");
+  });
+
+  it("reports a non-string matched request body", async () => {
+    page.fetch = vi.fn(async () => new Response("ok"));
+    ready(); reader.install(); reader.setMode("watching");
+    await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: new Blob(["{} "]) });
+    expect(events.at(-1)?.payload.message).toBe("Can't read run request body on this page");
+  });
+
+  it("includes HTTP status for a failed matched response", async () => {
+    page.fetch = vi.fn(async () => new Response("bad", { status: 503 }));
+    ready(); reader.install(); reader.setMode("watching");
+    await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
+    await flushUntil(() => events.some(e => String(e.payload.message).includes("HTTP 503")));
+    expect(events.at(-1)?.payload.message).toContain("HTTP 503");
+  });
+
+  it("includes a parse failure and clears it on the next result", async () => {
+    page.fetch = vi.fn()
+      .mockResolvedValueOnce(new Response("not json"))
+      .mockResolvedValueOnce(new Response(JSON.stringify(runResponse)));
+    ready(); reader.install(); reader.setMode("watching");
+    await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
+    await flushUntil(() => events.some(e => String(e.payload.message).includes("Can't see run results on this page:")));
+    expect(String(events.at(-1)?.payload.message)).toMatch(/JSON|Unexpected token/);
+    await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
+    await flushUntil(() => events.some(e => e.type === "run_result"));
+    expect(events.at(-2)?.payload.ok).toBe(true);
+  });
+
+  it("keeps an in-flight Submit result when watching pauses", async () => {
+    let complete!: (value: Response) => void;
+    page.fetch = vi.fn(() => new Promise<Response>(resolve => { complete = resolve; }));
+    ready(); reader.install(); reader.setMode("watching");
+    const request = page.fetch("/api/executeCodeFunctionHttp", { method: "POST", body: JSON.stringify(submitRequest) });
+    reader.setMode("paused");
+    vi.advanceTimersByTime(30_000);
+    expect(events.some(e => e.payload.message === "Can't see run results on this page")).toBe(false);
+    complete(new Response(JSON.stringify(submitResponse)));
+    await request;
+    await flushUntil(() => events.some(e => e.type === "submit_result"));
+  });
+
+  it("clears a missing-result check when that response arrives late", async () => {
+    let complete!: (value: Response) => void;
+    page.fetch = vi.fn(() => new Promise<Response>(resolve => { complete = resolve; }));
+    ready(); reader.install(); reader.setMode("watching");
+    const request = page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
+    vi.advanceTimersByTime(30_000);
+    expect(events.at(-1)?.payload.message).toBe("Can't see run results on this page");
+    complete(new Response(JSON.stringify(runResponse)));
+    await request;
+    await flushUntil(() => events.some(e => e.type === "run_result"));
+    expect(events.at(-2)?.payload.ok).toBe(true);
+  });
+
+  it("does not announce the previous title during SPA navigation", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.history.pushState({}, "", "/problems/two-sum/");
+    page.localStorage.setItem("two-sum_python_tabs", JSON.stringify([{ code: "next" }]));
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_opened")).toHaveLength(1);
+    page.document.querySelector("h1")!.textContent = "Two Sum";
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_opened").at(-1)?.payload).toMatchObject({ slug: "two-sum", title: "Two Sum" });
+  });
+
+  it("announces a new route after a title check recovers from pause", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.history.pushState({}, "", "/problems/two-sum/");
+    vi.advanceTimersByTime(1000);
+    reader.setMode("paused");
+    page.document.querySelector("h1")!.textContent = "Two Sum";
+    page.localStorage.setItem("two-sum_python_tabs", JSON.stringify([{ code: "next" }]));
+    vi.advanceTimersByTime(1000);
+    reader.setMode("watching");
+    expect(events.filter(e => e.type === "problem_opened").map(e => e.payload.slug)).toEqual(["duplicate-integer", "two-sum"]);
+  });
+
+  it("recovers a failed check while paused without opening again", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.localStorage.setItem("duplicate-integer_python_tabs", "[]");
+    reader.setMode("paused");
+    ready(); vi.advanceTimersByTime(1000);
+    expect(events.at(-1)?.payload.ok).toBe(true);
+    reader.setMode("watching");
+    expect(events.filter(e => e.type === "problem_opened")).toHaveLength(1);
+  });
+
+  it("names a failed editor check from the diff timer", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "changed" }]));
+    // The write schedules a diff; the stored tabs disappear before its timer fires.
+    page.localStorage.removeItem("duplicate-integer_python_tabs");
+    vi.advanceTimersByTime(1);
+    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page");
+  });
   it("names each failing self-check, including two tabs and a missing hook", () => {
-    reader.open();
+    reader.setMode("watching");
     expect(events.at(-1)?.payload.message).toBe("Can't identify the problem title on this page");
     page.document.body.innerHTML = "<h1>Duplicate Integer</h1>";
     reader.open();
@@ -64,11 +198,9 @@ describe("page reader", () => {
     page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "five" }]));
     vi.advanceTimersByTime(60_000);
     expect(events.slice(count).filter(e => e.type === "code_changed" || e.type === "code_snapshot")).toHaveLength(0);
-    reader.focus();
-    expect(events.at(-1)?.type).toBe("focus_changed");
     reader.setMode("idle");
     const idleCount = events.length;
-    reader.focus(); reader.snapshot();
+    reader.snapshot();
     expect(events).toHaveLength(idleCount);
   });
 
@@ -94,20 +226,20 @@ describe("page reader", () => {
     page.fetch = vi.fn(async (url: string | URL | Request) => new Response(JSON.stringify(String(url).includes("executeCode") ? submitResponse : runResponse)));
     reader.install(); reader.setMode("watching");
     await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
-    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await flushUntil(() => events.some(e => e.type === "run_result"));
     expect(events.some(e => e.type === "run_result")).toBe(true);
     reader.setMode("paused");
     await page.fetch("/api/executeCodeFunctionHttp", { method: "POST", body: JSON.stringify(submitRequest) });
-    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await flushUntil(() => events.some(e => e.type === "submit_result"));
     expect(events.some(e => e.type === "submit_result")).toBe(true);
     const runCount = events.filter(e => e.type === "run_result").length;
     await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
-    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await flushUntil(() => events.filter(e => e.type === "run_result").length === runCount);
     expect(events.filter(e => e.type === "run_result")).toHaveLength(runCount);
     reader.setMode("idle");
     const submitCount = events.filter(e => e.type === "submit_result").length;
     await page.fetch("/api/executeCodeFunctionHttp", { method: "POST", body: JSON.stringify(submitRequest) });
-    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await flushUntil(() => events.filter(e => e.type === "submit_result").length === submitCount);
     expect(events.filter(e => e.type === "submit_result")).toHaveLength(submitCount);
   });
 });

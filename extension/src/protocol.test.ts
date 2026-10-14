@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseMessage } from "./protocol";
+import { parseMessage, validateReaderPayload } from "./protocol";
 
 describe("wire messages", () => {
+  it("accepts null failing_case like the Python validator", () => {
+    expect(validateReaderPayload("run_result", { slug: "two-sum", cases: [{ passed: true, error_type: null, error_message: "", runtime: "0.1", failing_case: null }] })).toBeDefined();
+  });
   it("accepts a typed status envelope", () => {
     expect(parseMessage('{"type":"status","ts":"2026-10-15T00:00:00Z","state":"connected"}')).toEqual({
       type: "status", ts: "2026-10-15T00:00:00Z", state: "connected",
