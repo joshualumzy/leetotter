@@ -1,0 +1,22 @@
+[roles]
+observer = "qwen3.8:27b"
+tutor = "x-test-1"
+reflector = "x-test-1"
+planner = "x-test-1"
+grader = ["x-test-1", "x-test-2"]
+reference_writer = "x-test-1"
+checker = "x-test-2"
+
+[timeouts]
+observer = 20
+tutor = 60
+grader = 60
+planner_start = 180
+planner_between = 30
+reflector = 180
+reference_writer = 180
+checker = 180
+
+[provider]
+# Confirm this endpoint accepts chat_template_kwargs in python -m companion.check.
+observer_thinking_extra_body = { chat_template_kwargs = { enable_thinking = false } }
