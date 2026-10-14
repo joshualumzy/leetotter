@@ -226,8 +226,10 @@ class ModelClient:
                             on_response(chunk)
                         usage = getattr(chunk, "usage", None) or usage
                         for choice in getattr(chunk, "choices", ()):
-                            piece = getattr(choice.delta, "content", None) or ""
-                            if piece and not pieces and on_first_token:
+                            piece = getattr(choice.delta, "content", None)
+                            if not piece:
+                                continue
+                            if not pieces and on_first_token:
                                 on_first_token(round((time.perf_counter() - started) * 1000))
                             pieces.append(piece)
                     content = "".join(pieces)

@@ -202,7 +202,9 @@ def test_invalid_role_and_phase_raise_value_error(tmp_path, monkeypatch):
 
 
 def test_tutor_streams_and_records_first_token_and_final_usage(tmp_path, monkeypatch):
-    chunks = [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"answer":'))], usage=None),
+    chunks = [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=None))], usage=None),
+              SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=""))], usage=None),
+              SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"answer":'))], usage=None),
               SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='"ok"}'))], usage=None),
               SimpleNamespace(choices=[], usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2))]
     instance, calls, path = model_client(tmp_path, monkeypatch, chunks)
