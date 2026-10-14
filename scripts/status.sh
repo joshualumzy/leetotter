@@ -42,10 +42,10 @@ else
             echo "  Running: no, loaded but not running (last exit code $code); see the log below"
         fi
     fi
-    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-        echo "  Answering: yes, on 127.0.0.1:$port"
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        echo "  Listening: yes, on 127.0.0.1:$port"
     else
-        echo "  Answering: no, nothing is listening on 127.0.0.1:$port"
+        echo "  Listening: no, nothing is listening on 127.0.0.1:$port"
     fi
     if security find-generic-password -a "$USER" -s NUS_SOCLAAS_API_KEY >/dev/null 2>&1; then
         echo "  API key in Keychain: yes"
