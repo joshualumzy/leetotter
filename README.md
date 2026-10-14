@@ -22,6 +22,27 @@ The unpacked extension has a fixed ID through the public manifest key; its
 private key is not in this repository. The panel reports whether the local
 companion is connected and reconnects automatically after a restart.
 
+## NeetCode reader test
+
+The extension injects a page script on neetcode.io to read the single Python
+editor tab from localStorage and observe Run and Submit requests and responses.
+An isolated script relays tagged events to the worker, which sends them to the
+companion over the existing WebSocket. The reader checks for the problem title,
+Monaco editor, one readable code tab, and installed network hook. Failures
+appear by name in the panel. A Run or Submit without a response within 30
+seconds shows "Can't see run results on this page". The companion validates
+reader events but does not store them yet.
+
+To check it by hand, start the companion, load `extension/dist` in Chrome, open
+the side panel, and visit a NeetCode problem. Press **Reader test: start
+watching**. The panel shows the latest event type. Type, Run, Submit, and
+switch tabs or windows; the latest event should change to `code_changed`,
+`run_result`, `submit_result`, or `focus_changed` respectively. Reloading a
+problem while watching should show `problem_opened` and `code_snapshot`.
+Press **Reader test: stop watching** when done. While idle the reader forwards
+no events. Reader failures are shown in the panel and pause watching until the
+check recovers. The real-site check is manual; tests use captured traffic.
+
 For the manual provider smoke test, set `NUS_SOCLAAS_BASE_URL` and
 `NUS_SOCLAAS_API_KEY` in the command's environment, then run
 `uv run python -m companion.smoke`. The script prints the validated tutor reply.

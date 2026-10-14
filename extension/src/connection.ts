@@ -3,6 +3,7 @@ import { makeMessage, parseMessage } from "./protocol";
 export type ConnectionState = { kind: "offline" | "connected" } | { kind: "error"; message: string };
 
 type Socket = {
+  readyState?: number;
   onopen: ((...args: any[]) => void) | null;
   onclose: ((...args: any[]) => void) | null;
   onerror: ((...args: any[]) => void) | null;
@@ -29,6 +30,11 @@ export class CompanionConnection {
     this.active = true;
     this.onState({ kind: "offline" });
     this.connect();
+  }
+
+  send(message: unknown): void {
+    if (!this.socket || this.socket.readyState !== 1) return;
+    this.socket.send(JSON.stringify(message));
   }
 
   stop(): void {

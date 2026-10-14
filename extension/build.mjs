@@ -5,7 +5,7 @@ const port = Number(process.env.LEETOTTER_PORT ?? 8765);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("LEETOTTER_PORT must be a TCP port");
 await mkdir("dist", { recursive: true });
 await build({
-  entryPoints: { worker: "src/worker.ts", panel: "src/panel.ts" },
+  entryPoints: { worker: "src/worker.ts", panel: "src/panel.ts", "page-reader": "src/page-reader.ts", "page-bridge": "src/page-bridge.ts" },
   outdir: "dist",
   bundle: true,
   format: "iife",

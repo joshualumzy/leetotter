@@ -1,0 +1,7 @@
+{
+  "data": {
+    "problemId": "duplicate-integer",
+    "rawCode": "class Solution:\n    def hasDuplicate(self, nums: List[int]) -> bool:\n        return len(set(nums)) != len(nums)",
+    "lang": "python"
+  }
+}

@@ -4,8 +4,12 @@
   "version": "0.1.0",
   "description": "Local companion status for Leetotter.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4h2Lq4qbd+KzojE0G2IDAVEWkyqGw19KKr2C/kYgE4cxIyJ/VOETovn/HBmmbicfBmFSSPafXyhszeRVw9WpBXEdrvuj9pxQdKazTD8nbm8X9QHSaX6j2CIG/yyiJAA9ACaF7f+IzgPZ1l/vI0RKupc4uY5hkyUnOcI9t1WTYRjytjHtVJgSAIPFbllXeBGCrjQBoQVAIGC92X4tDrcOk1i3bjO0wNkrk2FOSn9neIvIp1TC2ok7gNYWniHO/WLgl+ynNJ8teKs0xouGUYL2Vf+9Crf3K1eftDFuapyaFv067wSAM8vze1U782ap8PIvck3NEXW82uDX6Xx83qBmZwIDAQAB",
-  "permissions": ["sidePanel"],
-  "host_permissions": ["http://127.0.0.1/*"],
+  "permissions": ["sidePanel", "tabs"],
+  "host_permissions": ["http://127.0.0.1/*", "https://neetcode.io/*"],
   "background": { "service_worker": "worker.js" },
+  "content_scripts": [
+    { "matches": ["https://neetcode.io/*"], "js": ["page-reader.js"], "world": "MAIN", "run_at": "document_start" },
+    { "matches": ["https://neetcode.io/*"], "js": ["page-bridge.js"], "world": "ISOLATED", "run_at": "document_start" }
+  ],
   "side_panel": { "default_path": "panel.html" }
 }

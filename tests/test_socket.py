@@ -49,3 +49,45 @@ def test_unknown_type_gets_visible_protocol_error():
                 assert "ts" in reply
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("message", [
+    {"type": "problem_opened", "payload": {"site": "neetcode", "slug": "duplicate-integer", "title": "Duplicate Integer"}},
+    {"type": "code_changed", "payload": {"diff": {"start_line": 2, "removed": ["a"], "added": ["b"]}}},
+    {"type": "code_snapshot", "payload": {"code": "print(1)"}},
+    {"type": "run_result", "payload": {"slug": "duplicate-integer", "cases": [{"passed": False, "error_type": "wrong_answer", "error_message": "", "runtime": "0.027", "failing_case": {"input": "x", "expected": "true", "actual": "false"}}]}},
+    {"type": "submit_result", "payload": {"slug": "duplicate-integer", "accepted": True, "error_type": None, "error_message": "", "runtime": "0.032", "memory": 14184, "passed": 34, "total": 34}},
+    {"type": "focus_changed", "payload": {"tab_active": True, "window_focused": False}},
+])
+def test_valid_reader_events_are_accepted_without_storage_or_reply(message):
+    async def check():
+        async with serve_companion(port=0) as server:
+            port = server.sockets[0].getsockname()[1]
+            async with connect(f"ws://127.0.0.1:{port}", origin=ALLOWED_ORIGIN, proxy=None) as ws:
+                await ws.send(json.dumps({"ts": "2026-10-15T00:00:00Z", **message}))
+                await ws.send(json.dumps({"type": "ping", "ts": "2026-10-15T00:00:01Z"}))
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(ws.recv(), 0.05)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("message", [
+    {"type": "problem_opened", "payload": {"site": "neetcode", "slug": "", "title": "Duplicate Integer"}},
+    {"type": "code_changed", "payload": {"diff": {"start_line": 0, "removed": [], "added": []}}},
+    {"type": "code_snapshot", "payload": {}},
+    {"type": "run_result", "payload": {"slug": "duplicate-integer", "cases": []}},
+    {"type": "submit_result", "payload": {"accepted": True}},
+    {"type": "focus_changed", "payload": {"tab_active": "yes", "window_focused": True}},
+])
+def test_malformed_reader_events_get_an_error(message):
+    async def check():
+        async with serve_companion(port=0) as server:
+            port = server.sockets[0].getsockname()[1]
+            async with connect(f"ws://127.0.0.1:{port}", origin=ALLOWED_ORIGIN, proxy=None) as ws:
+                await ws.send(json.dumps({"ts": "2026-10-15T00:00:00Z", **message}))
+                reply = json.loads(await ws.recv())
+                assert reply["type"] == "error"
+                assert message["type"] in reply["message"]
+
+    asyncio.run(check())
