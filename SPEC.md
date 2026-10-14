@@ -349,7 +349,7 @@ References are written once, mostly in a batch, so quality matters more than spe
 - **Rate limit: 90 requests per minute**, shared by everything through one limiter. The live roles get priority, and reference writing only uses spare capacity.
 - **Timeouts:** Observer 20 s (nudges work on a minutes timescale, so its judgment matters more than its speed), Tutor 60 s (streamed), Grader 60 s, Planner 180 s at session start and 30 s between problems (so a solve is never followed by a long wait), Reflector 180 s.
 - **An unavailable model is reported, not worked around.** If a model fails twice in a row (or returns "model not found"), the panel names the model and what it affects (for example "GLM 5.3 Flash isn't responding: tutoring and suggestions are unavailable; grading continues with one grader"), and it's logged. You fix it in the configuration. What happens to each role meanwhile is in §13.
-- To verify at phase 1: `x-test-2` is reachable and gives valid structured output; the endpoint supports disabling thinking for `qwen3.8:27b`, and its response time; whether JSON or structured-output mode is supported per model; the actual time-to-first-token of GLM 5.3 Flash on this endpoint.
+- Phase-1 checks (run 2026-10-15 with `python -m companion.check`): `x-test-2` is reachable and, like the other two models, supports JSON schema, JSON object and plain output; thinking can be disabled for `qwen3.8:27b` through `chat_template_kwargs.enable_thinking=false` (about 11 completion tokens in 0.4 s against 198 in 2.6 s without it); the Tutor's median time to first token on GLM 5.3 Flash is about 1.9 s.
 
 ## 13. Failure handling
 
