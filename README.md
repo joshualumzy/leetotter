@@ -158,3 +158,18 @@ not invoke launchctl or install dependencies.
 This setup implements the login-start requirement in [SPEC §3](SPEC.md#3-components),
 the environment and Keychain configuration in [SPEC §12](SPEC.md#12-models),
 and the key storage rule in [SPEC §14](SPEC.md#14-privacy).
+
+## What this puts on your Mac
+
+Nothing is installed system-wide, with Homebrew or with `sudo`. Python 3.14 and `uv` are assumed to be there already.
+
+| What | Installed by | Where | Remove with |
+|---|---|---|---|
+| Python packages | `uv sync` | `.venv` in the repo, and another in the app copy below | delete the folder |
+| Extension build tools | `npm install` | `extension/node_modules` | delete the folder |
+| The companion's program copy, data and provider URL | `scripts/install.sh` and the companion | `~/Library/Application Support/Leetotter/` | `./scripts/uninstall.sh` removes the copy; delete the folder to remove the data too |
+| The login service's file | `scripts/install.sh` | `~/Library/LaunchAgents/com.leetotter.companion.plist` | `./scripts/uninstall.sh` |
+| The log | the service | `~/Library/Logs/Leetotter/` | delete the folder |
+| Your provider key | you | macOS Keychain, service `NUS_SOCLAAS_API_KEY` | `security delete-generic-password -a "$USER" -s NUS_SOCLAAS_API_KEY` |
+
+`uv` and `npm` also keep download caches in `~/.cache/uv` and `~/.npm`, which are not specific to Leetotter.
