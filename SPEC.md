@@ -144,12 +144,13 @@ There's no fixed hint ladder in code. The Tutor works live from the problem and 
 - the time spent, the time left in the session
 - your history with this problem and category, the framings that worked before, and open Reflector hypotheses
 
-**It diagnoses before it helps.** Its instructions list the gaps to tell apart, from your code and what you say:
+**It diagnoses before it helps.** Its instructions list the gaps to tell apart, from your code and what you say. The list isn't exhaustive; for a gap that isn't on it, the Tutor describes the gap in its own words and logs it as `other`, so the Reflector can notice one that keeps recurring:
 
 | Gap | What helps |
 |---|---|
 | Misread the problem (a missed constraint, a different question) | Re-read it with an example |
 | Missing a tool (a heap, union-find, Dijkstra) | Teach the tool briefly, then hand the problem back |
+| Doesn't recognise the pattern (knows the tool, doesn't see that it applies here) | Point at the signal in the problem that calls for it, without naming the pattern, then let you connect it |
 | Weak intuition (no idea where to start) | Build the idea up |
 | Wrong intuition (committed to a path that can't work) | Steer off it, then build intuition for a new path |
 | Stuck optimising (brute force works, the better idea won't come) | "What work is repeated?" |
@@ -269,11 +270,11 @@ Interviews give you new problems, so the finish line is solving new ones, with t
   - **Nothing announces it.** The Progress tab shows where you stand; reaching 100% isn't celebrated or pushed.
   - A break alone doesn't lower it; the next attempt decides.
 - **Per-problem memory** (§8) schedules retries and spaces out problems you remember; it isn't part of the finish line.
-- **The Progress tab** is a map of NeetCode's categories, laid out in NeetCode's category order (Arrays & Hashing, Two Pointers, Sliding Window, Stack, and so on). A header shows how many of the 150 are done on your own and how many categories are strong. Each category shows:
-  - its score: the share of its problems done on your own (it doesn't drop while you're away)
+- **The Progress tab** is a map of NeetCode's categories, laid out in NeetCode's category order (Arrays & Hashing, Two Pointers, Sliding Window, Stack, and so on). A header shows a bar of how many of the 150 are done on your own, and how many categories are strong. Each category shows:
+  - its level, in plain words (never letter grades): **not started** (no attempts), **building** (started, with some problems not yet done on your own), **solid** (every problem in it done on your own), **strong** (solid, and strong for both new problems and complexity, as above)
+  - its count of problems done on your own, such as "7 of 11" (a count, not a percentage, so a small category like Tries doesn't jump by a third at a time; it doesn't drop while you're away, only when a retry is missed)
   - two indicators, for new problems (`solve`) and complexity (`analysis`): strong (as above), weak (has reviews but isn't strong), suspected weakness (an open Reflector hypothesis), no evidence (no reviews yet)
   - a small "rusty" marker when the category's own `solve` recall now is below 0.9 (§8); with the 21-day bar, that's roughly three weeks away from it
-- Clicking a category shows a small trend line of its score over time, with its two indicators' history beneath, so you can see your skill changing, not just where it stands. It's computed from the review log, so nothing extra is tracked.
 - Clicking a category also lists its patterns, each marked practised on a new problem or not yet, and its problems, each with its grade history.
 
 ## 10. Problem references
