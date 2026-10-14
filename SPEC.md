@@ -4,9 +4,9 @@ This is the build spec. `design.html` (published at https://claude.ai/artifact/N
 
 ## 1. Scope
 
-**In scope:** practising the NeetCode 150, plus unseen problems beyond it as transfer checks, in Python, on one Mac (Apple M2, 16 GB). NeetCode's web editor first; LeetCode's later.
+**In scope:** practising the NeetCode 150, plus unseen problems beyond it as transfer checks, in Python, on one Mac (Apple M2, 16 GB). NeetCode's web editor only.
 
-**Out of scope:** system design practice (a future extension), other devices or sync, other coding languages, a deadline or finish-date forecast, speech (you dictate with MacWhisper; nothing speaks back), a timed mock-interview mode, rating buttons, notifications outside a session, tracking practice done outside a session.
+**Out of scope:** other practice sites such as LeetCode (a possible later extension), system design practice (a future extension), other devices or sync, other coding languages, a deadline or finish-date forecast, speech (you dictate with MacWhisper; nothing speaks back), a timed mock-interview mode, rating buttons, notifications outside a session, tracking practice done outside a session.
 
 **Why it exists.** Practising on NeetCode with a strong AI in the browser sidebar already works. Its gaps are what Leetotter closes: the AI has no memory of what it taught you or how you did; nothing suggests what to solve next (following NeetCode's list keeps you on one problem type for a long stretch); problems and weak spots are never revisited; there's no measure of retention or of how your skill changes; and there's no interviewer to discuss complexity with. Beyond closing those gaps, it should add as little friction as possible. Every feature is judged against this.
 
@@ -34,7 +34,7 @@ This is the build spec. `design.html` (published at https://claude.ai/artifact/N
 
 ```
 Chrome extension (TypeScript, Manifest V3)
-├── page readers      content scripts for neetcode.io (first) and leetcode.com (later)
+├── page readers      content script for neetcode.io
 ├── side panel        timer, chat, nudges, problem suggestions, recap, Progress tab
 └── background worker relays everything to the companion over one WebSocket
 
@@ -69,11 +69,10 @@ Each page reader produces the same events regardless of site:
 **How:** a script in the page's main world watches the site's own run/submit network traffic, and reads the code from the request bodies and from the editor. This must be checked per site before the phase that builds that reader:
 
 - [x] NeetCode (smoke test, 2026-10-15). The editor is Monaco, bundled and not exposed: there is no `window.monaco`, only a `MonacoEnvironment` settings object, so the model can't be read directly. The code reads from `.view-lines` (`innerText`), which holds only the visible lines, so it's a fallback. Run is `POST neetcode.io/api/runCodeFunctionHttp`: the body `{data: {problemId (slug), rawCode, lang, testCases[]}}` carries the exact code, and the response is a Judge0-style list, one entry per test case, with `status.id` (3 accepted, 4 wrong answer; other ids for errors), `stdout`, `stderr`, `compile_output`, `time`, `memory` and `last_executed_test_case {input, expected_output, user_output}`. Submit is `POST neetcode.io/api/executeCodeFunctionHttp`: the body is `{data: {problemId, rawCode, lang}}`, and the response is one object with `status`, `test_case_count`, `correct_test_case_count`, and, on a failure, `last_executed_test_case` too (an accepted one adds speed and memory charts and `submissionIndex`). The reader therefore takes the code and results from these requests. To confirm in phase 3: error and timeout statuses; whether the response for a long solution differs; that a failure passes through `correct_test_case_count` (a pass on 3 and fail on the 4th gives 3).
-- [ ] LeetCode: confirm the editor (Monaco), its model, and the run/submit responses (phase 7).
 
 **Fail loudly.** Every reader runs a self-check when a problem page opens: can it find the editor, read the code, and identify the problem? Is its run/submit response hook installed? If not, the side panel names the check that failed (for example "Can't read the editor on this page"), and the session refuses to start or pauses. It never tutors without being able to read the code. And if a run or submit request goes out with no result seen within 30 s, the panel shows "Can't see run results on this page" and the session pauses, so a solve is never silently missed.
 
-**History import** (on first run only): your solved problems from NeetCode (the list shows a solved check per problem, with no dates) and from your logged-in LeetCode account, with dates where available. Stored as `prior_solve` events. They aren't reviews, since how much help you had is unknown (§8). They mark problems as seen, so they're never used as unfamiliar transfer checks, and they tell placement where to start. To verify: which request or page element carries NeetCode's solved status (the list page shows it); which LeetCode endpoint lists accepted submissions.
+**History import** (on first run only): your solved problems from NeetCode (the list shows a solved check per problem, with no dates). Stored as `prior_solve` events. They aren't reviews, since how much help you had is unknown (§8). They mark problems as seen, so they're never used as unfamiliar transfer checks, and they tell placement where to start. To verify: which request or page element carries NeetCode's solved status (the list page shows it).
 
 ## 5. Sessions
 
@@ -254,7 +253,7 @@ Every hypothesis cites event ids. A hypothesis that cites nothing is rejected by
 - **Mixing:** for a category that's new to you or very weak, the first one or two problems can come back to back; after that, categories are mixed. Mixing makes you practise working out *which* approach applies, which is the core interview skill, and it's one of the better-supported findings in learning research (interleaving). Leetotter never names a problem's category or pattern before you've solved it.
 - **Your imported solves** tell the Planner what you've seen, but don't count as tested: Leetotter tests them itself, by the same problem (which counts toward coverage) or a variation (which counts toward transfer).
 - **Transfer checks:** once a category looks strong on its problems, the Planner mixes in unseen problems from that category to check you can solve new ones, not just remember old ones.
-- **Problems beyond the 150,** once in a while, for variety and realism, since interviewers don't stick to NeetCode lists. They never come from nothing: each serves a category and a pattern (favouring patterns you haven't yet shown on a new problem), and they come in especially when practice has turned repetitive, in place of another retry of a familiar idea. A first attempt at one counts toward its category like any unseen problem (§8). They're extra attempts beyond the 150, so the Planner keeps them modest. They come from the extra 100 in NeetCode's 250 list: free to open, already in NeetCode's own categories, and the same editor, so they need no new reader (phase 4). NeetCode's "All" list has some paywalled problems, so it isn't relied on. LeetCode problems wait for the LeetCode reader (phase 7), and are added only if the 100 run out.
+- **Problems beyond the 150,** once in a while, for variety and realism, since interviewers don't stick to NeetCode lists. They never come from nothing: each serves a category and a pattern (favouring patterns you haven't yet shown on a new problem), and they come in especially when practice has turned repetitive, in place of another retry of a familiar idea. A first attempt at one counts toward its category like any unseen problem (§8). They're extra attempts beyond the 150, so the Planner keeps them modest. They come from NeetCode itself, so they sit in NeetCode's own categories and use the same editor, with no new reader (phase 4). The pool is every NeetCode problem that opens without a paywall, starting with the extra 100 in the 250 list. The Planner suggests only problems known to be free; if one turns out to be locked, the reader's self-check says so (§4) and the Planner is told to avoid it.
 - **Weak analysis** is tested on unfamiliar problems in that category, with a complexity question.
 - **After a full solution was shown,** the problem's Again grade brings it back soon; the Planner may also suggest an unseen problem with the same idea.
 
@@ -282,7 +281,7 @@ Interviews give you new problems, so the finish line is solving new ones, with t
 The NeetCode 150 is among the best-documented material in programming, and it's well inside the models' training. So there's no detailed answer book and no solution code: the Tutor and Grader work live from the problem and your code. Each problem gets a short **reference**, whose job is consistency, not knowledge: the same approach gets the same verdict every time, so progress is measured on a fixed scale.
 
 ```yaml
-slug, title, site_free: neetcode | leetcode, difficulty, neetcode_category
+slug, title, difficulty, neetcode_category
 patterns: [ids], analysis_concepts: [ids]
 approaches:
   - id, name, idea (one line), time, space
@@ -290,7 +289,7 @@ approaches:
     trick: bool   # true for a one-off trick that only works for this problem; a trick is never `usually`
 ```
 
-Categories are NeetCode's, so problems beyond the 150 are mapped onto one of them. `patterns` are the reusable, interview-relevant ideas a problem uses (sliding window, fast and slow pointers, monotonic stack…); `analysis_concepts` are finer tags for complexity. The pattern set comes from the 150's references and stays as it is: the NeetCode 150 was built to cover what interviewers test. A problem from outside NeetCode is mapped onto an existing category and existing patterns, and the Planner only picks outside problems that fit them. Patterns aren't measured; they steer the Planner and show in the Progress tab (§9).
+Categories are NeetCode's, and every problem beyond the 150 already sits in one. `patterns` are the reusable, interview-relevant ideas a problem uses (sliding window, fast and slow pointers, monotonic stack…); `analysis_concepts` are finer tags for complexity. The pattern set comes from the 150's references and stays as it is: the NeetCode 150 was built to cover what interviewers test. A problem beyond the 150 is tagged with existing patterns only; the Planner doesn't pick one that fits none. Patterns aren't measured; they steer the Planner and show in the Progress tab (§9).
 
 **Writing a reference:**
 1. The Reference writer writes it from the problem statement.
@@ -386,14 +385,11 @@ Each phase ends with something you can use.
    *Done when:* a second session's suggestions clearly reflect the first.
 6. **Live watching.** The Observer and nudges.
    *Done when:* it nudges when you're truly stuck, and stays quiet otherwise, across a week of use.
-7. **LeetCode page reader (later, only if wanted).** The same reader for leetcode.com, with its history import, for problems beyond the 250.
-   *Done when:* a session works on a LeetCode problem as it does on NeetCode.
 
 ## 16. Open technical checks
 
 Listed in their phases above; collected here:
 - [x] NeetCode smoke test, done 2026-10-15 (results in §4): the problem page shows only the title, a solved check and the difficulty (Topics, Company Tags, Hints and Recommended Complexity are collapsed), the roadmap list shows a solved check per problem and a counter, and dictating with MacWhisper left Chrome as the active window. Still to confirm in phase 3: that a dictation pause never fires in a real session.
 - [ ] Provider base URL (key via Keychain); disabling thinking for `qwen3.8:27b` and its response time; structured-output support per model; GLM 5.3 Flash latency (phase 1)
-- [ ] LeetCode accepted-submissions endpoint (phase 7)
 - [ ] **Simulation, before phase 5 (pure code, no model calls).** With the real `py-fsrs` library, simulate pretend learners: paces of 5, 7, 10 and 15 problems a week with gaps of 2–7 days, plus a two-week and a three-month break; 50%, 70% and 90% clean solves on new problems, with success on practised items following FSRS's recall estimate, lower on Hard problems, and set rates of brute-force-only and help-needed solves; 75 of the 150 already seen through import. Use the retry rule and variation mix from §8. Check the 100% bar (§9): how long until it's reached, against the goal of about six months at 7 a week; whether retries crowd out new problems; whether every category can reach strong. Check that every category, including small ones like Tries, can reach strong for `solve` and `analysis` with transfer checks and the follow-up question at a realistic rate, and compare 21 days with nearby values. Bring the results to the user before the bar is used
-- [ ] LeetCode's editor and results; LeetCode "similar questions" and topic-tag data for variations (phase 7)
+- [ ] Which NeetCode problems are locked behind the paywall, and whether the lists mark them (before phase 4), so the Planner can avoid them
