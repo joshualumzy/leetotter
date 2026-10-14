@@ -72,6 +72,7 @@ export class NeetCodeReader {
   private hooked = false;
   private ready = false;
   private openedSlug = "";
+  private titleOf?: { slug: string; title: string };
   private resultFailure = false;
   private installedFetch?: typeof fetch;
   private installedOpen?: typeof XMLHttpRequest.prototype.open;
@@ -172,8 +173,8 @@ export class NeetCodeReader {
     if (!this.slug) throw new Error("Can't identify the problem on this page");
     const title = this.page.document.querySelector("h1")?.textContent?.trim();
     if (!title) throw new Error("Can't identify the problem title on this page");
-    const words = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
-    if (words(title) !== words(this.slug)) throw new Error("Can't identify the problem title on this page");
+    // NeetCode titles differ from their slugs, so staleness is the previous problem's title still showing.
+    if (this.titleOf && this.titleOf.slug !== this.slug && this.titleOf.title === title) throw new Error("Can't identify the problem title on this page");
     if (!this.page.document.querySelector(".monaco-editor")) throw new Error("Can't find the editor on this page");
     const code = this.code();
     const globals = this.page as Window & typeof globalThis;
@@ -191,6 +192,7 @@ export class NeetCodeReader {
     this.slug = slug;
     try {
       const { title, code } = this.check();
+      this.titleOf = { slug, title };
       this.ready = true;
       if (this.diffTimer) { clearTimeout(this.diffTimer); this.diffTimer = undefined; }
       this.previous = code;

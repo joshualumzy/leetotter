@@ -23,7 +23,7 @@ beforeEach(() => {
 afterEach(() => { reader.dispose(); dom.window.close(); vi.useRealTimers(); });
 
 function ready() {
-  page.document.body.innerHTML = "<h1>Duplicate Integer</h1><div class='monaco-editor'></div>";
+  page.document.body.innerHTML = "<h1>Contains Duplicate</h1><div class='monaco-editor'></div>";
   page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "one\ntwo" }]));
 }
 async function flushUntil(test: () => boolean) { await vi.waitFor(() => { expect(test()).toBe(true); }); }
@@ -165,7 +165,7 @@ describe("page reader", () => {
   it("names each failing self-check, including two tabs and a missing hook", () => {
     reader.setMode("watching");
     expect(events.at(-1)?.payload.message).toBe("Can't identify the problem title on this page");
-    page.document.body.innerHTML = "<h1>Duplicate Integer</h1>";
+    page.document.body.innerHTML = "<h1>Contains Duplicate</h1>";
     reader.open();
     expect(events.at(-1)?.payload.message).toBe("Can't find the editor on this page");
     page.document.body.innerHTML += "<div class='monaco-editor'></div>";
