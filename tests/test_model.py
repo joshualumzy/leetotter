@@ -38,7 +38,9 @@ def test_invalid_reply_is_retried_with_error_and_only_valid_call_is_recorded(tmp
 
     assert reply == TutorReply(reply_text="ok", gap="weak_intuition", help_kind="question", follow_up_question=None)
     assert len(completions.requests) == 2
-    assert "error" in str(completions.requests[1]["messages"][-1]).lower()
+    retry_messages = completions.requests[1]["messages"]
+    assert retry_messages[-2] == {"role": "assistant", "content": '{"reply_text":42}'}
+    assert "error" in retry_messages[-1]["content"].lower()
     assert all(request["model"] == "x-test-1" for request in completions.requests)
     assert all("json_schema" in request["response_format"] for request in completions.requests)
     with open_store(path) as db:
@@ -58,6 +60,26 @@ def test_two_invalid_replies_fail_without_storing_output(tmp_path, monkeypatch):
     assert len(completions.requests) == 2
     with open_store(path) as db:
         assert db.execute("SELECT COUNT(*) FROM model_calls").fetchone()[0] == 0
+
+
+def test_empty_reply_content_is_retried_like_any_invalid_reply(tmp_path, monkeypatch):
+    monkeypatch.setenv("NUS_SOCLAAS_BASE_URL", "https://unused.invalid/v1")
+    monkeypatch.setenv("NUS_SOCLAAS_API_KEY", "fake-test-key")
+    client, completions = fake_client(None, VALID_REPLY)
+
+    reply = call_tutor("say ok", db_path=tmp_path / "companion.sqlite3", client=client)
+
+    assert reply.reply_text == "ok"
+    assert len(completions.requests) == 2
+
+
+def test_final_failure_says_why_the_reply_was_invalid(tmp_path, monkeypatch):
+    monkeypatch.setenv("NUS_SOCLAAS_BASE_URL", "https://unused.invalid/v1")
+    monkeypatch.setenv("NUS_SOCLAAS_API_KEY", "fake-test-key")
+    client, _ = fake_client('{"reply_text":42}', '{"reply_text":42}')
+
+    with pytest.raises(ValueError, match="reply_text"):
+        call_tutor("say ok", db_path=tmp_path / "companion.sqlite3", client=client)
 
 
 def test_tutor_reply_rejects_wrong_label_and_extra_fields():

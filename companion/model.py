@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from companion.store import open_store
 
+MODEL = "x-test-1"
+
 
 class TutorReply(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -48,18 +50,21 @@ def call_tutor(prompt: str, *, db_path: str | Path | None = None, client=None) -
         "json_schema": {"name": "tutor_reply", "strict": True, "schema": TutorReply.model_json_schema()},
     }
 
-    for attempt in range(2):
+    retried = False
+    while True:
         started = perf_counter()
         response = client.chat.completions.create(
-            model="x-test-1", messages=messages, response_format=response_format
+            model=MODEL, messages=messages, response_format=response_format
         )
         latency_ms = round((perf_counter() - started) * 1000)
-        content = response.choices[0].message.content
+        content = response.choices[0].message.content or ""
         try:
             reply = TutorReply.model_validate_json(content)
-        except (ValidationError, ValueError) as error:
-            if attempt:
-                raise ValueError("Tutor reply invalid after retry") from None
+        except ValidationError as error:
+            if retried:
+                raise ValueError(f"Tutor reply invalid after retry: {error}") from error
+            retried = True
+            messages.append({"role": "assistant", "content": content})
             messages.append({
                 "role": "user",
                 "content": f"Your previous reply failed schema validation. Error: {error}. Return corrected JSON only.",
@@ -71,11 +76,10 @@ def call_tutor(prompt: str, *, db_path: str | Path | None = None, client=None) -
             db.execute(
                 "INSERT INTO model_calls (role, model, latency_ms, prompt_tokens, completion_tokens, validation_result, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    "tutor", "x-test-1", latency_ms,
+                    "tutor", MODEL, latency_ms,
                     usage.prompt_tokens if usage else None,
                     usage.completion_tokens if usage else None,
                     "valid", datetime.now(timezone.utc).isoformat(),
                 ),
             )
         return reply
-

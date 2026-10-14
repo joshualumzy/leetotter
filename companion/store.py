@@ -20,25 +20,29 @@ MIGRATIONS = (
         "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         'CREATE TABLE "references" (id INTEGER PRIMARY KEY, problem_key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, status TEXT NOT NULL)',
         "CREATE TABLE model_calls (id INTEGER PRIMARY KEY, session_id INTEGER REFERENCES sessions(id), role TEXT NOT NULL, model TEXT NOT NULL, latency_ms INTEGER NOT NULL, prompt_tokens INTEGER, completion_tokens INTEGER, validation_result TEXT NOT NULL, prompt_text TEXT, created_at TEXT NOT NULL)",
-        "INSERT INTO settings (key, value) VALUES ('independent_solving_minutes', '15'), ('quiet_and_gap_minutes', '5'), ('chime', 'true')",
     ),
 )
+
+
+def store_path(path: str | Path | None = None) -> Path:
+    """Where the store lives: the given path, else LEETOTTER_DB_PATH, else the default."""
+    return Path(path or os.environ.get("LEETOTTER_DB_PATH") or DEFAULT_DB_PATH).expanduser()
 
 
 @contextmanager
 def open_store(path: str | Path | None = None):
     """Open the store, creating and migrating it on first use."""
-    path = Path(path or os.environ.get("LEETOTTER_DB_PATH") or DEFAULT_DB_PATH).expanduser()
+    path = store_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
     try:
         db.execute("PRAGMA foreign_keys = ON")
-        version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version > len(MIGRATIONS):
-            raise RuntimeError(f"Database schema version {version} is newer than this companion supports")
-        for index in range(version, len(MIGRATIONS)):
+        with db:
             db.execute("BEGIN IMMEDIATE")
-            with db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version > len(MIGRATIONS):
+                raise RuntimeError(f"Database schema version {version} is newer than this companion supports")
+            for index in range(version, len(MIGRATIONS)):
                 for statement in MIGRATIONS[index]:
                     db.execute(statement)
                 db.execute(f"PRAGMA user_version = {index + 1}")
