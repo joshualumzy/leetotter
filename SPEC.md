@@ -30,6 +30,8 @@ This is the build spec. `design.html` (published at https://claude.ai/artifact/N
 | Your name | none | Asked once, on first run, and skippable. Used only in the otter's remarks, now and then; never sent to the models |
 | Theme | match NeetCode | The panel sits beside NeetCode, so it follows NeetCode's light or dark theme, read by the page reader; with no NeetCode page to read, it follows the Mac. Light and Dark fix it |
 
+**Reset** (a button in the same settings, "Reset all my progress"): erases everything personal and returns the panel to the first-run flow (your name, then the history import). It takes two steps: a warning that this can't be undone, then typing RESET. It erases `events`, `sessions`, `reviews`, `hypotheses`, `teaching`, `notes`, `model_calls` and `settings` (which includes the name and the history-import flag) in one transaction, so it either finishes or changes nothing. It keeps what isn't personal: `references`, `fsrs`, the catalog, and the API key in the Keychain.
+
 **Judgment, in the agents' prompts** (no numbers): when placement ends, how much help to give and of what kind, which follow-up question to ask after a solve (if any), problem order and mix, and pacing when you overrun.
 
 ## 3. Components
