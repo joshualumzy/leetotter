@@ -27,6 +27,7 @@ else
 fi
 
 plist="$target_home/Library/LaunchAgents/com.leetotter.companion.plist"
+app_dir="$target_home/Library/Application Support/Leetotter/app"
 if ! "$dry_run"; then
     service="gui/$(id -u)/com.leetotter.companion"
     if launchctl print "$service" >/dev/null 2>&1; then
@@ -34,4 +35,5 @@ if ! "$dry_run"; then
     fi
 fi
 rm -f "$plist"
+rm -rf "$app_dir"
 printf 'Removed %s\n' "$plist"

@@ -123,12 +123,15 @@ Then install the launch agent with your provider's base URL:
 ./scripts/install.sh --base-url 'https://your-provider.example/v1'
 ```
 
-The installer writes the non-secret base URL to
-`~/Library/Application Support/Leetotter/provider.env`, starts the companion,
-and configures launchd to start it at login and restart it after a crash.
-Run the same install command again to update the URL, or omit `--base-url` to
-keep the existing URL. The log is at
-`~/Library/Logs/Leetotter/companion.log`. macOS may ask once whether to allow
+The installer copies the runnable companion to
+`~/Library/Application Support/Leetotter/app/` and installs its dependencies
+there. The launch agent runs that copy because macOS protects folders such as
+`~/Documents` from background processes started by launchd. It writes the
+non-secret base URL to `~/Library/Application Support/Leetotter/provider.env`,
+starts the companion, and configures launchd to start it at login and restart
+it after a crash. Re-run the install command to deploy new code and restart the
+agent. Pass `--base-url` to update the URL, or omit it to keep the existing URL.
+The log is at `~/Library/Logs/Leetotter/companion.log`. macOS may ask once whether to allow
 access to the Keychain item; choose **Always Allow** so login starts can read
 it. If the item is missing, the companion still starts and the log explains
 why model calls will fail. The key is never written to the provider file or
@@ -140,10 +143,11 @@ To stop and remove the launch agent:
 ./scripts/uninstall.sh
 ```
 
-Uninstall leaves the database, provider URL, log, and Keychain item in place.
+Uninstall removes the app copy and launch agent. It leaves the database,
+provider URL, log, and Keychain item in place.
 For a file-only rehearsal, set `LEETOTTER_HOME` to an existing directory
 outside your home and pass `--dry-run` to install or uninstall. Dry-run does
-not invoke launchctl.
+not invoke launchctl or install dependencies.
 
 This setup implements the login-start requirement in [SPEC §3](SPEC.md#3-components),
 the environment and Keychain configuration in [SPEC §12](SPEC.md#12-models),

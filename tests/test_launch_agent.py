@@ -8,6 +8,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+APP_FILES = {
+    *(str(path.relative_to(ROOT)) for path in (ROOT / "companion").rglob("*.py")),
+    "companion/data/catalog.json",
+    "roles.toml",
+    "pyproject.toml",
+    "uv.lock",
+    "scripts/launch-companion.sh",
+}
 
 
 def run_script(name, home, *args):
@@ -33,8 +41,11 @@ def test_install_creates_launch_agent_without_secret(tmp_path):
     assert plist["RunAtLoad"] is True
     assert plist["KeepAlive"] is True
     assert plist["ThrottleInterval"] > 0
-    assert plist["WorkingDirectory"] == str(ROOT)
-    assert plist["ProgramArguments"] == [str(SCRIPTS / "launch-companion.sh")]
+    app = tmp_path / "Library/Application Support/Leetotter/app"
+    assert plist["WorkingDirectory"] == str(app)
+    assert plist["ProgramArguments"] == [str(app / "scripts/launch-companion.sh")]
+    assert str(ROOT) not in plist_path.read_text()
+    assert {str(path.relative_to(app)) for path in app.rglob("*") if path.is_file()} == APP_FILES
     log = str(tmp_path / "Library/Logs/Leetotter/companion.log")
     assert plist["StandardOutPath"] == log
     assert plist["StandardErrorPath"] == log
@@ -50,20 +61,31 @@ def test_install_twice_preserves_base_url_when_argument_omitted(tmp_path):
     first = run_script("install.sh", tmp_path, "--base-url", "https://provider.invalid/v1")
     assert first.returncode == 0, first.stderr
     provider_env = tmp_path / "Library/Application Support/Leetotter/provider.env"
+    app = tmp_path / "Library/Application Support/Leetotter/app"
     before = provider_env.read_bytes()
+    (app / "obsolete.txt").write_text("remove on deploy")
+    (app / ".venv").mkdir()
+    (app / ".venv/installed.txt").write_text("keep installed dependencies")
     second = run_script("install.sh", tmp_path)
     assert second.returncode == 0, second.stderr
     assert provider_env.read_bytes() == before
+    assert not (app / "obsolete.txt").exists()
+    assert (app / ".venv/installed.txt").read_text() == "keep installed dependencies"
+    assert {str(path.relative_to(app)) for path in app.rglob("*") if path.is_file()} == APP_FILES | {".venv/installed.txt"}
 
 
-def test_uninstall_removes_only_launch_agent(tmp_path):
+def test_uninstall_removes_app_and_launch_agent(tmp_path):
     assert run_script("install.sh", tmp_path, "--base-url", "https://provider.invalid/v1").returncode == 0
     data = tmp_path / "Library/Application Support/Leetotter/companion.sqlite3"
     data.write_text("keep")
+    log = tmp_path / "Library/Logs/Leetotter/companion.log"
+    log.write_text("keep log")
     result = run_script("uninstall.sh", tmp_path)
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / "Library/LaunchAgents/com.leetotter.companion.plist").exists()
+    assert not (tmp_path / "Library/Application Support/Leetotter/app").exists()
     assert data.read_text() == "keep"
+    assert log.read_text() == "keep log"
     assert (tmp_path / "Library/Application Support/Leetotter/provider.env").exists()
     assert run_script("uninstall.sh", tmp_path).returncode == 0
 
@@ -82,11 +104,14 @@ def test_launch_script_reads_only_documented_keychain_item():
     assert "exec uv run python -m companion" in script
     assert "not in the Keychain" in script
     assert "fake-test-key" not in script
+    assert str(ROOT) not in script
 
 
 def test_launch_continues_without_key_using_fake_commands(tmp_path):
+    assert run_script("install.sh", tmp_path, "--base-url", "https://provider.invalid/v1").returncode == 0
+    app = tmp_path / "Library/Application Support/Leetotter/app"
     provider_dir = tmp_path / "Library/Application Support/Leetotter"
-    provider_dir.mkdir(parents=True)
+    provider_dir.mkdir(parents=True, exist_ok=True)
     (provider_dir / "provider.env").write_text("NUS_SOCLAAS_BASE_URL=https://provider.invalid/v1\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -96,13 +121,14 @@ def test_launch_continues_without_key_using_fake_commands(tmp_path):
         'test "$NUS_SOCLAAS_BASE_URL" = https://provider.invalid/v1 || exit 41\n'
         'test -z "${NUS_SOCLAAS_API_KEY:-}" || exit 42\n'
         'test "$*" = "run python -m companion" || exit 43\n'
+        f'test "$PWD" = "{app}" || exit 45\n'
     )
     for name in ("security", "uv"):
         (bin_dir / name).chmod(0o755)
     env = os.environ.copy()
     env.update(HOME=str(tmp_path), USER="test-user", PATH=f"{bin_dir}:{env['PATH']}")
     result = subprocess.run(
-        ["bash", str(SCRIPTS / "launch-companion.sh")],
+        ["bash", str(app / "scripts/launch-companion.sh")],
         env=env,
         text=True,
         capture_output=True,

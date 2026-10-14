@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+app=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 provider_env="$HOME/Library/Application Support/Leetotter/provider.env"
 if [[ ! -f "$provider_env" ]]; then
     printf 'Leetotter: provider configuration is missing: %s\n' "$provider_env" >&2
@@ -19,5 +19,5 @@ else
     printf 'Leetotter: API key is not in the Keychain; model calls will fail until it is added.\n' >&2
 fi
 
-cd "$repo"
+cd "$app"
 exec uv run python -m companion

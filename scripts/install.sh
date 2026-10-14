@@ -38,8 +38,9 @@ else
 fi
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-launch="$repo/scripts/launch-companion.sh"
 data_dir="$target_home/Library/Application Support/Leetotter"
+app_dir="$data_dir/app"
+launch="$app_dir/scripts/launch-companion.sh"
 provider_env="$data_dir/provider.env"
 agent_dir="$target_home/Library/LaunchAgents"
 plist="$agent_dir/com.leetotter.companion.plist"
@@ -69,16 +70,40 @@ if "$provided_url"; then
     printf 'NUS_SOCLAAS_BASE_URL=%q\n' "$base_url" > "$provider_env"
 fi
 
-python3 - "$plist" "$repo" "$launch" "$log" "$launch_path" <<'PY'
+if ! "$dry_run"; then
+    service="gui/$(id -u)/com.leetotter.companion"
+    if launchctl print "$service" >/dev/null 2>&1; then
+        launchctl bootout "$service"
+    fi
+fi
+
+# Keep the runtime file list here. Stage it so the destination sync can delete
+# obsolete files without deleting its installed virtual environment.
+stage=$(mktemp -d "$data_dir/.app-stage.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+rsync -a --delete \
+    --exclude='__pycache__/' --exclude='*.pyc' \
+    --include='/companion/***' \
+    --include='/roles.toml' --include='/pyproject.toml' --include='/uv.lock' \
+    --include='/scripts/' --include='/scripts/launch-companion.sh' \
+    --exclude='*' \
+    "$repo/" "$stage/"
+rsync -a --delete --exclude='/.venv/' "$stage/" "$app_dir/"
+
+if ! "$dry_run"; then
+    (cd "$app_dir" && "$uv_path" sync --frozen)
+fi
+
+python3 - "$plist" "$app_dir" "$launch" "$log" "$launch_path" <<'PY'
 import plistlib
 import sys
 
-plist, repo, launch, log, path = sys.argv[1:]
+plist, app, launch, log, path = sys.argv[1:]
 with open(plist, "wb") as out:
     plistlib.dump({
         "Label": "com.leetotter.companion",
         "ProgramArguments": [launch],
-        "WorkingDirectory": repo,
+        "WorkingDirectory": app,
         "EnvironmentVariables": {"PATH": path},
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -89,10 +114,6 @@ with open(plist, "wb") as out:
 PY
 
 if ! "$dry_run"; then
-    service="gui/$(id -u)/com.leetotter.companion"
-    if launchctl print "$service" >/dev/null 2>&1; then
-        launchctl bootout "$service"
-    fi
     launchctl bootstrap "gui/$(id -u)" "$plist"
     launchctl kickstart -k "$service"
 fi
