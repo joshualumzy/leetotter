@@ -60,13 +60,6 @@ describe("page reader", () => {
     await expect(page.fetch(request)).resolves.toBeDefined();
   });
 
-  it("reports a replaced fetch hook on its next poll", () => {
-    ready(); reader.install(); reader.setMode("watching");
-    page.fetch = vi.fn(async () => new Response("ok"));
-    vi.advanceTimersByTime(1000);
-    expect(events.at(-1)?.payload.message).toBe("Can't see run results on this page");
-  });
-
   it("reports a non-string matched request body", async () => {
     page.fetch = vi.fn(async () => new Response("ok"));
     ready(); reader.install(); reader.setMode("watching");
@@ -102,7 +95,7 @@ describe("page reader", () => {
     const request = page.fetch("/api/executeCodeFunctionHttp", { method: "POST", body: JSON.stringify(submitRequest) });
     reader.setMode("paused");
     vi.advanceTimersByTime(30_000);
-    expect(events.some(e => e.payload.message === "Can't see run results on this page")).toBe(false);
+    expect(events.some(e => String(e.payload.message).startsWith("Can't see run results on this page ("))).toBe(false);
     complete(new Response(JSON.stringify(submitResponse)));
     await request;
     await flushUntil(() => events.some(e => e.type === "submit_result"));
@@ -114,7 +107,7 @@ describe("page reader", () => {
     ready(); reader.install(); reader.setMode("watching");
     const request = page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
     vi.advanceTimersByTime(30_000);
-    expect(events.at(-1)?.payload.message).toBe("Can't see run results on this page");
+    expect(String(events.at(-1)?.payload.message)).toContain("Can't see run results on this page (");
     complete(new Response(JSON.stringify(runResponse)));
     await request;
     await flushUntil(() => events.some(e => e.type === "run_result"));
@@ -176,7 +169,7 @@ describe("page reader", () => {
     expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page");
     ready();
     reader.open();
-    expect(events.at(-1)?.payload.message).toBe("Can't see run results on this page");
+    expect(String(events.at(-1)?.payload.message)).toContain("Can't see run results on this page (");
   });
 
   it("gates events by mode and sends a line diff at most once per three seconds", () => {
@@ -216,9 +209,9 @@ describe("page reader", () => {
     void page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
     expect(events.at(-1)?.type).toBe("code_snapshot");
     vi.advanceTimersByTime(29_999);
-    expect(events.some(e => e.payload.message === "Can't see run results on this page")).toBe(false);
+    expect(events.some(e => String(e.payload.message).startsWith("Can't see run results on this page ("))).toBe(false);
     vi.advanceTimersByTime(1);
-    expect(events.at(-1)?.payload.message).toBe("Can't see run results on this page");
+    expect(String(events.at(-1)?.payload.message)).toContain("Can't see run results on this page (");
   });
 
   it("observes fetch responses and lets only Submit results through while paused", async () => {

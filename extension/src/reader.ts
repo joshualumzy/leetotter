@@ -74,9 +74,6 @@ export class NeetCodeReader {
   private openedSlug = "";
   private titleOf?: { slug: string; title: string };
   private resultFailure = false;
-  private installedFetch?: typeof fetch;
-  private installedOpen?: typeof XMLHttpRequest.prototype.open;
-  private installedSend?: typeof XMLHttpRequest.prototype.send;
   private cleanup: (() => void)[] = [];
   constructor(private emit: (event: ReaderEvent) => void, private page: Window = window) {}
 
@@ -102,7 +99,6 @@ export class NeetCodeReader {
       try { const response = await originalFetch(...args); void response.clone().text().then(text => done(text, response.status), error => done("", response.status, String(error))); return response; }
       catch (error) { done("", 0, String(error)); throw error; }
     }) as typeof fetch;
-    this.installedFetch = this.page.fetch;
     this.cleanup.push(() => { this.page.fetch = fetchValue; });
     const proto = globals.XMLHttpRequest.prototype;
     const originalOpen = proto.open;
@@ -119,8 +115,6 @@ export class NeetCodeReader {
       } else if (kind) reader.fail("Can't read run request body on this page");
       return originalSend.call(this, body);
     };
-    this.installedOpen = proto.open;
-    this.installedSend = proto.send;
     this.cleanup.push(() => { proto.open = originalOpen; proto.send = originalSend; });
     const poll = this.page.setInterval(() => { this.open(); this.codeWrite(); }, 1000);
     const first = this.page.setTimeout(() => this.open(), 2000);
@@ -177,8 +171,7 @@ export class NeetCodeReader {
     if (this.titleOf && this.titleOf.slug !== this.slug && this.titleOf.title === title) throw new Error("Can't identify the problem title on this page");
     if (!this.page.document.querySelector(".monaco-editor")) throw new Error("Can't find the editor on this page");
     const code = this.code();
-    const globals = this.page as Window & typeof globalThis;
-    if (!this.hooked || this.page.fetch !== this.installedFetch || globals.XMLHttpRequest.prototype.open !== this.installedOpen || globals.XMLHttpRequest.prototype.send !== this.installedSend) throw new Error("Can't see run results on this page");
+    if (!this.hooked) throw new Error("Can't see run results on this page (not installed)");
     return { title, code };
   }
   open(force = false): void {
@@ -186,9 +179,7 @@ export class NeetCodeReader {
     const slug = this.slugFromUrl();
     if (!slug) return;
     if (slug !== this.slug) this.ready = false;
-    const globals = this.page as Window & typeof globalThis;
-    const hookIntact = this.page.fetch === this.installedFetch && globals.XMLHttpRequest.prototype.open === this.installedOpen && globals.XMLHttpRequest.prototype.send === this.installedSend;
-    if (!force && slug === this.slug && this.ready && hookIntact) return;
+    if (!force && slug === this.slug && this.ready) return;
     this.slug = slug;
     try {
       const { title, code } = this.check();
@@ -243,7 +234,7 @@ export class NeetCodeReader {
     }
     const timer = setTimeout(() => {
       this.resultFailure = true;
-      this.fail("Can't see run results on this page");
+      this.fail(`Can't see run results on this page (no response to the ${kind} within 30 seconds)`);
     }, 30_000);
     this.pending.add(timer);
     return (response: string, status = 200, parseError?: string) => {
