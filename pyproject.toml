@@ -2,7 +2,11 @@
 name = "leetotter-companion"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = ["openai>=2,<3", "pydantic>=2,<3"]
+dependencies = [
+    "openai>=2,<3",
+    "pydantic>=2,<3",
+    "websockets>=15,<17",
+]
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]
