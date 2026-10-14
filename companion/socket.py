@@ -1,16 +1,18 @@
-"""Local extension transport. No learner data is handled by this ticket."""
+"""Local extension transport and typed import requests."""
 
 import json
 import logging
 from datetime import datetime, timezone
 
 from websockets.asyncio.server import serve
+from companion.catalog import normalize_link
+from companion.history import import_history, import_status
 
 
 EXTENSION_ID = "oohbhndckkkkdngkglilcbpcoekapmgp"
 ALLOWED_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 READER_TYPES = frozenset({"problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error"}) | READER_TYPES
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result"}) | READER_TYPES
 logger = logging.getLogger(__name__)
 
 
@@ -90,6 +92,17 @@ def _validate(raw):
         raise ValueError("Error requires message")
     if kind in READER_TYPES:
         _reader_payload(kind, message.get("payload"))
+    if kind == "import_history":
+        payload = message.get("payload")
+        urls = payload.get("urls") if isinstance(payload, dict) else None
+        if not isinstance(urls, list) or any(not isinstance(url, str) or normalize_link(url) is None for url in urls):
+            raise ValueError("Invalid import_history URLs: expected LeetCode problem URLs")
+    if kind == "import_status" and type(message.get("imported")) is not bool:
+        raise ValueError("Invalid import_status payload")
+    if kind == "import_result":
+        result = message.get("result")
+        if not isinstance(result, dict) or type(result.get("already_imported")) is not bool or type(result.get("matched")) is not int or not isinstance(result.get("unmatched"), list) or any(not isinstance(url, str) for url in result["unmatched"]):
+            raise ValueError("Invalid import_result payload")
     return message
 
 
@@ -97,7 +110,7 @@ async def _handle(connection):
     async for raw in connection:
         try:
             message = _validate(raw)
-            if message["type"] not in {"hello", "ping"} | READER_TYPES:
+            if message["type"] not in {"hello", "ping", "get_import_status", "import_history"} | READER_TYPES:
                 raise ValueError(f"Unexpected client message type: {message['type']}")
         except ValueError as exc:
             logger.error("WebSocket protocol error: %s", exc)
@@ -105,6 +118,15 @@ async def _handle(connection):
             continue
         if message["type"] == "hello":
             await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
+        elif message["type"] == "get_import_status":
+            await connection.send(json.dumps({"type": "import_status", "ts": _timestamp(), "imported": import_status()}))
+        elif message["type"] == "import_history":
+            try:
+                result = import_history(message["payload"]["urls"])
+                await connection.send(json.dumps({"type": "import_result", "ts": _timestamp(), "result": result}))
+            except (ValueError, OSError) as exc:
+                logger.error("History import failed: %s", exc)
+                await connection.send(json.dumps({"type": "error", "ts": _timestamp(), "message": f"History import failed: {exc}"}))
 
 
 def serve_companion(port=8765):

@@ -22,3 +22,6 @@ pythonpath = ["."]
 
 [tool.setuptools]
 packages = ["companion"]
+
+[tool.setuptools.package-data]
+companion = ["data/catalog.json"]

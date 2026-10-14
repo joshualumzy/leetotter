@@ -4,8 +4,29 @@ const status = document.getElementById("status");
 const readerError = document.getElementById("reader-error");
 const readerActivity = document.getElementById("reader-activity");
 const testButton = document.getElementById("reader-test");
+const importButton = document.getElementById("import-history");
+const importResult = document.getElementById("import-result");
 if (!status) throw new Error("Missing status element");
 if (!readerError || !testButton) throw new Error("Missing reader controls");
+if (!importButton || !importResult) throw new Error("Missing import controls");
+
+function showImport(imported: boolean, result?: { already_imported: boolean; matched: number; unmatched: string[] }): void {
+  if (!importButton || !importResult) return;
+  importButton.hidden = imported;
+  if (result) importResult.textContent = result.already_imported
+    ? "NeetCode history was already imported."
+    : `Imported ${result.matched} solved problems.${result.unmatched.length ? ` Unmatched URLs: ${result.unmatched.join(", ")}` : ""}`;
+}
+importButton.addEventListener("click", async () => {
+  if (!importResult || !importButton) return;
+  importButton.setAttribute("disabled", "");
+  try {
+    const reply = await chrome.runtime.sendMessage({ kind: "import_history" });
+    importResult.textContent = reply?.error || "Importing NeetCode history…";
+  } catch (error) {
+    importResult.textContent = `History import failed: ${(error as Error).message}`;
+  } finally { importButton.removeAttribute("disabled"); }
+});
 
 let currentMode = "idle";
 function showMode(mode: string): void {
@@ -31,8 +52,11 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message?.kind === "watch_mode") showMode(message.mode);
   if (message?.kind === "reader_error" && readerError) readerError.textContent = message.message;
   if (message?.kind === "reader_activity" && readerActivity) readerActivity.textContent = message.message;
+  if (message?.kind === "import_state") showImport(message.imported, message.result);
+  if (message?.kind === "import_error" && importResult) importResult.textContent = message.message;
 });
 chrome.runtime.sendMessage({ kind: "get_status" }).then((state: ConnectionState) => show(state));
 chrome.runtime.sendMessage({ kind: "get_mode" }).then(showMode);
 chrome.runtime.sendMessage({ kind: "get_reader_error" }).then(message => { if (readerError) readerError.textContent = message || ""; });
 chrome.runtime.sendMessage({ kind: "get_reader_activity" }).then(message => { if (readerActivity) readerActivity.textContent = message || "No reader events yet."; });
+chrome.runtime.sendMessage({ kind: "get_import_state" }).then(state => showImport(state.imported, state.result));

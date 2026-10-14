@@ -1,4 +1,4 @@
-import { makeMessage, parseMessage } from "./protocol";
+import { makeMessage, parseMessage, type Message } from "./protocol";
 
 export type ConnectionState = { kind: "offline" | "connected" } | { kind: "error"; message: string };
 
@@ -23,6 +23,7 @@ export class CompanionConnection {
     private readonly url: string,
     private readonly createSocket: (url: string) => Socket,
     private readonly onState: (state: ConnectionState) => void,
+    private readonly onMessage?: (message: Message) => void,
   ) {}
 
   start(): void {
@@ -68,6 +69,8 @@ export class CompanionConnection {
         } else if (message.type === "error") {
           console.error("Companion error:", message.message);
           this.onState({ kind: "error", message: message.message });
+        } else if (message.type === "import_status" || message.type === "import_result") {
+          this.onMessage?.(message);
         } else {
           throw new Error(`Unexpected server message type: ${message.type}`);
         }

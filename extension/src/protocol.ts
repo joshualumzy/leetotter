@@ -2,12 +2,23 @@ export type Message =
   | { type: "hello" | "ping"; ts: string; session_id?: string }
   | { type: "status"; ts: string; session_id?: string; state: "connected" }
   | { type: "error"; ts: string; session_id?: string; message: string }
+  | { type: "get_import_status"; ts: string }
+  | { type: "import_status"; ts: string; imported: boolean }
+  | { type: "import_history"; ts: string; payload: { urls: string[] } }
+  | { type: "import_result"; ts: string; result: { already_imported: boolean; matched: number; unmatched: string[] } }
   | { type: ReaderMessageType; ts: string; session_id?: string; payload: Record<string, unknown> };
 
 export type ReaderMessageType = "problem_opened" | "code_changed" | "code_snapshot" | "run_result" | "submit_result" | "focus_changed";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed"]);
 
-const types = new Set<Message["type"]>(["hello", "ping", "status", "error", ...readerTypes]);
+const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", ...readerTypes]);
+
+export function validateImportUrls(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every(url => typeof url === "string" && /^https:\/\/(?:www\.)?leetcode\.com\/problems\/[^/?#]+\/?(?:[?#].*)?$/.test(url))) {
+    throw new Error("Invalid import_history URLs: expected LeetCode problem URLs");
+  }
+  return value;
+}
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid reader payload");
@@ -49,6 +60,12 @@ export function parseMessage(raw: string): Message {
   if ("session_id" in message && (typeof message.session_id !== "string" || !message.session_id)) throw new Error("Invalid session_id");
   if (message.type === "status" && message.state !== "connected") throw new Error("Invalid status state");
   if (message.type === "error" && (typeof message.message !== "string" || !message.message)) throw new Error("Error requires message");
+  if (message.type === "import_history") validateImportUrls((message.payload as Record<string, unknown> | undefined)?.urls);
+  if (message.type === "import_status" && typeof message.imported !== "boolean") throw new Error("Invalid import_status payload");
+  if (message.type === "import_result") {
+    const result = message.result as Record<string, unknown> | undefined;
+    if (!result || typeof result.already_imported !== "boolean" || !Number.isInteger(result.matched) || !Array.isArray(result.unmatched) || !result.unmatched.every(url => typeof url === "string")) throw new Error("Invalid import_result payload");
+  }
   if (readerTypes.has(message.type as ReaderMessageType)) validateReaderPayload(message.type as ReaderMessageType, message.payload);
   return message as Message;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMessage, validateReaderPayload } from "./protocol";
+import { parseMessage, validateReaderPayload, validateImportUrls } from "./protocol";
 
 describe("wire messages", () => {
   it("accepts null failing_case like the Python validator", () => {
@@ -17,5 +17,12 @@ describe("wire messages", () => {
 
   it("rejects malformed envelopes", () => {
     expect(() => parseMessage('{"type":"status","state":"connected"}')).toThrow("Message requires ts");
+  });
+
+  it("validates import URLs and result messages", () => {
+    expect(validateImportUrls(["https://leetcode.com/problems/two-sum/"])).toEqual(["https://leetcode.com/problems/two-sum/"]);
+    expect(() => validateImportUrls(["https://evil.test/problems/two-sum/"])).toThrow("Invalid import_history");
+    expect(parseMessage('{"type":"import_result","ts":"now","result":{"already_imported":false,"matched":2,"unmatched":[]}}')).toMatchObject({ type: "import_result", result: { matched: 2 } });
+    expect(() => parseMessage('{"type":"import_result","ts":"now","result":{"matched":"2"}}')).toThrow("Invalid import_result");
   });
 });

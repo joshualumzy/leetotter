@@ -25,8 +25,20 @@ window.addEventListener("message", event => {
   if (!item || typeof item !== "object" || typeof item.type !== "string" || !item.payload || typeof item.payload !== "object") return;
   void relay(item);
 });
-chrome.runtime.onMessage.addListener(message => {
+chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message?.kind === "watch_mode") pageMode(message.mode);
+  if (message?.kind === "read_history") {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => { window.removeEventListener("message", onResult); respond({ error: "synced-progress-cache reader did not respond" }); }, 5000);
+    function onResult(event: MessageEvent): void {
+      if (event.source !== window || event.origin !== location.origin || event.data?.channel !== channel || event.data.direction !== "to_extension" || event.data.kind !== "history_result" || event.data.requestId !== requestId) return;
+      clearTimeout(timer); window.removeEventListener("message", onResult);
+      respond(event.data.error ? { error: event.data.error } : { urls: event.data.urls });
+    }
+    window.addEventListener("message", onResult);
+    window.postMessage({ channel, direction: "to_page", kind: "read_history", requestId }, location.origin);
+    return true;
+  }
 });
 chrome.runtime.sendMessage({ kind: "get_mode" }).then(mode => {
   pageMode(mode);

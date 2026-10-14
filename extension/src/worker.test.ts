@@ -9,6 +9,7 @@ const focused: Listener[] = [];
 const sent: { tab: number; message: any }[] = [];
 let saved: Record<string, any> = {};
 let socket: FakeSocket;
+let historyReply: any;
 
 class FakeSocket {
   readyState = 0;
@@ -40,6 +41,7 @@ beforeEach(() => {
   vi.useRealTimers();
   messages.length = activated.length = updated.length = removed.length = focused.length = sent.length = 0;
   saved = {};
+  historyReply = { urls: ["https://leetcode.com/problems/contains-duplicate/"] };
   vi.stubGlobal("__LEETOTTER_PORT__", 8765);
   vi.stubGlobal("WebSocket", FakeSocket);
   vi.stubGlobal("chrome", {
@@ -47,7 +49,7 @@ beforeEach(() => {
     runtime: { onMessage: { addListener: (fn: Listener) => messages.push(fn) }, sendMessage: vi.fn(async () => {}) },
     tabs: {
       query: vi.fn(async () => [{ id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" }]),
-      sendMessage: vi.fn(async (tab: number, message: any) => { sent.push({ tab, message }); }),
+      sendMessage: vi.fn(async (tab: number, message: any) => { sent.push({ tab, message }); return message.kind === "read_history" ? historyReply : undefined; }),
       onActivated: { addListener: (fn: Listener) => activated.push(fn) },
       onUpdated: { addListener: (fn: Listener) => updated.push(fn) },
       onRemoved: { addListener: (fn: Listener) => removed.push(fn) },
@@ -57,6 +59,24 @@ beforeEach(() => {
 });
 
 describe("worker reader delivery", () => {
+  it("asks an open NeetCode tab for history and sends typed URLs to the companion", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
+    expect(await dispatch({ kind: "import_history" })).toEqual({ pending: true });
+    expect(sent).toContainEqual({ tab: 7, message: { kind: "read_history" } });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "import_history", payload: { urls: ["https://leetcode.com/problems/contains-duplicate/"] } });
+    socket.onmessage?.({ data: JSON.stringify({ type: "import_result", ts: "now", result: { already_imported: false, matched: 1, unmatched: [] } }) });
+    expect(await dispatch({ kind: "get_import_state" })).toMatchObject({ imported: true, result: { matched: 1 } });
+  });
+
+  it("names a missing tab and malformed cache response", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
+    vi.mocked(chrome.tabs.query).mockResolvedValueOnce([]);
+    expect(await dispatch({ kind: "import_history" })).toEqual({ error: "Open a neetcode.io tab to import history." });
+    historyReply = { error: "synced-progress-cache is missing" };
+    expect(await dispatch({ kind: "import_history" })).toEqual({ error: "synced-progress-cache is missing" });
+  });
   it("restores watching and pushes the mode after a simulated worker restart", async () => {
     await start();
     await dispatch({ kind: "set_mode", mode: "watching" });

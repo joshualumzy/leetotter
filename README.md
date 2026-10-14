@@ -38,6 +38,26 @@ storage so a worker restart can restore the page mode. The NeetCode host
 permission limits tab URL access; the extension does not request the broader
 `tabs` permission.
 
+## NeetCode catalog and history
+
+The checked-in `companion/data/catalog.json` contains the 588 problems from
+NeetCode's page script that have an editor link. To refresh it when online, run
+`uv run python -m companion.catalog_update` from the repository root. The
+updater fetches NeetCode's HTML, locates its `main.*.js`, parses problem
+literals as text, checks expected counts and required fields, and replaces
+the catalog. It never runs the downloaded JavaScript. If the site changes its
+script format or counts, it stops instead of writing partial data.
+
+On first use, open a `neetcode.io` tab and press **Import history** in the
+side panel. The page bridge reads `localStorage["synced-progress-cache"]` in
+that tab, validates its `completed` category lists, and sends their LeetCode
+URLs to the local companion. The companion matches catalog links and stores
+one `prior_solve` event per matched problem, with no session or review grade.
+The panel shows the matched count and any unmatched URLs. A missing or malformed
+cache shows a named error. The import records a one-time marker in SQLite;
+afterward the button is hidden. Imported solves mark problems as seen, but do
+not count as graded reviews.
+
 **Known risk:** Scripts running on neetcode.io can forge reader events because
 `window.postMessage` does not identify the sending script. This is accepted
 for this local personal tool.

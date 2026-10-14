@@ -1,5 +1,5 @@
 import { CompanionConnection, type ConnectionState } from "./connection";
-import { readerTypes, validateReaderPayload, type ReaderMessageType } from "./protocol";
+import { readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType } from "./protocol";
 
 declare const __LEETOTTER_PORT__: number;
 type Mode = "idle" | "watching" | "paused";
@@ -9,6 +9,9 @@ let state: ConnectionState = { kind: "offline" };
 let mode: Mode = "idle";
 let readerError = "";
 let readerActivity = "No reader events yet.";
+let imported = false;
+let importResult: { already_imported: boolean; matched: number; unmatched: string[] } | undefined;
+let importPending = false;
 let pausedByCheck = false;
 let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
 const problemTabs = new Map<number, ProblemTab>();
@@ -39,7 +42,16 @@ const ready = (async () => {
 const connection = new CompanionConnection(
   "ws://127.0.0.1:" + __LEETOTTER_PORT__,
   url => new WebSocket(url),
-  next => { state = next; panel({ kind: "transport", state: next }); },
+  next => {
+    state = next; panel({ kind: "transport", state: next });
+    if (next.kind === "connected") connection.send({ type: "get_import_status", ts: new Date().toISOString() });
+    if (next.kind === "error" && importPending) { importPending = false; panel({ kind: "import_error", message: next.message }); }
+  },
+  message => {
+    if (message.type === "import_status") imported = message.imported;
+    if (message.type === "import_result") { importResult = message.result; imported = true; importPending = false; }
+    panel({ kind: "import_state", imported, result: importResult });
+  },
 );
 function send(type: ReaderMessageType, payload: Record<string, unknown>): boolean {
   const delivered = connection.send({ type, ts: new Date().toISOString(), payload });
@@ -74,6 +86,25 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.kind === "get_mode") return mode;
     if (message?.kind === "get_reader_error") return readerError;
     if (message?.kind === "get_reader_activity") return readerActivity;
+    if (message?.kind === "get_import_state") return { imported, result: importResult };
+    if (message?.kind === "import_history") {
+      if (imported) return { error: "NeetCode history was already imported." };
+      if (importPending) return { error: "History import is already in progress." };
+      if (state.kind !== "connected") return { error: "Tutor service isn't connected." };
+      const tabs = await chrome.tabs.query({ url: "https://neetcode.io/*" });
+      const tab = tabs.find(item => item.id !== undefined);
+      if (!tab?.id) return { error: "Open a neetcode.io tab to import history." };
+      try {
+        const reply = await chrome.tabs.sendMessage(tab.id, { kind: "read_history" });
+        if (reply?.error) return { error: String(reply.error) };
+        const urls = validateImportUrls(reply?.urls);
+        if (!connection.send({ type: "import_history", ts: new Date().toISOString(), payload: { urls } })) return { error: "Tutor service isn't connected." };
+        importPending = true;
+        return { pending: true };
+      } catch (error) {
+        return { error: `Can't read NeetCode history: ${(error as Error).message}` };
+      }
+    }
     if (message?.kind === "set_mode" && ["idle", "watching", "paused"].includes(message.mode)) {
       pausedByCheck = false; await setMode(message.mode); return { mode };
     }
