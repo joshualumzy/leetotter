@@ -82,6 +82,31 @@ The SQLite file defaults to
 `~/Library/Application Support/Leetotter/companion.sqlite3`. Set
 `LEETOTTER_DB_PATH` to choose another location.
 
+## NeetCode 150 reference batch
+
+From the repository root, with the provider environment configured, try three
+unfinished problems first:
+
+```sh
+uv run python -m companion.reference_batch --limit 3
+```
+
+Then run the rest, or target one catalog slug:
+
+```sh
+uv run python -m companion.reference_batch
+uv run python -m companion.reference_batch --slug two-sum
+uv run python -m companion.reference_batch --retry-needs-review
+```
+
+The batch sends only each problem's title and slug. It writes one reference at
+a time through the background writer and Checker roles, which use spare slots
+in the model client's rate limiter. A rerun skips stored checked references. Stored
+`needs_review` references are skipped unless `--retry-needs-review` is given.
+Ctrl-C leaves completed references in SQLite. Each run prints its progress and
+overwrites `docs/reference-batch-report.md` with counts and review/failure
+reasons. An unavailable model pauses the batch; fix it before rerunning.
+
 ## Start the companion at login (macOS)
 
 From the repository root, first store your provider API key in the macOS
