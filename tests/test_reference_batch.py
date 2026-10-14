@@ -74,6 +74,16 @@ def test_model_unavailable_stops_and_names_model_and_effect(tmp_path, capsys):
     assert "two" not in calls and "three" not in calls
 
 
+def test_missing_setup_names_what_is_missing(tmp_path):
+    def write(slug, title, models, *, db_path):
+        raise RuntimeError("NUS_SOCLAAS_BASE_URL is required")
+
+    report = run_batch(PROBLEMS, db_path=tmp_path / "db", report_path=tmp_path / "report.md",
+                       write=write, models=object())
+    assert "NUS_SOCLAAS_BASE_URL is required" in report.stopped
+    assert "NUS_SOCLAAS_BASE_URL is required" in report.failure_reasons["one"]
+
+
 def test_single_invalid_writer_reply_continues_and_report_lists_reasons(tmp_path, capsys):
     def write(slug, title, models, *, db_path):
         if slug == "one":

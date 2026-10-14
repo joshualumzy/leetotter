@@ -100,9 +100,11 @@ def run_batch(problems, *, db_path=None, report_path=REPORT_PATH, limit=None, sl
                         if consecutive_failures >= 5:
                             report.stopped = "Five consecutive invalid writer replies; batch paused"
                 except Exception as error:
+                    # RuntimeError messages come from our own setup checks (e.g. a missing key), so they are safe to show.
+                    detail = f": {error}" if type(error) is RuntimeError else ""
                     report.failed += 1
-                    report.failure_reasons[key] = f"Unexpected {type(error).__name__}; batch paused"
-                    report.stopped = f"Unexpected {type(error).__name__} at {key}; batch paused"
+                    report.failure_reasons[key] = f"Unexpected {type(error).__name__}{detail}; batch paused"
+                    report.stopped = f"Unexpected {type(error).__name__}{detail} at {key}; batch paused"
                     status = "failed (unexpected error)"
                 else:
                     consecutive_failures = 0
