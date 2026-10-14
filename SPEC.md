@@ -292,7 +292,7 @@ approaches:
 Categories are NeetCode's, and every problem beyond the 150 already sits in one. `patterns` are the reusable, interview-relevant ideas a problem uses (sliding window, fast and slow pointers, monotonic stack…); `analysis_concepts` are finer tags for complexity. The pattern set comes from the 150's references and stays as it is: the NeetCode 150 was built to cover what interviewers test. A problem beyond the 150 is tagged with existing patterns only; the Planner doesn't pick one that fits none. Patterns aren't measured; they steer the Planner and show in the Progress tab (§9).
 
 **Writing a reference:**
-1. The Reference writer writes it from the problem statement.
+1. The Reference writer writes it from the problem statement; for the offline batch of the 150, from the title and slug, since they're famous problems well inside the models' training and the Checker catches mistakes.
 2. **The Checker reviews** each approach's complexity, `interview_expected` label and `trick` flag. If they disagree, regenerate that part once. If they still disagree, the reference is stored with `needs_review`, the Tutor is told which labels are uncertain, and grades follow the unchecked rule (§8).
 3. **Nothing waits on you.** The Progress tab shows how many references are unchecked, next to the graders' disagreement share, and marks each affected problem. It's a health signal: a rising count means reference writing needs fixing at the source. You can settle a reference if you want; you never have to.
 
