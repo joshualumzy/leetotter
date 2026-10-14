@@ -31,3 +31,45 @@ call is recorded.
 The SQLite file defaults to
 `~/Library/Application Support/Leetotter/companion.sqlite3`. Set
 `LEETOTTER_DB_PATH` to choose another location.
+
+## Start the companion at login (macOS)
+
+From the repository root, first store your provider API key in the macOS
+Keychain. This command prompts for the key without putting it in the command
+line:
+
+```sh
+security add-generic-password -a "$USER" -s NUS_SOCLAAS_API_KEY -w
+```
+
+Then install the launch agent with your provider's base URL:
+
+```sh
+./scripts/install.sh --base-url 'https://your-provider.example/v1'
+```
+
+The installer writes the non-secret base URL to
+`~/Library/Application Support/Leetotter/provider.env`, starts the companion,
+and configures launchd to start it at login and restart it after a crash.
+Run the same install command again to update the URL, or omit `--base-url` to
+keep the existing URL. The log is at
+`~/Library/Logs/Leetotter/companion.log`. macOS may ask once whether to allow
+access to the Keychain item; choose **Always Allow** so login starts can read
+it. If the item is missing, the companion still starts and the log explains
+why model calls will fail. The key is never written to the provider file or
+launch agent plist.
+
+To stop and remove the launch agent:
+
+```sh
+./scripts/uninstall.sh
+```
+
+Uninstall leaves the database, provider URL, log, and Keychain item in place.
+For a file-only rehearsal, set `LEETOTTER_HOME` to an existing directory
+outside your home and pass `--dry-run` to install or uninstall. Dry-run does
+not invoke launchctl.
+
+This setup implements the login-start requirement in [SPEC §3](SPEC.md#3-components),
+the environment and Keychain configuration in [SPEC §12](SPEC.md#12-models),
+and the key storage rule in [SPEC §14](SPEC.md#14-privacy).
