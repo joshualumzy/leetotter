@@ -20,3 +20,11 @@ checker = 180
 [provider]
 # Confirm this endpoint accepts chat_template_kwargs in python -m companion.check.
 observer_thinking_extra_body = { chat_template_kwargs = { enable_thinking = false } }
+
+[streaming]
+tutor = true
+
+[display_names]
+"qwen3.8:27b" = "Qwen 3.8 27B"
+"x-test-1" = "GLM 5.3 Flash"
+"x-test-2" = "DeepSeek V4.1 Flash"
