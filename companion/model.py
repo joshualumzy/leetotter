@@ -190,7 +190,8 @@ class ModelClient:
 
     def call_role(self, role: str, messages: list[dict], schema_class: type[BaseModel], *,
                   model: str | None = None, planner_phase: Literal["start", "between"] = "start",
-                  on_first_token=None, on_response=None, response_mode: Literal["json_schema", "json_object", "plain"] = "json_schema"):
+                  on_first_token=None, on_response=None, response_mode: Literal["json_schema", "json_object", "plain"] = "json_schema",
+                  thinking_off: bool = True):
         if role not in self.config.roles:
             raise ValueError(f"Unknown role: {role}")
         if role == "planner" and planner_phase not in ("start", "between"):
@@ -211,7 +212,7 @@ class ModelClient:
                     "name": schema_class.__name__.lower(), "strict": True, "schema": schema_class.model_json_schema()}}
             elif response_mode == "json_object":
                 kwargs["response_format"] = {"type": "json_object"}
-            if role == "observer":
+            if role == "observer" and thinking_off:
                 kwargs["extra_body"] = self.config.observer_thinking_extra_body
             streamed = self.config.streaming.get(role, False)
             if streamed:

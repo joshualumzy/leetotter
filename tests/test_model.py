@@ -192,6 +192,12 @@ def test_role_selection_timeout_and_thinking_option(tmp_path, monkeypatch):
     assert calls.requests[2]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
+def test_observer_baseline_omits_thinking_request_body(tmp_path, monkeypatch):
+    instance, calls, _ = model_client(tmp_path, monkeypatch, '{"answer":"ok"}')
+    instance.call_role("observer", message(), Reply, thinking_off=False)
+    assert "extra_body" not in calls.requests[0]
+
+
 def test_invalid_role_and_phase_raise_value_error(tmp_path, monkeypatch):
     instance, calls, _ = model_client(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="Unknown role"):

@@ -1,6 +1,8 @@
 from collections import Counter
 from types import SimpleNamespace
 
+import pytest
+
 from companion.check import run_checks
 from companion.model import load_roles
 from companion.store import open_store
@@ -43,7 +45,7 @@ def test_check_probes_each_model_output_mode_and_three_tutor_streams(tmp_path, m
         assert modes[(model, "json_object")] >= 1
         assert modes[(model, "plain")] >= 1
     assert sum(request.get("stream") is True for request in completions.requests) == 3
-    assert "Observer thinking-off: honored" in report
+    assert "Observer thinking-off: unknown (completion tokens 2 without, 2 with" in report
     assert "Tutor median time to first token (3 calls):" in report
     assert "see results above" not in report
     with open_store(path) as db:
@@ -86,3 +88,55 @@ def test_check_reports_reasoning_text_as_not_honored(tmp_path, monkeypatch, caps
 
     run_checks(client=SimpleNamespace(chat=SimpleNamespace(completions=Reasoning())), db_path=tmp_path / "db")
     assert "Observer thinking-off: not honored" in capsys.readouterr().out
+
+
+def test_check_honors_observer_thinking_by_completion_token_drop(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("NUS_SOCLAAS_BASE_URL", "https://unused.invalid/v1")
+    monkeypatch.setenv("NUS_SOCLAAS_API_KEY", "fake-test-key")
+    observer = load_roles().roles["observer"][0]
+
+    class TokenDrop(ProbeCompletions):
+        def create(self, **kwargs):
+            response = super().create(**kwargs)
+            if kwargs["model"] == observer:
+                response.usage.completion_tokens = 14 if "extra_body" in kwargs else 612
+                response.usage.completion_tokens_details = None
+            return response
+
+    completions = TokenDrop()
+    run_checks(client=SimpleNamespace(chat=SimpleNamespace(completions=completions)), db_path=tmp_path / "db")
+    report = capsys.readouterr().out
+    assert "Observer thinking-off: honored" in report
+    assert "completion tokens 612 without, 14 with" in report
+    baseline = [request for request in completions.requests if request["model"] == observer and "extra_body" not in request]
+    assert baseline
+    assert any(request["model"] == observer and request["messages"] == baseline[0]["messages"]
+               and "extra_body" in request for request in completions.requests)
+
+
+@pytest.mark.parametrize(("baseline_reasoning", "requested_reasoning", "expected"), [
+    (True, False, "honored"),
+    (True, True, "not honored"),
+    (False, False, "unknown"),
+])
+def test_check_compares_reasoning_on_matching_observer_calls(
+        tmp_path, monkeypatch, capsys, baseline_reasoning, requested_reasoning, expected):
+    monkeypatch.setenv("NUS_SOCLAAS_BASE_URL", "https://unused.invalid/v1")
+    monkeypatch.setenv("NUS_SOCLAAS_API_KEY", "fake-test-key")
+    observer = load_roles().roles["observer"][0]
+
+    class ReasoningComparison(ProbeCompletions):
+        def create(self, **kwargs):
+            response = super().create(**kwargs)
+            if kwargs["model"] == observer:
+                response.usage.completion_tokens = 100
+                response.usage.completion_tokens_details = None
+                has_reasoning = requested_reasoning if "extra_body" in kwargs else baseline_reasoning
+                response.choices[0].message.reasoning_content = "internal reasoning" if has_reasoning else None
+            return response
+
+    run_checks(client=SimpleNamespace(chat=SimpleNamespace(completions=ReasoningComparison())),
+               db_path=tmp_path / "db")
+    report = capsys.readouterr().out
+    assert f"Observer thinking-off: {expected} (completion tokens 100 without, 100 with" in report
+    assert "internal reasoning" not in report
