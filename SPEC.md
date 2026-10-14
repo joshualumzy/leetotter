@@ -65,7 +65,6 @@ Each page reader produces the same events regardless of site:
 | `run_result` | passed/failed per test case, error type and message, runtime |
 | `submit_result` | accepted or not, failing case, runtime and memory |
 | `focus_changed` | problem tab active or not, Chrome window focused or not |
-| `neetcode_help_used` | that you opened NeetCode's own hints or solutions on this problem (§8). NeetCode reports it as flags in its attempt record after an accepted submission; seeing it live depends on a check in §16 |
 
 **How:** a script in the page's main world watches the site's own run/submit network traffic, and reads the code from the request bodies and from the editor. This must be checked per site before the phase that builds that reader:
 
@@ -160,14 +159,14 @@ There's no fixed hint ladder in code. The Tutor works live from the problem and 
 
 Brute force is never a wrong path. Going straight for the optimal solution is fine; only when it has left you with nothing working does the Tutor suggest getting a brute force working first. The Tutor follows your approach, even when it isn't one the reference lists.
 
-From the diagnosis it chooses the next move, getting more concrete only as needed: a question, a trace or illustrative example, an analogy, a code snippet, and eventually the full solution. Its instructions also say:
+From the diagnosis it chooses the next move. Its default is to build your intuition with questions, the way a good tutor would, and to go direct only where questions can't help (a tool you've never seen, Python mechanics). It gets more concrete only as needed: a question, a trace or illustrative example, an analogy, a code snippet, and eventually the full solution. Its instructions also say:
 - help should match how long and how hard you've struggled
 - weigh the value of more struggle against the time left in the session
 - after a solution is shown, add only the explanation you still need, with no repeated Socratic process
 
 **Each help turn is logged** with its gap and kind so the attempt can be graded (§8): `question`, `trace`, `analogy`, `teach_tool` (explaining a data structure or algorithm you didn't know), `syntax` (Python mechanics, such as how `heapq` is called, never the algorithm), `snippet`, `partial_logic`, `full_solution`. The Tutor labels each turn; the Grader checks the labels against the turns' text and corrects any that are wrong, and corrections are logged.
 
-**Leetotter's Tutor is the only helper during a session.** It replaces any other AI assistant you'd use while solving: outside help is invisible to Leetotter and would make your progress look better than it is. (Chrome shows one side panel at a time anyway.)
+**Leetotter's Tutor is the only helper during a session.** It replaces any other AI assistant you'd use while solving: outside help is invisible to Leetotter and would make your progress look better than it is. (Chrome shows one side panel at a time anyway.) NeetCode's own hints, solutions and NeetBot aren't used and aren't tracked.
 
 **Replies** are text in the panel, and nothing is spoken. You dictate with MacWhisper into the chat box like any text field.
 
@@ -217,8 +216,6 @@ Each graded attempt is one review, by a fixed table (§2):
 | Complexity answer wrong, or right with wrong reasoning, or right only after the Tutor stated it | Again (`analysis`) |
 
 `syntax` help doesn't lower a grade: an interviewer would tell you how `heapq` is called.
-
-**NeetCode's own help counts as help.** Opening NeetCode's hints counts like help from the Tutor: the attempt can't be Good. Opening its solutions counts like being shown the full solution: Again. The Tutor and Graders are told, so it knows before it speaks. (NeetBot, NeetCode's AI, isn't used.)
 
 - A `solve` grade goes to the problem, and, on a first attempt at an unseen problem, also to its category's `solve`. For the category, a Good on an Easy problem counts as Hard: a category review is a different problem each time, and an easy one says less about the skill. (Established skill models all correct for item difficulty; this is the simple version of that.)
 - An `analysis` grade goes to the category's `analysis`, only on a first attempt (you may remember a seen problem's complexity), and only when the `solve` grade wasn't Again and the Tutor hadn't stated the complexity earlier in the attempt. The Tutor can still ask on repeats, ungraded. Questions about another approach's complexity are graded the same way; questions about alternatives and changed constraints are discussion, not graded.
@@ -394,7 +391,7 @@ Each phase ends with something you can use.
 ## 16. Open technical checks
 
 Listed in their phases above; collected here:
-- [ ] NeetCode smoke test (before phase 3), remaining: whether the problem page shows its category or pattern (which would give the approach away) (the request to NeetCode's attempt log carries `topics`); whether opening a hint or solution tab can be seen the moment it happens, not only afterwards in the attempt record (`usedHints`, `openedSolutions`); completion data for import; whether problems beyond the 150 are available there; the roadmap's structure; whether MacWhisper's dictation takes focus from Chrome (which would pause the session)
+- [ ] NeetCode smoke test (before phase 3), remaining: whether the problem page shows its category or pattern (which would give the approach away) (the request to NeetCode's attempt log carries `topics`); completion data for import; whether problems beyond the 150 are available there; the roadmap's structure; whether MacWhisper's dictation takes focus from Chrome (which would pause the session)
 - [ ] Provider base URL (key via Keychain); disabling thinking for `qwen3.8:27b` and its response time; structured-output support per model; GLM 5.3 Flash latency (phase 1)
 - [ ] LeetCode accepted-submissions endpoint (phase 5)
 - [ ] **Simulation, before phase 5 (pure code, no model calls).** With the real `py-fsrs` library, simulate pretend learners: paces of 5, 7, 10 and 15 problems a week with gaps of 2–7 days, plus a two-week and a three-month break; 50%, 70% and 90% clean solves on new problems, with success on practised items following FSRS's recall estimate, lower on Hard problems, and set rates of brute-force-only and help-needed solves; 75 of the 150 already seen through import. Use the retry rule and variation mix from §8. Check the 100% bar (§9): how long until it's reached, against the goal of about six months at 7 a week; whether retries crowd out new problems; whether every category can reach strong. Check that every category, including small ones like Tries, can reach strong for `solve` and `analysis` with transfer checks and the follow-up question at a realistic rate, and compare 21 days with nearby values. Bring the results to the user before the bar is used
