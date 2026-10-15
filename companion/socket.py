@@ -11,14 +11,14 @@ from websockets.exceptions import ConnectionClosed
 from companion.catalog import normalize_link
 from companion.history import import_history, import_status
 from companion.session import SessionCoordinator
-from companion.store import store_path
+from companion.store import open_store, store_path
 
 
 EXTENSION_ID = "oohbhndckkkkdngkglilcbpcoekapmgp"
 ALLOWED_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 READER_TYPES = frozenset({"problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
 SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state"}) | READER_TYPES | SESSION_TYPES
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state"}) | READER_TYPES | SESSION_TYPES
 logger = logging.getLogger(__name__)
 _coordinator = None
 _clients = set()
@@ -26,6 +26,12 @@ _clients = set()
 
 def _timestamp():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _settings_state():
+    with open_store() as db:
+        values = dict(db.execute("SELECT key, value FROM settings WHERE key IN ('name', 'theme')"))
+    return {"type": "settings_state", "ts": _timestamp(), "name": values.get("name"), "theme": values.get("theme", "match")}
 
 
 def _string(value):
@@ -100,6 +106,13 @@ def _validate(raw):
         raise ValueError("Invalid status state")
     if kind == "error" and (not isinstance(message.get("message"), str) or not message["message"]):
         raise ValueError("Error requires message")
+    if kind == "settings_set":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or payload.get("key") not in ("name", "theme") or not isinstance(payload.get("value"), str):
+            raise ValueError("Invalid settings_set payload")
+        value = payload["value"]
+        if (payload["key"] == "name" and len(value.strip()) > 40) or (payload["key"] == "theme" and value not in ("match", "light", "dark")):
+            raise ValueError("Invalid settings_set value")
     if kind in READER_TYPES:
         _reader_payload(kind, message.get("payload"))
     if kind == "session_start":
@@ -131,13 +144,21 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history"} | READER_TYPES | SESSION_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set"} | READER_TYPES | SESSION_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
                     await _broadcast(_coordinator.on_connect(), connection)
                 elif kind == "get_import_status":
                     await connection.send(json.dumps({"type": "import_status", "ts": _timestamp(), "imported": import_status()}))
+                elif kind == "settings_get":
+                    await connection.send(json.dumps(_settings_state()))
+                elif kind == "settings_set":
+                    payload = message["payload"]
+                    with open_store() as db:
+                        db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                   (payload["key"], payload["value"].strip() if payload["key"] == "name" else payload["value"]))
+                    await _broadcast([_settings_state()], connection)
                 elif kind == "import_history":
                     result = import_history(message["payload"]["urls"])
                     await connection.send(json.dumps({"type": "import_result", "ts": _timestamp(), "result": result}))
@@ -158,7 +179,7 @@ async def _broadcast(outgoing, sender, broadcast=True):
         if message["type"] == "error":
             logger.error("Session request rejected: %s", message["message"])
             message = {**message, "ts": _timestamp()}
-        targets = tuple(_clients) if broadcast and message["type"] == "session_state" else (sender,)
+        targets = tuple(_clients) if broadcast and message["type"] in ("session_state", "settings_state") else (sender,)
         for target in targets:
             try:
                 await target.send(json.dumps(message))

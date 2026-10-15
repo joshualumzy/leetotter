@@ -9,14 +9,18 @@ export type Message =
   | { type: "session_start"; ts: string; payload: { budget_minutes: number } }
   | { type: "session_pause" | "session_resume" | "session_end" | "session_get_state"; ts: string }
   | { type: "session_overrun"; ts: string; payload: { choice: "finish" | "stop" } }
+  | { type: "settings_get"; ts: string }
+  | { type: "settings_set"; ts: string; payload: { key: "name" | "theme"; value: string } }
+  | SettingsState
   | SessionState
   | { type: ReaderMessageType; ts: string; session_id?: string; payload: Record<string, unknown> };
 
 export type SessionState = { type: "session_state"; ts: string; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | null; check_message: string | null; budget_minutes: number | null; active_seconds: number; running: boolean; overrun_prompt: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" };
+export type SettingsState = { type: "settings_state"; ts: string; name: string | null; theme: "match" | "light" | "dark" };
 export type ReaderMessageType = "problem_opened" | "code_changed" | "code_snapshot" | "run_result" | "submit_result" | "focus_changed" | "reader_check";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
-const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state", "session_state", ...readerTypes]);
+const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", ...readerTypes]);
 
 export function validateImportUrls(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every(url => typeof url === "string" && /^https:\/\/(?:www\.)?leetcode\.com\/problems\/[^/?#]+\/?(?:[?#].*)?$/.test(url))) {
@@ -74,6 +78,15 @@ export function parseMessage(raw: string): Message {
   }
   if (message.type === "session_start" && (!Number.isInteger((message.payload as Record<string, unknown> | undefined)?.budget_minutes) || ((message.payload as Record<string, unknown>).budget_minutes as number) <= 0)) throw new Error("Invalid session_start payload");
   if (message.type === "session_overrun" && !["finish", "stop"].includes(String((message.payload as Record<string, unknown> | undefined)?.choice))) throw new Error("Invalid session_overrun payload");
+  if (message.type === "settings_set") {
+    const payload = message.payload as Record<string, unknown> | undefined;
+    if (!payload || !["name", "theme"].includes(String(payload.key)) || typeof payload.value !== "string" ||
+      (payload.key === "name" && payload.value.trim().length > 40) ||
+      (payload.key === "theme" && !["match", "light", "dark"].includes(payload.value))) throw new Error("Invalid settings_set payload");
+  }
+  if (message.type === "settings_state" &&
+      (!(message.name === null || (typeof message.name === "string" && message.name.length <= 40)) ||
+       !["match", "light", "dark"].includes(String(message.theme)))) throw new Error("Invalid settings_state payload");
   if (message.type === "session_state") {
     if (!["idle", "active", "paused", "ended"].includes(String(message.state)) || !["idle", "watching", "paused"].includes(String(message.mode)) ||
       !Number.isInteger(message.active_seconds) || typeof message.running !== "boolean" || typeof message.overrun_prompt !== "boolean" || typeof message.accepted !== "boolean" ||

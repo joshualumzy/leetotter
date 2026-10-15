@@ -12,4 +12,4 @@ await build({
   target: "chrome120",
   define: { __LEETOTTER_PORT__: String(port) },
 });
-await Promise.all([cp("manifest.json", "dist/manifest.json"), cp("panel.html", "dist/panel.html")]);
+await Promise.all([cp("manifest.json", "dist/manifest.json"), cp("panel.html", "dist/panel.html"), cp("panel.css", "dist/panel.css")]);

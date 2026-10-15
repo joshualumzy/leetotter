@@ -62,6 +62,17 @@ beforeEach(() => {
 });
 
 describe("worker reader delivery", () => {
+  it("requests settings on connect, forwards updates, and relays panel changes", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
+    expect(socket.sent.map(item => item.type)).toContain("settings_get");
+    const settings = { type: "settings_state", ts: "now", name: null, theme: "match" };
+    socket.onmessage?.({ data: JSON.stringify(settings) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "settings_state", settings });
+    expect(await dispatch({ kind: "get_settings_state" })).toEqual(settings);
+    expect(await dispatch({ kind: "settings_set", key: "name", value: "Ada" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "settings_set", payload: { key: "name", value: "Ada" } });
+  });
   it("takes reader mode from session_state and delivers the full state to the panel", async () => {
     await start(); socket.readyState = 1;
     const session = { type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null,

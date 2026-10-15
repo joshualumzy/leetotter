@@ -1,5 +1,21 @@
 <!doctype html>
 <html lang="en">
-  <head><meta charset="utf-8"><title>Leetotter</title></head>
-  <body><main><h1>Leetotter</h1><p id="status" role="status">Tutor service isn't running. Start it with uv run python -m companion</p><p id="reader-error" role="alert"></p><p id="reader-activity" role="status">No reader events yet.</p><button id="import-history" type="button">Import history</button><p id="import-result" role="status"></p></main><script src="panel.js"></script></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leetotter</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div id="panel" class="panel">
+    <header class="top">
+      <button id="header-otter" class="otter-tile" type="button" title="Settings" aria-label="Settings" aria-expanded="false"></button>
+      <div class="meta"><div id="problem-title" class="title">Leetotter</div><div class="status"><span id="status-dot" class="dot"></span><span id="remark"></span></div></div>
+      <div id="timer" class="timer" hidden><strong id="elapsed"></strong><span id="budget"></span></div>
+      <div id="controls" class="controls"></div>
+    </header>
+    <main id="session-body" class="body"></main>
+  </div>
+  <script src="panel.js"></script>
+</body>
 </html>

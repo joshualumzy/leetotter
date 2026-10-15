@@ -1,5 +1,5 @@
 import { CompanionConnection, type ConnectionState } from "./connection";
-import { readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type SessionState } from "./protocol";
+import { readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type SessionState, type SettingsState } from "./protocol";
 
 declare const __LEETOTTER_PORT__: number;
 type Mode = "idle" | "watching" | "paused";
@@ -13,6 +13,7 @@ let imported = false;
 let importResult: { already_imported: boolean; matched: number; unmatched: string[] } | undefined;
 let importPending = false;
 let sessionState: SessionState | undefined;
+let settingsState: SettingsState | undefined;
 let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
 const problemTabs = new Map<number, ProblemTab>();
 function panel(message: unknown): void { chrome.runtime.sendMessage(message).catch(() => {}); }
@@ -47,11 +48,13 @@ const connection = new CompanionConnection(
     if (next.kind === "connected") {
       connection.send({ type: "get_import_status", ts: new Date().toISOString() });
       connection.send({ type: "session_get_state", ts: new Date().toISOString() });
+      connection.send({ type: "settings_get", ts: new Date().toISOString() });
       resyncFocus();
     }
     if (next.kind === "error" && importPending) { importPending = false; panel({ kind: "import_error", message: next.message }); }
   },
   message => {
+    if (message.type === "settings_state") { settingsState = message; panel({ kind: "settings_state", settings: message }); return; }
     if (message.type === "session_state") {
       sessionState = message;
       void setMode(message.mode);
@@ -104,6 +107,15 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.kind === "get_reader_activity") return readerActivity;
     if (message?.kind === "get_import_state") return { imported, result: importResult };
     if (message?.kind === "get_session_state") return sessionState;
+    if (message?.kind === "get_settings_state") return settingsState;
+    if (message?.kind === "settings_get") return connection.send({ type: "settings_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    if (message?.kind === "settings_set") {
+      const { key, value } = message;
+      if (typeof value !== "string" || (key !== "name" && key !== "theme") ||
+          (key === "name" && value.trim().length > 40) ||
+          (key === "theme" && !["match", "light", "dark"].includes(value))) return { error: "Invalid setting." };
+      return connection.send({ type: "settings_set", ts: new Date().toISOString(), payload: { key, value } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
     if (message?.kind === "session_command") {
       const command = message.command;
       const types = { start: "session_start", pause: "session_pause", resume: "session_resume", end: "session_end", overrun_finish: "session_overrun", overrun_stop: "session_overrun" } as const;
