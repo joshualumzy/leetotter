@@ -37,6 +37,52 @@ function questionTab(statement: string) {
 async function flushUntil(test: () => boolean) { await vi.waitFor(() => { expect(test()).toBe(true); }); }
 
 describe("page reader", () => {
+  it("reads untouched starter code from Monaco lines in visual order", () => {
+    page.document.body.innerHTML = `<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines">
+      <div class="view-line" style="top: 38px">\u00a0\u00a0def containsDuplicate(self, nums):</div>
+      <div class="view-line" style="top: 0px">class Solution:</div>
+      <div class="view-line" style="top: 57px">\u00a0\u00a0\u00a0\u00a0pass\n</div>
+      <div class="view-line" style="top: 19px">\u00a0\u00a0def __init__(self):</div>
+    </div></div>`;
+    reader.install(); reader.setMode("watching");
+    expect(events.find(e => e.type === "reader_check")?.payload).toEqual({ ok: true });
+    expect(events.find(e => e.type === "code_snapshot")?.payload.code).toBe(
+      "class Solution:\n  def __init__(self):\n  def containsDuplicate(self, nums):\n    pass",
+    );
+  });
+  it("rejects a broken stored value even when Monaco lines are readable", () => {
+    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px">starter</div></div></div>';
+    reader.install();
+    for (const value of ["invalid json", "[]", '[{"code":123}]']) {
+      page.localStorage.setItem("duplicate-integer_python_tabs", value);
+      reader.setMode("watching");
+      expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: "Can't read the editor on this page" } });
+      reader.setMode("idle");
+    }
+    expect(events.some(e => e.type === "code_snapshot")).toBe(false);
+  });
+  it("rejects an absent key when no Monaco line text is available", () => {
+    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div>';
+    reader.install(); reader.setMode("watching");
+    expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: "Can't read the editor on this page" } });
+  });
+  it("snapshots each source switch and diffs only within the new source", () => {
+    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px">starter</div></div></div>';
+    reader.install(); reader.setMode("watching");
+    page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "stored" }]));
+    expect(events.filter(e => e.type === "code_snapshot").map(e => e.payload.code)).toEqual(["starter", "stored"]);
+    expect(events.filter(e => e.type === "code_changed")).toHaveLength(0);
+    page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "stored edit" }]));
+    vi.advanceTimersByTime(1);
+    expect(events.filter(e => e.type === "code_changed").at(-1)?.payload.diff).toEqual({ start_line: 1, removed: ["stored"], added: ["stored edit"] });
+
+    page.localStorage.removeItem("duplicate-integer_python_tabs");
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "code_snapshot").map(e => e.payload.code)).toEqual(["starter", "stored", "starter"]);
+    page.document.querySelector(".view-line")!.textContent = "starter edit";
+    vi.advanceTimersByTime(2000);
+    expect(events.filter(e => e.type === "code_changed").at(-1)?.payload.diff).toEqual({ start_line: 1, removed: ["starter"], added: ["starter edit"] });
+  });
   it("reads the Question tab statement when it appears on a later poll, without treating Solution as a failure", () => {
     ready(); reader.install(); reader.setMode("watching");
     page.document.body.insertAdjacentHTML("beforeend", '<div class="solution-tab">Solution</div>');

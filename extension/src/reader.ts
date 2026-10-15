@@ -61,10 +61,12 @@ export function lineDiff(before: string, after: string) {
 }
 
 export type ReaderEvent = { type: string; payload: RecordValue };
+type CodeRead = { text: string; source: "editor" | "stored" };
 export class NeetCodeReader {
   private mode: WatchMode = "idle";
   private slug = "";
   private previous = "";
+  private codeSource?: CodeRead["source"];
   private lastDiff = -3000;
   private diffTimer: ReturnType<typeof setTimeout> | undefined;
   private snapshotTimer: ReturnType<typeof setInterval> | undefined;
@@ -158,15 +160,22 @@ export class NeetCodeReader {
     return undefined;
   }
   private slugFromUrl(): string { return /^\/problems\/([^/]+)/.exec(this.page.location.pathname)?.[1] ?? ""; }
-  private code(): string {
+  private code(): CodeRead {
     const raw = this.page.localStorage.getItem(`${this.slug}_python_tabs`);
-    if (!raw) throw new Error("Can't read the editor on this page");
+    if (raw === null) {
+      const lines = Array.from(this.page.document.querySelectorAll<HTMLElement>(".monaco-editor .view-lines .view-line"));
+      const text = lines
+        .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top))
+        .map(line => (line.textContent ?? "").replace(/\u00a0/g, " ").replace(/\n+$/, ""));
+      if (!text.some(line => line.length > 0)) throw new Error("Can't read the editor on this page");
+      return { text: text.join("\n"), source: "editor" };
+    }
     let tabs: unknown;
     try { tabs = JSON.parse(raw); } catch { throw new Error("Can't read the editor on this page"); }
     if (!Array.isArray(tabs) || tabs.length !== 1 || typeof tabs[0]?.code !== "string") throw new Error("Can't read the editor on this page");
-    return tabs[0].code;
+    return { text: tabs[0].code, source: "stored" };
   }
-  private check(): { title: string; code: string } {
+  private check(): { title: string; code: CodeRead } {
     if (!this.slug) throw new Error("Can't identify the problem on this page");
     const title = this.page.document.querySelector("h1")?.textContent?.trim();
     if (!title) throw new Error("Can't identify the problem title on this page");
@@ -198,14 +207,23 @@ export class NeetCodeReader {
       this.titleOf = { slug, title };
       this.ready = true;
       if (this.diffTimer) { clearTimeout(this.diffTimer); this.diffTimer = undefined; }
-      this.previous = code;
+      this.previous = code.text;
+      this.codeSource = code.source;
       if (!this.resultFailure) this.emit({ type: "reader_check", payload: { ok: true } });
       if (slug !== this.openedSlug && this.mode === "watching") { this.send("problem_opened", { site: "neetcode", slug, title }); this.openedSlug = slug; }
-      this.send("code_snapshot", { code });
+      this.send("code_snapshot", { code: code.text });
     } catch (error) {
       this.ready = false;
       this.fail((error as Error).message);
     }
+  }
+  private sourceChanged(read: CodeRead): boolean {
+    if (read.source === this.codeSource) return false;
+    if (this.diffTimer) { clearTimeout(this.diffTimer); this.diffTimer = undefined; }
+    this.codeSource = read.source;
+    this.previous = read.text;
+    this.send("code_snapshot", { code: read.text });
+    return true;
   }
   private statement(): void {
     if (this.mode !== "watching" || !this.ready || this.slug !== this.slugFromUrl()) return;
@@ -220,24 +238,30 @@ export class NeetCodeReader {
   }
   codeWrite(): void {
     if (!this.slug || this.mode !== "watching") return;
-    let code: string;
-    try { code = this.code(); } catch (error) { this.ready = false; this.fail((error as Error).message); return; }
-    if (code === this.previous || this.diffTimer) return;
+    let read: CodeRead;
+    try { read = this.code(); } catch (error) { this.ready = false; this.fail((error as Error).message); return; }
+    if (this.sourceChanged(read) || read.text === this.previous || this.diffTimer) return;
     const wait = Math.max(0, 3000 - (Date.now() - this.lastDiff));
     this.diffTimer = setTimeout(() => {
       this.diffTimer = undefined;
       if (this.mode !== "watching") return;
-      let latest: string;
+      let latest: CodeRead;
       try { latest = this.code(); } catch (error) { this.ready = false; this.fail((error as Error).message); return; }
-      if (latest === this.previous) return;
-      this.send("code_changed", { diff: lineDiff(this.previous, latest) });
-      this.previous = latest;
+      if (this.sourceChanged(latest) || latest.text === this.previous) return;
+      this.send("code_changed", { diff: lineDiff(this.previous, latest.text) });
+      this.previous = latest.text;
       this.lastDiff = Date.now();
     }, wait);
   }
   snapshot(): void {
     if (this.mode !== "watching") return;
-    try { const code = this.code(); this.previous = code; this.send("code_snapshot", { code }); }
+    try {
+      const code = this.code();
+      if (code.source !== this.codeSource && this.diffTimer) { clearTimeout(this.diffTimer); this.diffTimer = undefined; }
+      this.codeSource = code.source;
+      this.previous = code.text;
+      this.send("code_snapshot", { code: code.text });
+    }
     catch (error) { this.ready = false; this.fail((error as Error).message); }
   }
   private fail(message: string): void { if (this.mode !== "idle") this.emit({ type: "reader_check", payload: { ok: false, message } }); }
