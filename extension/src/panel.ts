@@ -464,7 +464,12 @@ function render(): void {
     body!.append(offline); decorateOtters(); return;
   }
   if (settingsOpen) body!.append(settingsCard());
-  for (const message of [...view.alerts, actionError]) if (message) appendText(body!, "div", message, "alert").setAttribute("role", "alert");
+  for (const message of [...view.alerts, actionError]) if (message) {
+    const alert = appendText(body!, "div", message, "alert");
+    alert.setAttribute("role", "alert");
+    // After an extension reload the open NeetCode tab keeps no reader; one click reloads it.
+    if (message.endsWith("Reload the tab.") && panelTabId != null) alert.append(" ", button("reload-tab", "Reload tab", "btn"));
+  }
   if (!settingsOpen) {
     if (view.body === "first_run") body!.append(firstRun());
     if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0, session?.budget_minutes || 0).elapsed}`, "quiet");
@@ -574,6 +579,7 @@ composer.addEventListener("keydown", event => {
 body.addEventListener("click", event => {
   const id = (event.target as HTMLElement).closest("button")?.id;
   if (id === "close-settings") { settingsOpen = false; render(); }
+  if (id === "reload-tab" && panelTabId != null) void chrome.tabs.reload(panelTabId);
   if (id === "save-first-name") saveName("first-name");
   if (id === "save-settings-name") saveName("settings-name");
   if (id === "skip-name") void send({ kind: "skip_name" });

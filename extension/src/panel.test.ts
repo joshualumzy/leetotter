@@ -41,7 +41,7 @@ beforeEach(async () => {
     return { sent: true };
   });
   vi.stubGlobal("chrome", { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, sendMessage },
-    tabs: { query: vi.fn(async () => [{ id: activeTab, url: activeUrl }]), get: vi.fn(async (id: number) => ({ id, windowId: 3, url: activeUrl })), update: tabUpdate,
+    tabs: { query: vi.fn(async () => [{ id: activeTab, url: activeUrl }]), get: vi.fn(async (id: number) => ({ id, windowId: 3, url: activeUrl })), update: tabUpdate, reload: vi.fn(),
       onActivated: { addListener: (fn: typeof activated) => { activated = fn; } }, onUpdated: { addListener: (fn: typeof updatedTab) => { updatedTab = fn; } } }, windows: { update: windowUpdate } });
   await import("./panel");
   await vi.waitFor(() => expect(document.getElementById("first-run")).toBeTruthy());
@@ -109,6 +109,12 @@ describe("panel actions", () => {
     expect(document.body.textContent).not.toContain("Duplicate Integer");
     expect((document.getElementById("timer") as HTMLElement).hidden).toBe(true);
     expect(document.body.textContent).toContain("Session ended · 0:52");
+  });
+  it("offers a Reload tab button when the page reader is missing", async () => {
+    await bindPanelTab();
+    notify({ kind: "reader_error", message: "Leetotter can't see this NeetCode page. Reload the tab." });
+    click("reload-tab");
+    expect(chrome.tabs.reload).toHaveBeenCalledWith(expect.any(Number));
   });
   it("keeps a single composer, and the same text box, across the redraws the timer causes", () => {
     const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
