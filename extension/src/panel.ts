@@ -318,6 +318,8 @@ function renderComposer(view: PanelView): void {
   const visible = ["active", "paused", "overrun"].includes(view.body);
   composer!.hidden = !visible || settingsOpen;
   if (composer!.hidden) { composer!.replaceChildren(); return; }
+  // Built once while visible: the panel redraws every second for the timer, and rebuilding would drop the typing focus.
+  if (composer!.childElementCount) { updateComposer(); return; }
   const help = button("help-request", "I need help", "help-request");
   const box = element("div", "composer-box");
   const input = element("textarea", "chat-input") as HTMLTextAreaElement;

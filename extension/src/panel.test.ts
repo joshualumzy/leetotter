@@ -57,6 +57,17 @@ describe("panel actions", () => {
     expect((document.getElementById("help-request") as HTMLButtonElement).disabled).toBe(true);
     expect(document.getElementById("composer-reason")?.textContent).toMatch(/still answering/i);
   });
+  it("keeps a single composer, and the same text box, across the redraws the timer causes", () => {
+    const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    const input = document.getElementById("chat-input") as HTMLTextAreaElement;
+    input.value = "half-typed";
+    for (let seconds = 1; seconds <= 5; seconds++) notify({ kind: "session_state", state: { ...active, active_seconds: seconds } });
+    expect(document.querySelectorAll("#help-request")).toHaveLength(1);
+    expect(document.querySelectorAll("#chat-input")).toHaveLength(1);
+    expect(document.getElementById("chat-input")).toBe(input);
+    expect(document.querySelectorAll("#composer-reason, #composer-note")).toHaveLength(2);
+  });
   it("shows snapshot bubbles and a short refusal notice", () => {
     notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
     notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", streaming: null, turns: [
