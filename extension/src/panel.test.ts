@@ -48,7 +48,7 @@ beforeEach(async () => {
 });
 
 describe("panel actions", () => {
-  it("shows chat, sends Enter, keeps Shift+Enter, and disables input while answering", async () => {
+  it("shows chat, sends Enter, keeps Shift+Enter, and disables help while answering", async () => {
     const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
     notify({ kind: "session_state", state: active });
     expect(document.getElementById("help-request")).toBeTruthy();
@@ -81,6 +81,25 @@ describe("panel actions", () => {
     notify({ kind: "session_state", state: { ...active, state: "paused", mode: "paused", running: false, paused_reason: "focus" } });
     expect(document.body.textContent).toContain("Paused while you're away");
     expect(scroller.scrollTop).toBe(900);
+  });
+  it("keeps the chat box enabled and focused after a send, and holds a message typed while the Tutor answers", async () => {
+    await bindPanelTab();
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    const input = document.getElementById("chat-input") as HTMLTextAreaElement;
+    input.focus();
+    input.value = "First question";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    click("chat-send");
+    notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 3, request: "chat", press_index: null } });
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(input);
+    input.value = "Second question";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    sendMessage.mockClear();
+    click("chat-send");
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(input.value).toBe("Second question");
+    expect(document.getElementById("composer-reason")?.textContent).toMatch(/still answering/i);
   });
   it("keeps a single composer, and the same text box, across the redraws the timer causes", () => {
     const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;

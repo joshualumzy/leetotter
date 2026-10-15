@@ -368,7 +368,8 @@ function updateComposer(): void {
   const arrow = document.getElementById("chat-send") as HTMLButtonElement | null;
   if (!help || !input || !arrow) return;
   const availability = composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0);
-  help.disabled = input.disabled = !availability.enabled;
+  help.disabled = !availability.enabled;
+  input.disabled = !availability.typing;
   arrow.disabled = !availability.enabled || !draft.trim();
   document.getElementById("composer-reason")!.textContent = availability.reason;
   document.getElementById("composer-note")!.textContent = composerNote;
@@ -539,6 +540,8 @@ headerOtter.addEventListener("click", () => { settingsOpen = !settingsOpen; rend
 async function sendChat(): Promise<void> {
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   if (!input || input.disabled) return;
+  // Typing is allowed while the Tutor answers, sending isn't: the draft stays and the reason shows under the box.
+  if (!composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0).enabled) { updateComposer(); return; }
   const result = messageToSend(input.value);
   composerNote = result.error;
   if (!result.text) { updateComposer(); return; }

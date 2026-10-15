@@ -3,10 +3,12 @@ import { composerAvailability, messageToSend, enterAction } from "./composer-rul
 
 describe("composer rules", () => {
   it("explains unavailable, paused, and streaming states", () => {
-    expect(composerAvailability("active", true, false)).toEqual({ enabled: true, reason: "" });
+    expect(composerAvailability("active", true, false)).toEqual({ enabled: true, typing: true, reason: "" });
     expect(composerAvailability("paused", true, false).reason).toMatch(/paused/i);
     expect(composerAvailability("active", false, false).reason).toMatch(/problem/i);
+    expect(composerAvailability("active", true, true)).toMatchObject({ enabled: false, typing: true });
     expect(composerAvailability("active", true, true).reason).toMatch(/still answering/i);
+    expect(composerAvailability("paused", true, false).typing).toBe(false);
   });
   it("rejects whitespace and over-limit text without truncating", () => {
     expect(messageToSend("  ")).toEqual({ text: null, error: "" });
