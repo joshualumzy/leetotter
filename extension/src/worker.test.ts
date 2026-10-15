@@ -45,7 +45,7 @@ async function start() {
 beforeEach(() => {
   vi.useRealTimers();
   messages.length = activated.length = updated.length = created.length = removed.length = installed.length = focused.length = sent.length = 0;
-  saved = {};
+  saved = { readerState: { readerError: "", readerActivity: "No reader events yet.", focusedWindow: 3, problemTabs: [], sessionTabId: 7 } };
   historyReply = { urls: ["https://leetcode.com/problems/contains-duplicate/"] };
   vi.stubGlobal("__LEETOTTER_PORT__", 8765);
   vi.stubGlobal("WebSocket", FakeSocket);
@@ -192,7 +192,7 @@ describe("worker reader delivery", () => {
     expect(await dispatch({ kind: "get_reader_error" })).toBe(error);
     pushSession("paused");
     pushSession("watching");
-    await vi.waitFor(() => expect(chrome.tabs.query).toHaveBeenCalledTimes(4));
+    await vi.waitFor(() => expect(chrome.tabs.query).toHaveBeenCalledTimes(3));
     expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(1);
 
     vi.mocked(chrome.tabs.sendMessage).mockResolvedValue(undefined);
@@ -213,11 +213,10 @@ describe("worker reader delivery", () => {
     expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(0);
     expect(await dispatch({ kind: "get_reader_error" })).toBe("");
     const newTab = { id: 8, windowId: 3, active: true, url: "https://neetcode.io/problems/two-sum/" };
-    expect((await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: true } } }, newTab)).accepted).toBe(true);
-    expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: true } });
+    expect((await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: true } } }, newTab)).accepted).toBe(false);
     pushSession("idle");
-    await vi.waitFor(() => expect(chrome.tabs.query).toHaveBeenCalledTimes(3));
-    expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(1);
+    await vi.waitFor(async () => expect(await dispatch({ kind: "get_mode" })).toBe("idle"));
+    expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(0);
     expect(await dispatch({ kind: "get_reader_error" })).toBe("");
   });
 
@@ -238,12 +237,63 @@ describe("worker reader delivery", () => {
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
     expect((await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: false, message: "Editor missing" } } }, tab)).accepted).toBe(true);
     expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: false, message: "Editor missing" } });
-    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 25 })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 25, tabId: 7 })).toEqual({ sent: true });
     expect(socket.sent.at(-1)).toMatchObject({ type: "session_start", payload: { budget_minutes: 25 } });
     for (const [command, type, payload] of [["pause", "session_pause", undefined], ["resume", "session_resume", undefined], ["end", "session_end", undefined], ["overrun_finish", "session_overrun", { choice: "finish" }], ["overrun_stop", "session_overrun", { choice: "stop" }]] as const) {
-      expect(await dispatch({ kind: "session_command", command })).toEqual({ sent: true });
+      expect(await dispatch({ kind: "session_command", command, ...(command === "resume" ? { tabId: 7 } : {}) })).toEqual({ sent: true });
       expect(socket.sent.at(-1)).toMatchObject({ type, ...(payload ? { payload } : {}) });
     }
+  });
+  it("binds a session to one tab, routes watch mode, and refuses another tab", async () => {
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.query).mockResolvedValue([
+      { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/two-sum/" },
+      { id: 8, windowId: 3, active: false, url: "https://neetcode.io/problems/two-sum/" },
+    ] as chrome.tabs.Tab[]);
+    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 45, tabId: 7 })).toEqual({ sent: true });
+    pushSession("watching");
+    await vi.waitFor(() => expect(sent).toContainEqual({ tab: 8, message: { kind: "watch_mode", mode: "idle" } }));
+    expect(await dispatch({ kind: "get_session_binding" })).toEqual({ tabId: 7 });
+    expect(await dispatch({ kind: "get_mode" }, { id: 8 })).toBe("idle");
+    const before = socket.sent.length;
+    expect(await dispatch({ kind: "session_command", command: "resume", tabId: 8 })).toEqual({ error: "A session is running in another tab." });
+    expect(socket.sent).toHaveLength(before);
+    expect(await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: true } } }, { id: 8, url: "https://neetcode.io/problems/two-sum/" })).toEqual({ accepted: false, mode: "watching" });
+    expect(socket.sent).toHaveLength(before);
+  });
+
+  it("pauses on bound tab removal and only once for repeated active states without a tab", async () => {
+    await start(); socket.readyState = 1; pushSession("watching");
+    removed.at(-1)?.(7);
+    await vi.waitFor(() => expect(socket.sent.filter(item => item.type === "tab_closed")).toHaveLength(1));
+    expect(await dispatch({ kind: "get_session_binding" })).toEqual({ tabId: null });
+    pushSession("watching"); pushSession("watching");
+    await dispatch({ kind: "get_mode" });
+    expect(socket.sent.filter(item => item.type === "tab_closed")).toHaveLength(1);
+  });
+
+  it("resumes a disconnect pause once when its bound tab survives", async () => {
+    await start(); socket.readyState = 1;
+    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "disconnect", check_message: null, budget_minutes: 45, active_seconds: 60, running: false, overrun_prompt: false, problem: null, accepted: false };
+    socket.onmessage?.({ data: JSON.stringify(paused) });
+    socket.onmessage?.({ data: JSON.stringify(paused) });
+    await vi.waitFor(() => expect(socket.sent.filter(item => item.type === "session_resume")).toHaveLength(1));
+  });
+  it("keeps the binding after a worker restart", async () => {
+    await start(); socket.readyState = 1;
+    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 45, tabId: 7 })).toEqual({ sent: true });
+    await start();
+    expect(await dispatch({ kind: "get_session_binding" })).toEqual({ tabId: 7 });
+  });
+  it("pauses an orphaned active session once and does not auto-resume an unbound disconnect", async () => {
+    saved.readerState.sessionTabId = null;
+    await start(); socket.readyState = 1;
+    pushSession("watching"); pushSession("watching");
+    await vi.waitFor(() => expect(socket.sent.filter(item => item.type === "tab_closed")).toHaveLength(1));
+    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "disconnect", check_message: null, budget_minutes: 45, active_seconds: 60, running: false, overrun_prompt: false, problem: null, accepted: false };
+    socket.onmessage?.({ data: JSON.stringify(paused) });
+    await dispatch({ kind: "get_mode" });
+    expect(socket.sent.filter(item => item.type === "session_resume")).toHaveLength(0);
   });
   it("asks an open NeetCode tab for history and sends typed URLs to the companion", async () => {
     await start(); socket.readyState = 1;
@@ -328,7 +378,7 @@ describe("worker reader delivery", () => {
     expect(socket.sent.at(-1).payload).toEqual({ tab_active: true, window_focused: false });
   });
 
-  it("reports focus once per switch and only after a problem opens", async () => {
+  it("reports focus only for the bound tab", async () => {
     await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
     socket.readyState = 1;
     activated.at(-1)?.({ tabId: 7, windowId: 3 });
@@ -337,9 +387,10 @@ describe("worker reader delivery", () => {
     await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, tab);
     expect(socket.sent.map(item => item.type)).toEqual(["problem_opened", "focus_changed"]);
     activated.at(-1)?.({ tabId: 8, windowId: 3 });
-    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    await dispatch({ kind: "get_mode" });
+    expect(socket.sent).toHaveLength(2);
     activated.at(-1)?.({ tabId: 8, windowId: 3 });
-    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
-    expect(socket.sent.at(-1).payload).toEqual({ tab_active: false, window_focused: true });
+    await dispatch({ kind: "get_mode" });
+    expect(socket.sent).toHaveLength(2);
   });
 });

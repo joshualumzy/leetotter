@@ -2,9 +2,9 @@ import type { ConnectionState } from "./connection";
 import type { SessionState, SettingsState } from "./protocol";
 
 export type Control = "pause" | "resume" | "end";
-export type Body = "offline" | "first_run" | "start" | "active" | "paused" | "overrun" | "ended";
+export type Body = "offline" | "first_run" | "start" | "active" | "paused" | "welcome_back" | "another_tab" | "overrun" | "ended";
 export type RemarkPool = "offline" | "start" | "active" | "accepted" |
-  "pause_button" | "pause_focus" | "pause_check" | "pause_disconnect" | "overrun" | "ended";
+  "pause_button" | "pause_focus" | "pause_check" | "pause_disconnect" | "pause_closed" | "pause_restart" | "overrun" | "ended";
 export type PanelView = {
   title: string;
   statusTone: "live" | "good" | "paused" | "error" | "idle";
@@ -16,9 +16,12 @@ export type PanelView = {
   pauseText?: string;
 };
 
-export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string }): PanelView {
-  const { transport, session_state: session, settings, readerError } = input;
+export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string; sessionTabId?: number | null; panelTabId?: number | null; boundTabExists?: boolean }): PanelView {
+  const { transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists } = input;
   const title = session?.problem?.title || "Leetotter";
+  if (session && ["active", "paused"].includes(session.state) && sessionTabId != null && boundTabExists && sessionTabId !== panelTabId) {
+    return { title, statusTone: "paused", controls: [], body: "another_tab", remarkPool: "active", alerts: [] };
+  }
   if (transport.kind === "offline") return { title, statusTone: "error", controls: [], body: "offline", remarkPool: "offline", alerts: [] };
   const alerts = [transport.kind === "error" ? transport.message : "", readerError].filter(Boolean);
   const common = { title, alerts };
@@ -34,11 +37,16 @@ export function panelView(input: { transport: ConnectionState; session_state?: S
   if (session.state === "ended") return { ...common, statusTone: transport.kind === "error" ? "error" : "idle", controls: [], body: "ended", remarkPool: "ended" };
   if (session.state === "paused") {
     const reason = session.paused_reason || "button";
+    if (["closed", "restart"].includes(reason) || (reason === "disconnect" && !boundTabExists)) {
+      return { ...common, statusTone: "paused", controls: ["end"], body: "welcome_back", remarkPool: `pause_${reason}` as RemarkPool };
+    }
     const info = {
       button: ["Paused", "The timer's stopped and nothing is watched until you resume."],
       focus: ["Paused while you're away", "The problem tab isn't active. This resumes on its own when you're back on it."],
       check: ["Paused for a reader check", session.check_message || "The page reader's self-check failed. The session resumes when the check passes."],
       disconnect: ["Paused while disconnected", "The connection to the tutor was lost. This resumes when it returns."],
+      closed: ["Paused", "The tab was closed."],
+      restart: ["Paused", "The tutor restarted."],
     }[reason];
     return {
       ...common,

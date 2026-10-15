@@ -5,6 +5,10 @@ import type { SessionState } from "./protocol";
 
 let listener: (message: any) => void;
 let sendMessage: ReturnType<typeof vi.fn>;
+let activeTab: number;
+let activated: (info: { tabId: number; windowId: number }) => void;
+let tabUpdate: ReturnType<typeof vi.fn>;
+let windowUpdate: ReturnType<typeof vi.fn>;
 const session: SessionState = { type: "session_state", ts: "now", state: "idle", mode: "idle", paused_reason: null, check_message: null, budget_minutes: null, active_seconds: 0, running: false, overrun_prompt: false, problem: null, accepted: false };
 const notify = (message: any) => listener(message);
 const click = (id: string) => document.getElementById(id)?.click();
@@ -15,21 +19,72 @@ beforeEach(async () => {
   const dom = new JSDOM(html);
   vi.stubGlobal("document", dom.window.document);
   vi.stubGlobal("window", dom.window);
+  activeTab = 7;
+  tabUpdate = vi.fn(async () => {});
+  windowUpdate = vi.fn(async () => {});
   sendMessage = vi.fn(async (message: any) => {
     if (message.kind === "get_import_state") return { imported: false };
     if (message.kind === "get_status") return { kind: "connected" };
     if (message.kind === "get_reader_error") return "";
     if (message.kind === "get_session_state") return session;
+    if (message.kind === "get_session_binding") return { tabId: null };
     if (message.kind === "get_settings_state") return { type: "settings_state", ts: "now", name: null, theme: "match" };
     if (message.kind === "import_history") return { pending: true };
     return { sent: true };
   });
-  vi.stubGlobal("chrome", { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, sendMessage } });
+  vi.stubGlobal("chrome", { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, sendMessage },
+    tabs: { query: vi.fn(async () => [{ id: activeTab }]), get: vi.fn(async (id: number) => ({ id, windowId: 3 })), update: tabUpdate,
+      onActivated: { addListener: (fn: typeof activated) => { activated = fn; } } }, windows: { update: windowUpdate } });
   await import("./panel");
   await vi.waitFor(() => expect(document.getElementById("first-run")).toBeTruthy());
 });
 
 describe("panel actions", () => {
+  it("shows only a route back to the bound tab and follows it", async () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    notify({ kind: "session_binding", tabId: 8 });
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45 } });
+    await vi.waitFor(() => expect(document.getElementById("go-to-session-tab")).toBeTruthy());
+    expect(document.getElementById("session-body")?.textContent).toContain("A session is running in another tab.");
+    expect(document.getElementById("session-body")?.querySelectorAll("button")).toHaveLength(1);
+    click("go-to-session-tab");
+    await vi.waitFor(() => expect(tabUpdate).toHaveBeenCalledWith(8, { active: true }));
+    expect(windowUpdate).toHaveBeenCalledWith(3, { focused: true });
+    activeTab = 8; activated({ tabId: 8, windowId: 3 });
+    await vi.waitFor(() => expect(document.getElementById("pause-session")).toBeTruthy());
+  });
+
+  it("offers resume or end and start over after a closed tab, with a stopped timer", async () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "closed", budget_minutes: 45, active_seconds: 1394, problem: { slug: "daily-temperatures", title: "Daily Temperatures" } } });
+    expect(document.getElementById("session-body")?.textContent).toContain("Pick up where you left off?");
+    expect(document.getElementById("session-body")?.textContent).toContain("Daily Temperatures, 23 min of 45");
+    expect(document.getElementById("timer")?.classList.contains("stopped")).toBe(true);
+    click("welcome-resume");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
+    click("end-and-start");
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "end" }));
+    await vi.waitFor(() => expect(document.getElementById("start-session")).toBeTruthy());
+    expect(document.getElementById("welcome-resume")).toBeNull();
+  });
+
+  it("shows time without a problem on a restart pause", () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "restart", budget_minutes: 45, active_seconds: 1394 } });
+    expect(document.getElementById("session-body")?.textContent).toContain("23 min of 45");
+    expect(document.getElementById("session-body")?.textContent).not.toContain("Daily Temperatures");
+  });
+
+  it("labels a quiet End session button and accessible pause/resume icons", () => {
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45 } });
+    expect(document.getElementById("end-session")?.textContent).toBe("End session");
+    expect(document.getElementById("end-session")?.classList.contains("end-session")).toBe(true);
+    expect(document.getElementById("pause-session")?.getAttribute("aria-label")).toBe("Pause");
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "button", budget_minutes: 45 } });
+    expect(document.getElementById("resume-session")?.getAttribute("aria-label")).toBe("Resume");
+    notify({ kind: "session_state", state: session });
+    expect(document.getElementById("end-session")).toBeNull();
+  });
   it("starts, pauses, resumes and ends through session commands", async () => {
     click("skip-name");
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "", theme: "match" } });
@@ -37,17 +92,17 @@ describe("panel actions", () => {
     expect(document.querySelectorAll(".budget-chip")).toHaveLength(4);
     expect(document.getElementById("budget-45")?.getAttribute("aria-pressed")).toBe("true");
     click("start-session");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 45 });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 45, tabId: 7 });
     click("budget-30");
     expect(document.getElementById("budget-30")?.getAttribute("aria-pressed")).toBe("true");
     click("start-session");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 30 });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 30, tabId: 7 });
     notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 30 } });
     click("pause-session");
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "pause" });
     notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "button", budget_minutes: 30 } });
     click("resume-session");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume" });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
     click("end-session");
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "end" });
   });
@@ -65,16 +120,16 @@ describe("panel actions", () => {
     custom.dispatchEvent(new window.Event("input", { bubbles: true }));
     expect(start.disabled).toBe(false);
     click("start-session");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 1440 });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 1440, tabId: 7 });
     custom.value = "1";
     custom.dispatchEvent(new window.Event("input", { bubbles: true }));
     click("start-session");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 1 });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 1, tabId: 7 });
     click("budget-60");
     expect(custom.value).toBe("");
     expect(document.getElementById("budget-60")?.getAttribute("aria-pressed")).toBe("true");
     click("start-session");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 60 });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 60, tabId: 7 });
   });
   it("perks before a run outcome and clears the reaction on pause", async () => {
     notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45 } });

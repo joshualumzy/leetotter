@@ -209,6 +209,26 @@ button {
   color:var(--ink)
 }
 
+.controls .end-session {
+  width:auto;
+  padding:0 3px;
+  font:inherit;
+  font-size:12px;
+  color:var(--mute);
+  white-space:nowrap;
+}
+
+.controls .end-session:hover {
+  background:transparent;
+  color:var(--ink);
+}
+
+.welcome-back .primary {
+  display:block;
+  width:100%;
+  margin:14px 0 6px;
+}
+
 .controls .resume {
   background:var(--acc);
   color:#fff;
@@ -734,7 +754,7 @@ p {
   }
 }
 
-@media(max-width:310px) {
+@media(max-width:330px) {
   .top {
     gap:6px;
     padding:8px
@@ -742,8 +762,15 @@ p {
   .timer strong {
     font-size:14px
   }
-  .controls button {
+  .controls button:not(.end-session) {
     width:25px
+  }
+  .controls .end-session {
+    font-size:0;
+  }
+  .controls .end-session::after {
+    content:"End";
+    font-size:12px;
   }
   .body {
     padding:10px

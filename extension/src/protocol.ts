@@ -7,7 +7,7 @@ export type Message =
   | { type: "import_history"; ts: string; payload: { urls: string[] } }
   | { type: "import_result"; ts: string; result: { already_imported: boolean; matched: number; unmatched: string[] } }
   | { type: "session_start"; ts: string; payload: { budget_minutes: number } }
-  | { type: "session_pause" | "session_resume" | "session_end" | "session_get_state"; ts: string }
+  | { type: "session_pause" | "session_resume" | "session_end" | "session_get_state" | "tab_closed"; ts: string }
   | { type: "session_overrun"; ts: string; payload: { choice: "finish" | "stop" } }
   | { type: "settings_get"; ts: string }
   | { type: "settings_set"; ts: string; payload: { key: "name" | "theme"; value: string } }
@@ -15,12 +15,12 @@ export type Message =
   | SessionState
   | { type: ReaderMessageType; ts: string; session_id?: string; payload: Record<string, unknown> };
 
-export type SessionState = { type: "session_state"; ts: string; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | null; check_message: string | null; budget_minutes: number | null; active_seconds: number; running: boolean; overrun_prompt: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" };
+export type SessionState = { type: "session_state"; ts: string; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | "closed" | "restart" | null; check_message: string | null; budget_minutes: number | null; active_seconds: number; running: boolean; overrun_prompt: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" };
 export type SettingsState = { type: "settings_state"; ts: string; name: string | null; theme: "match" | "light" | "dark" };
 export type ReaderMessageType = "problem_opened" | "code_changed" | "code_snapshot" | "run_result" | "submit_result" | "focus_changed" | "reader_check";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
-const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", ...readerTypes]);
+const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_overrun", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", ...readerTypes]);
 
 export function validateImportUrls(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every(url => typeof url === "string" && /^https:\/\/(?:www\.)?leetcode\.com\/problems\/[^/?#]+\/?(?:[?#].*)?$/.test(url))) {
@@ -90,7 +90,7 @@ export function parseMessage(raw: string): Message {
   if (message.type === "session_state") {
     if (!["idle", "active", "paused", "ended"].includes(String(message.state)) || !["idle", "watching", "paused"].includes(String(message.mode)) ||
       !Number.isInteger(message.active_seconds) || typeof message.running !== "boolean" || typeof message.overrun_prompt !== "boolean" || typeof message.accepted !== "boolean" ||
-      !(message.paused_reason === null || ["button", "focus", "check", "disconnect"].includes(String(message.paused_reason))) ||
+      !(message.paused_reason === null || ["button", "focus", "check", "disconnect", "closed", "restart"].includes(String(message.paused_reason))) ||
       !(message.check_message === null || typeof message.check_message === "string") ||
       !(message.budget_minutes === null || Number.isInteger(message.budget_minutes)) ||
       !(message.problem === null || (typeof message.problem === "object" && !Array.isArray(message.problem) && typeof (message.problem as Record<string, unknown>).slug === "string" && typeof (message.problem as Record<string, unknown>).title === "string"))) throw new Error("Invalid session_state payload");

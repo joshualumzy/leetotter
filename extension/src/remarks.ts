@@ -35,6 +35,8 @@ const pools: Record<Exclude<RemarkPool, "offline">, Line[]> = {
   pause_focus: [plain("Napping till you're back on the problem."), plain("I'll be here when the tab is active."), named("See you soon, {name}.")],
   pause_check: [plain("The page reader's check failed.")],
   pause_disconnect: [plain("The tutor connection was lost.")],
+  pause_closed: [plain("Welcome back."), plain("I'm still here."), named("Good to see you, {name}.")],
+  pause_restart: [plain("Ready when you are."), plain("Here again, whenever you like."), named("Welcome back, {name}.")],
   overrun: [plain("Time's up. Your call."), plain("One more, or float ashore?"), named("Your call, {name}.")],
   ended: [plain("A good place to rest."), plain("That session is tucked away."), named("See you next time, {name}.")],
 };

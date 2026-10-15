@@ -19,6 +19,10 @@ if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer ||
 
 let transport: ConnectionState = { kind: "offline" };
 let session: SessionState | undefined;
+let sessionTabId: number | null = null;
+let panelTabId: number | null = null;
+let boundTabExists = false;
+let startAfterEnd = false;
 let settings: SettingsState | undefined;
 let readerError = "";
 let imported = false;
@@ -129,6 +133,19 @@ function updateTimer(): void {
   budget!.textContent = `of ${shown.budget}`;
   timer!.className = `timer${session.running ? "" : " stopped"}${shown.over ? " over" : ""}`;
 }
+async function refreshPanelTab(): Promise<void> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  panelTabId = tabs[0]?.id ?? null;
+  render();
+}
+async function refreshBinding(id: number | null): Promise<void> {
+  sessionTabId = id;
+  boundTabExists = false;
+  if (id !== null) {
+    try { await chrome.tabs.get(id); boundTabExists = sessionTabId === id; } catch { /* The tab was closed. */ }
+  }
+  render();
+}
 function newRemark(view: PanelView): void {
   if (transport.kind === "error") { remarkNode!.textContent = `Tutor service error: ${transport.message}`; return; }
   const key = `${view.remarkPool}:${session?.state || "idle"}:${session?.paused_reason || ""}:${session?.overrun_prompt || false}:${session?.problem?.slug || ""}`;
@@ -151,7 +168,7 @@ function renderHeader(view: PanelView): void {
   updateTimer();
   controls!.replaceChildren();
   for (const control of view.controls) {
-    const node = button(`${control}-session`, { pause: "⏸", resume: "▶", end: "⏹" }[control], control === "resume" ? "resume" : "");
+    const node = button(`${control}-session`, { pause: "⏸", resume: "▶", end: "End session" }[control], control === "resume" ? "resume" : control === "end" ? "end-session" : "");
     node.title = { pause: "Pause", resume: "Resume", end: "End session" }[control];
     node.setAttribute("aria-label", node.title);
     controls!.append(node);
@@ -237,9 +254,16 @@ function historyRow(): HTMLElement {
   return row;
 }
 function render(): void {
-  const view = panelView({ transport, session_state: session, settings, readerError });
+  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists });
   renderHeader(view);
   body!.replaceChildren();
+  if (view.body === "another_tab") {
+    const card = element("section", "card");
+    appendText(card, "p", "A session is running in another tab.");
+    card.append(button("go-to-session-tab", "Go to that tab", "btn primary"));
+    body!.append(card);
+    decorateOtters(); return;
+  }
   if (view.body === "offline") {
     const offline = block("confused", "Tutor service isn't running", "Start it with:");
     appendText(offline, "code", "uv run python -m companion", "cmd");
@@ -259,6 +283,15 @@ function render(): void {
       body!.append(node);
     }
     if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
+    if (view.body === "welcome_back") {
+      const card = element("section", "card welcome-back");
+      appendText(card, "h4", "Pick up where you left off?");
+      const minutes = Math.floor((session?.active_seconds || 0) / 60);
+      const duration = `${minutes} min of ${session?.budget_minutes ?? 0}`;
+      appendText(card, "p", session?.problem?.title ? `${session.problem.title}, ${duration}` : duration);
+      card.append(button("welcome-resume", "Resume", "btn primary"), button("end-and-start", "End and start a new one", "link"));
+      body!.append(card);
+    }
     if (view.body === "overrun") {
       const card = element("section", "card"); appendText(card, "h4", "Time's up. Finish this one or stop?");
       const row = element("div", "row"); row.append(button("overrun-finish", "Finish this one", "btn primary"), button("overrun-stop", "Stop here")); card.append(row); body!.append(card);
@@ -267,12 +300,13 @@ function render(): void {
   body!.append(historyRow());
   decorateOtters();
 }
-async function send(message: object): Promise<void> {
+async function send(message: object): Promise<boolean> {
   try {
     const result = await chrome.runtime.sendMessage(message);
-    if (result?.error) { actionError = String(result.error); render(); }
+    if (result?.error) { actionError = String(result.error); render(); return false; }
     else if (actionError) { actionError = ""; render(); }
-  } catch (error) { actionError = error instanceof Error ? error.message : String(error); render(); }
+    return true;
+  } catch (error) { actionError = error instanceof Error ? error.message : String(error); render(); return false; }
 }
 function saveName(id: string): void {
   const input = document.getElementById(id) as HTMLInputElement | null;
@@ -302,10 +336,22 @@ body.addEventListener("click", event => {
   }
   if (id === "start-session") {
     const value = budgetValue();
-    if (value !== null) void send({ kind: "session_command", command: "start", budget_minutes: value });
+    if (value !== null) void send({ kind: "session_command", command: "start", budget_minutes: value, tabId: panelTabId });
   }
+  if (id === "go-to-session-tab" && sessionTabId !== null) void chrome.tabs.get(sessionTabId).then(async tab => {
+    await chrome.tabs.update(tab.id!, { active: true });
+    if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+  }).catch(error => { actionError = String(error); render(); });
+  if (id === "welcome-resume") void send({ kind: "session_command", command: "resume", tabId: panelTabId });
+  if (id === "end-and-start") void send({ kind: "session_command", command: "end" }).then(ok => {
+    if (!ok || !session) return;
+    startAfterEnd = true;
+    session = { ...session, state: "idle", mode: "idle", paused_reason: null, running: false };
+    sessionTabId = null; boundTabExists = false;
+    render();
+  });
   const command = { "pause-session": "pause", "resume-session": "resume", "end-session": "end", "overrun-finish": "overrun_finish", "overrun-stop": "overrun_stop" }[id || ""];
-  if (command) void send({ kind: "session_command", command });
+  if (command) void send({ kind: "session_command", command, ...(command === "resume" ? { tabId: panelTabId } : {}) });
   if (id === "import-history") {
     const importButton = document.getElementById("import-history") as HTMLButtonElement;
     importButton.disabled = true;
@@ -332,7 +378,7 @@ root.addEventListener("pointerleave", () => { pointer = null; positionEyes(); })
 controls.addEventListener("click", event => {
   const id = (event.target as HTMLElement).closest("button")?.id;
   const command = { "pause-session": "pause", "resume-session": "resume", "end-session": "end" }[id || ""];
-  if (command) void send({ kind: "session_command", command });
+  if (command) void send({ kind: "session_command", command, ...(command === "resume" ? { tabId: panelTabId } : {}) });
 });
 body.addEventListener("keydown", event => {
   if (event.key === "Enter" && (event.target as HTMLElement).id === "first-name") { event.preventDefault(); saveName("first-name"); }
@@ -350,9 +396,12 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "session_state") {
     session = message.state;
+    if (startAfterEnd && session?.state === "ended") session = { ...session, state: "idle", mode: "idle" };
+    if (session?.state === "active") startAfterEnd = false;
     if (session?.mode !== "watching") clearReaction();
     receivedAt = Date.now(); render();
   }
+  if (message?.kind === "session_binding") void refreshBinding(message.tabId);
   if (message?.kind === "reader_reaction") playReaction(message.reaction);
   if (message?.kind === "settings_state") { settings = message.settings; render(); }
   if (message?.kind === "reader_error") { readerError = message.message || ""; render(); }
@@ -364,16 +413,19 @@ chrome.runtime.onMessage.addListener(message => {
   if (message?.kind === "import_error") { importResult = message.message; render(); }
 });
 render();
+chrome.tabs.onActivated.addListener(() => { void refreshPanelTab(); });
+void refreshPanelTab();
 void Promise.all([
   chrome.runtime.sendMessage({ kind: "get_status" }),
   chrome.runtime.sendMessage({ kind: "get_session_state" }),
   chrome.runtime.sendMessage({ kind: "get_settings_state" }),
   chrome.runtime.sendMessage({ kind: "get_reader_error" }),
   chrome.runtime.sendMessage({ kind: "get_import_state" }),
-]).then(([status, currentSession, currentSettings, error, importState]) => {
+  chrome.runtime.sendMessage({ kind: "get_session_binding" }),
+]).then(([status, currentSession, currentSettings, error, importState, binding]) => {
   transport = status; session = currentSession; settings = currentSettings; readerError = error || "";
   imported = importState?.imported || false; if (importState?.result) importResult = importState.result.already_imported ? "NeetCode history was already imported." : `Imported ${importState.result.matched} solved problems.`;
-  receivedAt = Date.now(); render();
+  receivedAt = Date.now(); void refreshBinding(binding?.tabId ?? null);
 }).catch(error => { transport = { kind: "error", message: String(error) }; render(); });
 window.setInterval(updateTimer, 1000);
 window.setInterval(decorateOtters, 10 * 60 * 1000);

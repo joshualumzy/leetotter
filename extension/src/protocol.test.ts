@@ -25,4 +25,8 @@ describe("wire messages", () => {
     expect(parseMessage('{"type":"import_result","ts":"now","result":{"already_imported":false,"matched":2,"unmatched":[]}}')).toMatchObject({ type: "import_result", result: { matched: 2 } });
     expect(() => parseMessage('{"type":"import_result","ts":"now","result":{"matched":"2"}}')).toThrow("Invalid import_result");
   });
+  it("accepts the companion's closed and restart pause reasons", () => {
+    const state = { type: "session_state", ts: "now", state: "paused", mode: "paused", check_message: null, budget_minutes: 45, active_seconds: 1394, running: false, overrun_prompt: false, problem: null, accepted: false };
+    for (const paused_reason of ["closed", "restart"]) expect(parseMessage(JSON.stringify({ ...state, paused_reason }))).toMatchObject({ paused_reason });
+  });
 });

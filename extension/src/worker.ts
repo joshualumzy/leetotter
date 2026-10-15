@@ -5,7 +5,7 @@ import { reactionForReaderEvent } from "./reader-reaction";
 declare const __LEETOTTER_PORT__: number;
 type Mode = "idle" | "watching" | "paused";
 type ProblemTab = { windowId: number; active: boolean; lastFocus?: string };
-type Saved = { readerError: string; readerActivity: string; focusedWindow: number; problemTabs: [number, ProblemTab][] };
+type Saved = { readerError: string; readerActivity: string; focusedWindow: number; problemTabs: [number, ProblemTab][]; sessionTabId?: number | null };
 let state: ConnectionState = { kind: "offline" };
 let mode: Mode = "idle";
 let readerError = "";
@@ -16,6 +16,9 @@ let importResult: { already_imported: boolean; matched: number; unmatched: strin
 let importPending = false;
 let sessionState: SessionState | undefined;
 let settingsState: SettingsState | undefined;
+let sessionTabId: number | null = null;
+let orphanReported = false;
+let disconnectResumeSent = false;
 let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
 const problemTabs = new Map<number, ProblemTab>();
 const failedModeTabs = new Set<number>();
@@ -24,12 +27,23 @@ function panel(message: unknown): void { chrome.runtime.sendMessage(message).cat
 function showReaderAlert(): void { panel({ kind: "reader_error", message: readerError || notice }); }
 let savedInOrder: Promise<void> = Promise.resolve();
 function save(): Promise<void> {
-  const readerState: Saved = { readerError, readerActivity, focusedWindow, problemTabs: [...problemTabs] };
+  const readerState: Saved = { readerError, readerActivity, focusedWindow, problemTabs: [...problemTabs], sessionTabId };
   savedInOrder = savedInOrder.then(() => chrome.storage.session.set({ readerState }));
   return savedInOrder;
 }
 function problemUrl(url?: string): boolean { return Boolean(url && /^https:\/\/neetcode\.io\/problems\/[^/]+/.test(url)); }
 function neetcodeUrl(url?: string): boolean { return Boolean(url && /^https:\/\/neetcode\.io(?:\/|$)/.test(url)); }
+async function tabExists(id: number | null): Promise<boolean> {
+  if (id === null) return false;
+  try { await chrome.tabs.get(id); return true; } catch { return false; }
+}
+async function bindTab(id: number | null): Promise<void> {
+  if (sessionTabId === id) return;
+  sessionTabId = id;
+  panel({ kind: "session_binding", tabId: id });
+  await save();
+  await setMode(mode);
+}
 function setPanelForTab(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return Promise.resolve();
   return chrome.sidePanel.setOptions(neetcodeUrl(tab.url)
@@ -49,6 +63,7 @@ const ready = (async () => {
     readerError = saved.readerError;
     readerActivity = saved.readerActivity; focusedWindow = saved.focusedWindow;
     for (const [id, tab] of saved.problemTabs) problemTabs.set(id, tab);
+    sessionTabId = saved.sessionTabId ?? null;
   } else {
     const window = await chrome.windows.getLastFocused();
     focusedWindow = window.focused ? window.id! : chrome.windows.WINDOW_ID_NONE;
@@ -56,7 +71,7 @@ const ready = (async () => {
   const tabs = (await configureSidePanel()).filter(tab => problemUrl(tab.url));
   const live = new Set(tabs.map(tab => tab.id));
   for (const id of problemTabs.keys()) if (!live.has(id)) problemTabs.delete(id);
-  await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode }).catch(() => {})));
+  await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode: tab.id === sessionTabId ? mode : "idle" }).catch(() => {})));
   await save();
 })();
 const connection = new CompanionConnection(
@@ -77,7 +92,21 @@ const connection = new CompanionConnection(
     if (message.type === "session_state") {
       if (notice && message.mode === "watching" && (sessionState?.state === "idle" || sessionState?.state === "ended")) { notice = ""; showReaderAlert(); }
       sessionState = message;
-      void setMode(message.mode);
+      if (message.state !== "paused" || message.paused_reason !== "disconnect") disconnectResumeSent = false;
+      if (message.state !== "active") orphanReported = false;
+      void (async () => {
+        if (sessionState !== message) return;
+        if ((message.state === "idle" || message.state === "ended") && sessionTabId !== null) await bindTab(null);
+        const boundExists = await tabExists(sessionTabId);
+        if (sessionState !== message) return;
+        if (message.state === "active" && !boundExists && !orphanReported) {
+          orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
+        }
+        if (message.state === "paused" && message.paused_reason === "disconnect" && boundExists && !disconnectResumeSent) {
+          disconnectResumeSent = connection.send({ type: "session_resume", ts: new Date().toISOString() });
+        }
+        await setMode(message.mode);
+      })();
       panel({ kind: "session_state", state: message });
       return;
     }
@@ -99,7 +128,7 @@ function send(type: ReaderMessageType, payload: Record<string, unknown>): boolea
   return delivered;
 }
 function sendFocus(id: number): void {
-  if (mode === "idle") return;
+  if (mode === "idle" || id !== sessionTabId) return;
   const tab = problemTabs.get(id);
   if (!tab) return;
   const payload = { tab_active: tab.active, window_focused: tab.windowId === focusedWindow };
@@ -120,9 +149,9 @@ async function setMode(next: Mode): Promise<void> {
   await Promise.all(tabs.map(async tab => {
     if (tab.id === undefined) return;
     try {
-      await chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode });
+      await chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode: tab.id === sessionTabId ? mode : "idle" });
     } catch {
-      if (mode !== "watching" || !problemUrl(tab.url) || failedModeTabs.has(tab.id)) return;
+      if (mode !== "watching" || tab.id !== sessionTabId || !problemUrl(tab.url) || failedModeTabs.has(tab.id)) return;
       failedModeTabs.add(tab.id);
       send("reader_check", { ok: false, message: missingReaderMessage });
       readerError = missingReaderMessage;
@@ -135,11 +164,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   void (async () => {
     await ready;
     if (message?.kind === "get_status") return state;
-    if (message?.kind === "get_mode") return mode;
+    if (message?.kind === "get_mode") return sender.tab?.id === undefined || sender.tab.id === sessionTabId ? mode : "idle";
     if (message?.kind === "get_reader_error") return readerError || notice;
     if (message?.kind === "get_reader_activity") return readerActivity;
     if (message?.kind === "get_import_state") return { imported, result: importResult };
     if (message?.kind === "get_session_state") return sessionState;
+    if (message?.kind === "get_session_binding") return { tabId: sessionTabId };
     if (message?.kind === "get_settings_state") return settingsState;
     if (message?.kind === "settings_get") return connection.send({ type: "settings_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     if (message?.kind === "skip_name") {
@@ -158,9 +188,16 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const types = { start: "session_start", pause: "session_pause", resume: "session_resume", end: "session_end", overrun_finish: "session_overrun", overrun_stop: "session_overrun" } as const;
       if (!(command in types)) return { error: "Unknown session command." };
       if (command === "start" && (!Number.isInteger(message.budget_minutes) || message.budget_minutes < 1 || message.budget_minutes > 1440)) return { error: "Invalid session budget." };
+      if (command === "start" || command === "resume") {
+        if (sessionState && ["active", "paused"].includes(sessionState.state) && sessionTabId !== message.tabId && await tabExists(sessionTabId)) return { error: "A session is running in another tab." };
+        if (!Number.isInteger(message.tabId) || !await tabExists(message.tabId) || !neetcodeUrl((await chrome.tabs.get(message.tabId)).url)) return { error: "Open a NeetCode tab to start or resume." };
+      }
       const type = types[command as keyof typeof types];
       const payload = command === "start" ? { budget_minutes: message.budget_minutes } : command === "overrun_finish" ? { choice: "finish" } : command === "overrun_stop" ? { choice: "stop" } : undefined;
-      return connection.send({ type, ts: new Date().toISOString(), ...(payload ? { payload } : {}) }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      if (!connection.send({ type, ts: new Date().toISOString(), ...(payload ? { payload } : {}) })) return { error: "Tutor service isn't connected." };
+      if (command === "start" || command === "resume") { orphanReported = false; disconnectResumeSent = false; await bindTab(message.tabId); }
+      if (command === "end") await bindTab(null);
+      return { sent: true };
     }
     if (message?.kind === "import_history") {
       if (imported) return { error: "NeetCode history was already imported." };
@@ -183,6 +220,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.kind !== "reader_event") return undefined;
     const event = message.event, tab = sender.tab;
     if (tab?.id === undefined || !problemUrl(tab.url) || !event || typeof event.type !== "string") return { accepted: false, mode };
+    if (tab.id !== sessionTabId) return { accepted: false, mode };
     if (event.type === "reader_notice") {
       if (mode === "idle" || typeof event.payload?.message !== "string" || !event.payload.message) return { accepted: false, mode };
       notice = event.payload.message;
@@ -234,7 +272,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 chrome.tabs.onActivated.addListener(info => {
   void ready.then(async () => {
-    for (const [id, tab] of problemTabs) if (tab.windowId === info.windowId) { tab.active = id === info.tabId; sendFocus(id); }
+    if (info.tabId === sessionTabId) {
+      const tab = problemTabs.get(info.tabId);
+      if (tab) { tab.active = true; sendFocus(info.tabId); }
+    }
     await save();
     await setPanelForTab(await chrome.tabs.get(info.tabId));
   });
@@ -246,7 +287,13 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
   });
 });
 chrome.tabs.onCreated.addListener(tab => { void ready.then(() => setPanelForTab(tab)); });
-chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => { problemTabs.delete(id); failedModeTabs.delete(id); await save(); }); });
+chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => {
+  problemTabs.delete(id); failedModeTabs.delete(id);
+  if (id === sessionTabId) {
+    if (!orphanReported) orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
+    await bindTab(null);
+  } else await save();
+}); });
 chrome.runtime.onInstalled.addListener(() => { void ready.then(() => configureSidePanel()); });
 chrome.windows.onFocusChanged.addListener(id => {
   void ready.then(async () => { focusedWindow = id; for (const tabId of problemTabs.keys()) sendFocus(tabId); await save(); });

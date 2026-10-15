@@ -4,7 +4,7 @@ import type { SessionState, SettingsState } from "./protocol";
 
 const settings: SettingsState = { type: "settings_state", ts: "now", name: "Ada", theme: "match" };
 const base: SessionState = { type: "session_state", ts: "now", state: "idle", mode: "idle", paused_reason: null, check_message: null, budget_minutes: null, active_seconds: 0, running: false, overrun_prompt: false, problem: null, accepted: false };
-const view = (session: SessionState = base, readerError = "") => panelView({ transport: { kind: "connected" }, session_state: session, settings, readerError });
+const view = (session: SessionState = base, readerError = "") => panelView({ transport: { kind: "connected" }, session_state: session, settings, readerError, sessionTabId: 7, panelTabId: 7, boundTabExists: true });
 
 describe("panel state", () => {
   it("shows first run and a start card, then an ordinary start card after a name is set", () => {
@@ -27,6 +27,11 @@ describe("panel state", () => {
     ["disconnect", ["end"], "pause_disconnect"],
   ] as const)("maps %s pause", (reason, controls, pool) => {
     expect(view({ ...base, state: "paused", mode: "paused", paused_reason: reason, budget_minutes: 45, check_message: "Editor missing" })).toMatchObject({ body: "paused", controls, remarkPool: pool, statusTone: "paused" });
+  });
+  it("welcomes back closed, restarted, and unbound disconnect pauses", () => {
+    for (const reason of ["closed", "restart", "disconnect"] as const) {
+      expect(panelView({ transport: { kind: "connected" }, session_state: { ...base, state: "paused", mode: "paused", paused_reason: reason }, settings, readerError: "", boundTabExists: false })).toMatchObject({ body: "welcome_back", controls: ["end"], remarkPool: `pause_${reason}` });
+    }
   });
   it("blocks offline and shows transport and reader errors as alerts", () => {
     expect(panelView({ transport: { kind: "offline" }, session_state: base, settings, readerError: "" })).toMatchObject({ body: "offline", statusTone: "error", remarkPool: "offline" });
