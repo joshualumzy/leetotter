@@ -82,16 +82,22 @@ class StoredReference:
 
 
 def _check(models, reference) -> list[Verdict]:
-    """The Checker's disagreements; a reply that skips an approach's label is an error."""
-    reply = models.call_role("checker", [
+    """The Checker's disagreements. A reply that skips an approach's label gets one retry with the gap
+    named; still incomplete is an error, never a silent pass."""
+    messages = [
         {"role": "system", "content": CHECKER},
         {"role": "user", "content": reference.model_dump_json()},
-    ], CheckReply)
-    seen = {(v.approach_id, v.label) for v in reply.verdicts}
-    missing = [f"{a.id}.{label}" for a in reference.approaches for label in LABELS if (a.id, label) not in seen]
-    if missing:
-        raise ValueError(f"checker gave no verdict for: {', '.join(missing)}")
-    return [v for v in reply.verdicts if not v.agree]
+    ]
+    for attempt in range(2):
+        reply = models.call_role("checker", messages, CheckReply)
+        seen = {(v.approach_id, v.label) for v in reply.verdicts}
+        missing = [f"{a.id}.{label}" for a in reference.approaches for label in LABELS if (a.id, label) not in seen]
+        if not missing:
+            return [v for v in reply.verdicts if not v.agree]
+        if attempt:
+            raise ValueError(f"checker reply invalid after retry: no verdict for: {', '.join(missing)}")
+        messages = [*messages, {"role": "assistant", "content": reply.model_dump_json()},
+                    {"role": "user", "content": f"Your reply gave no verdict for: {', '.join(missing)}. Return a verdict for every approach and every label."}]
 
 
 def _regenerate(models, reference, disagreements) -> Reference | None:

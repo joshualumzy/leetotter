@@ -123,12 +123,19 @@ def test_invalid_writer_reply_is_never_stored(tmp_path):
     assert stored(path) == []
 
 
-def test_checker_missing_a_label_is_loud_and_nothing_is_stored(tmp_path):
+def test_checker_missing_a_label_twice_is_loud_and_nothing_is_stored(tmp_path):
     path = tmp_path / "db"
     partial = {"verdicts": verdicts()["verdicts"][:-1]}
-    with pytest.raises(ValueError, match="brute"):
-        write_and_check("two-sum", "Two Sum", FakeModels([reference()], [partial]), db_path=path)
+    with pytest.raises(ValueError, match="checker reply invalid after retry.*brute"):
+        write_and_check("two-sum", "Two Sum", FakeModels([reference()], [partial, partial]), db_path=path)
     assert stored(path) == []
+
+
+def test_checker_missing_a_label_once_is_retried_with_the_gap_named(tmp_path):
+    path = tmp_path / "db"
+    partial = {"verdicts": verdicts()["verdicts"][:-1]}
+    result = write_and_check("two-sum", "Two Sum", FakeModels([reference()], [partial, verdicts()]), db_path=path)
+    assert result.status == "checked"
 
 
 def test_rerun_replaces_unchecked_only_when_it_now_passes(tmp_path):
