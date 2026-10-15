@@ -1,22 +1,34 @@
 import type { RemarkPool } from "./panel-view";
+import { touchForDate } from "./otter";
 
 type Context = { name: string | null; minutesLeft: number | null; now: Date };
 type Line = (context: Context) => string | null;
 const named = (line: string): Line => ({ name }) => name ? line.replace("{name}", name) : null;
 const plain = (line: string): Line => () => line;
+const touchLine: Line = ({ now }) => {
+  const touch = touchForDate(now);
+  if (touch.includes("morning")) return "Morning! Kopi's ready.";
+  if (touch.includes("afternoon")) return "Sunny afternoon float.";
+  if (touch.includes("night")) return "Late one tonight.";
+  if (touch.includes("weekend")) return "A weekend float sounds lovely.";
+  if (touch === "lny") return "A little bow for the new year.";
+  if (touch === "xmas") return "A festive float today.";
+  if (touch === "halloween") return "A little magic in the air.";
+  return null;
+};
 const pools: Record<Exclude<RemarkPool, "offline">, Line[]> = {
   start: [
     plain("I'm here when you're ready."),
     plain("A little time to practise?"),
     named("Hi {name}! How long have you got?"),
-    ({ now }) => now.getHours() < 11 ? "Morning! Kopi's ready." : null,
-    ({ now }) => [0, 6].includes(now.getDay()) ? "A weekend float sounds lovely." : null,
+    touchLine,
   ],
   active: [
     plain("I'm watching quietly."),
     plain("Take your time."),
     named("I'm right here, {name}."),
     ({ minutesLeft }) => minutesLeft !== null && minutesLeft >= 0 ? `${minutesLeft} min left.` : null,
+    touchLine,
   ],
   accepted: [plain("Accepted! Keep polishing."), plain("Shell cracked!"), named("Cracked it, {name}!")],
   pause_button: [plain("Zzz… wake me when you're back."), plain("Floating in place."), named("Rest easy, {name}.")],

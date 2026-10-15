@@ -319,6 +319,26 @@ p {
   color:var(--bg)
 }
 
+.budget-other {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  color:var(--mute);
+  font-size:12px
+}
+
+.budget-custom {
+  width:78px;
+  padding:5px 7px;
+  font-size:13px;
+  appearance:textfield
+}
+
+.budget-custom::-webkit-inner-spin-button,
+.budget-custom::-webkit-outer-spin-button {
+  appearance:none
+}
+
 .name-hint {
   font-size:12px;
   color:#b45309;
@@ -534,6 +554,91 @@ p {
   display:none
 }
 
+.otter .hat,.otter .drop,.otter .yay {
+  display:none
+}
+
+.otter[data-touch~="morning"] .hat-morning,
+.otter[data-touch~="afternoon"] .hat-afternoon,
+.otter[data-touch~="night"] .hat-night,
+.otter[data-touch~="weekend"] .hat-weekend,
+.otter[data-touch~="lny"] .hat-lny,
+.otter[data-touch~="xmas"] .hat-xmas,
+.otter[data-touch~="halloween"] .hat-halloween {
+  display:inline
+}
+
+.otter .look {
+  transition:transform .25s ease-out
+}
+
+.otter .drop {
+  fill:#8fd0ef
+}
+
+.otter .yay {
+  fill:#ffcf3f
+}
+
+.react-nod .head {
+  transform-origin:50px 70px;
+  animation:react-nod .45s ease-in-out
+}
+
+.react-perk .bob {
+  animation:react-perk .35s ease-out
+}
+
+@keyframes react-perk {
+  70% { transform:translateY(-6px) }
+}
+
+@keyframes react-nod {
+  50% { transform:rotate(3deg) translateY(1px) }
+}
+
+.react-yay .bob {
+  transform-origin:50px 85px;
+  animation:react-yay 1s ease-in-out
+}
+
+@keyframes react-yay {
+  20% { transform:translateY(-7px) rotate(-7deg) }
+  40% { transform:rotate(6deg) }
+  60% { transform:translateY(-4px) rotate(-4deg) }
+  80% { transform:rotate(2deg) }
+}
+
+.react-yay .yay {
+  display:inline;
+  animation:react-pop 1s ease-out
+}
+
+@keyframes react-pop {
+  0%,100% { opacity:0 }
+  30% { opacity:1 }
+}
+
+.react-oof .head {
+  transform-origin:50px 70px;
+  animation:react-oof 1.2s ease-in-out
+}
+
+@keyframes react-oof {
+  25%,75% { transform:translateY(3px) rotate(5deg) }
+}
+
+.react-oof .drop {
+  display:inline;
+  animation:react-drop 1.2s ease-in
+}
+
+@keyframes react-drop {
+  0%,100% { opacity:0 }
+  30% { opacity:1 }
+  100% { transform:translateY(6px) }
+}
+
 .pose-shell .shell {
   display:inline;
   fill:#efc77a;
@@ -615,6 +720,10 @@ p {
 @media(prefers-reduced-motion:reduce) {
   .otter *,.resume {
     animation:none!important
+  }
+
+  .otter .look {
+    transition:none
   }
 }
 

@@ -2,7 +2,8 @@ import type { ConnectionState } from "./connection";
 import type { SessionState, SettingsState } from "./protocol";
 import { panelView, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
-import { otter } from "./otter";
+import { otter, touchForDate } from "./otter";
+import type { ReaderReaction } from "./reader-reaction";
 
 const root = document.getElementById("panel");
 const body = document.getElementById("session-body");
@@ -28,6 +29,80 @@ let receivedAt = Date.now();
 let currentRemark = "";
 let remarkKey = "";
 let selectedBudget = 45;
+let customBudget = "";
+let reactionCaption: string | null = null;
+let reactionClass = "";
+let reactionTimeout: number | undefined;
+let perkTimeout: number | undefined;
+let lastTypingReaction = 0;
+let pointer: { x: number; y: number } | null = null;
+const reactionCaptions = {
+  typing: ["I'm here."],
+  run_pass: ["Ooh, all green!", "Look at that."],
+  run_fail: ["Oof. Close, though.", "Hmm, not quite yet."],
+  submit_pass: ["Ooh, all green!", "A shell for that one!"],
+  submit_fail: ["Oof. Close, though.", "Hmm, not quite yet."],
+} satisfies Record<ReaderReaction, string[]>;
+
+function budgetValue(): number | null {
+  if (customBudget !== "") {
+    const value = Number(customBudget);
+    return /^\d+$/.test(customBudget) && Number.isInteger(value) && value >= 1 && value <= 1440 ? value : null;
+  }
+  return selectedBudget || null;
+}
+
+function positionEyes(): void {
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  for (const svg of root!.querySelectorAll<SVGSVGElement>("svg.otter")) {
+    const rect = svg.getBoundingClientRect();
+    const vx = pointer ? pointer.x - (rect.left + rect.width / 2) : -1;
+    const vy = pointer ? pointer.y - (rect.top + rect.height * .48) : 0;
+    const distance = Math.hypot(vx, vy) || 1;
+    const scale = pointer ? Math.min(1, distance / 120) : 1;
+    const dx = still ? 0 : pointer ? vx / distance * 1.8 * scale : -1.6;
+    const dy = still ? 0 : pointer ? vy / distance * 1.4 * scale : .4;
+    for (const eyes of svg.querySelectorAll<SVGGElement>(".look")) eyes.style.transform = `translate(${dx}px, ${dy}px)`;
+  }
+}
+
+function decorateOtters(): void {
+  const touch = touchForDate(new Date());
+  for (const svg of root!.querySelectorAll<SVGSVGElement>("svg.otter")) svg.setAttribute("data-touch", touch);
+  const active = root!.querySelectorAll<SVGSVGElement>("#header-otter svg.otter, .active-otter svg.otter");
+  for (const svg of active) if (reactionClass) svg.classList.add(reactionClass);
+  positionEyes();
+}
+
+function clearReaction(): void {
+  window.clearTimeout(reactionTimeout);
+  window.clearTimeout(perkTimeout);
+  reactionCaption = null;
+  reactionClass = "";
+}
+
+function playReaction(reaction: ReaderReaction): void {
+  if (session?.mode !== "watching") return;
+  const now = Date.now();
+  if (reaction === "typing" && now - lastTypingReaction < 3000) return;
+  if (reaction === "typing") lastTypingReaction = now;
+  window.clearTimeout(reactionTimeout);
+  window.clearTimeout(perkTimeout);
+  const captions = reactionCaptions[reaction];
+  reactionCaption = captions[Math.floor(Math.random() * captions.length)];
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const outcomeClass = reaction === "typing" ? "react-nod" : reaction.endsWith("pass") ? "react-yay" : "react-oof";
+  reactionClass = still ? "" : reaction.startsWith("run_") ? "react-perk" : outcomeClass;
+  const duration = reaction === "typing" ? 450 : reaction.endsWith("pass") ? 1000 : 1200;
+  render();
+  if (!still && reaction.startsWith("run_")) {
+    perkTimeout = window.setTimeout(() => {
+      reactionClass = outcomeClass;
+      render();
+    }, 350);
+  }
+  reactionTimeout = window.setTimeout(() => { clearReaction(); render(); }, duration + (reaction.startsWith("run_") && !still ? 350 : 0));
+}
 
 function element(tag: string, className = "", text = ""): HTMLElement {
   const node = document.createElement(tag);
@@ -62,7 +137,7 @@ function newRemark(view: PanelView): void {
     currentRemark = remark(view.remarkPool, { name: settings?.name || null, minutesLeft, now: new Date() });
     remarkKey = key;
   }
-  remarkNode!.textContent = currentRemark;
+  remarkNode!.textContent = reactionCaption || currentRemark;
 }
 function renderHeader(view: PanelView): void {
   root!.dataset.theme = settings?.theme || "match";
@@ -94,7 +169,21 @@ function startCard(): HTMLElement {
     chip.setAttribute("aria-pressed", String(selectedBudget === minutes));
     choices.append(chip);
   }
-  card.append(choices, button("start-session", "Start", "btn primary"));
+  const custom = element("input", "field budget-custom") as HTMLInputElement;
+  custom.id = "budget-minutes";
+  custom.type = "number";
+  custom.min = "1";
+  custom.max = "1440";
+  custom.step = "1";
+  custom.placeholder = "minutes";
+  custom.setAttribute("aria-label", "Or type minutes");
+  custom.value = customBudget;
+  const label = element("label", "budget-other", "or type minutes");
+  label.append(custom);
+  choices.append(label);
+  const start = button("start-session", "Start", "btn primary");
+  start.disabled = budgetValue() === null;
+  card.append(choices, start);
   return card;
 }
 function firstRun(): HTMLElement {
@@ -151,7 +240,7 @@ function render(): void {
     const offline = block("confused", "Tutor service isn't running", "Start it with:");
     appendText(offline, "code", "uv run python -m companion", "cmd");
     appendText(offline, "p", "The panel checks again every few seconds.", "quiet");
-    body!.append(offline); return;
+    body!.append(offline); decorateOtters(); return;
   }
   if (settingsOpen) body!.append(settingsCard());
   for (const message of [...view.alerts, actionError]) if (message) appendText(body!, "div", message, "alert").setAttribute("role", "alert");
@@ -172,6 +261,7 @@ function render(): void {
     }
   }
   body!.append(historyRow());
+  decorateOtters();
 }
 async function send(message: object): Promise<void> {
   try {
@@ -199,10 +289,15 @@ body.addEventListener("click", event => {
   if (id === "skip-name") void send({ kind: "settings_set", key: "name", value: "" });
   if (id?.startsWith("budget-")) {
     selectedBudget = Number(id.slice("budget-".length));
+    customBudget = "";
+    const custom = document.getElementById("budget-minutes") as HTMLInputElement;
+    custom.value = "";
+    (document.getElementById("start-session") as HTMLButtonElement).disabled = false;
     for (const chip of body!.querySelectorAll<HTMLButtonElement>(".budget-chip")) chip.setAttribute("aria-pressed", String(chip.id === id));
   }
   if (id === "start-session") {
-    void send({ kind: "session_command", command: "start", budget_minutes: selectedBudget });
+    const value = budgetValue();
+    if (value !== null) void send({ kind: "session_command", command: "start", budget_minutes: value });
   }
   const command = { "pause-session": "pause", "resume-session": "resume", "end-session": "end", "overrun-finish": "overrun_finish", "overrun-stop": "overrun_stop" }[id || ""];
   if (command) void send({ kind: "session_command", command });
@@ -212,6 +307,19 @@ body.addEventListener("click", event => {
     void chrome.runtime.sendMessage({ kind: "import_history" }).then(result => { importResult = result?.error || "Importing NeetCode history…"; render(); }, error => { importResult = `History import failed: ${String(error)}`; render(); });
   }
 });
+body.addEventListener("input", event => {
+  const target = event.target as HTMLInputElement;
+  if (target.id !== "budget-minutes") return;
+  customBudget = target.value;
+  selectedBudget = 0;
+  for (const chip of body!.querySelectorAll<HTMLButtonElement>(".budget-chip")) chip.setAttribute("aria-pressed", "false");
+  (document.getElementById("start-session") as HTMLButtonElement).disabled = budgetValue() === null;
+});
+root.addEventListener("pointermove", event => {
+  pointer = { x: event.clientX, y: event.clientY };
+  positionEyes();
+});
+root.addEventListener("pointerleave", () => { pointer = null; positionEyes(); });
 controls.addEventListener("click", event => {
   const id = (event.target as HTMLElement).closest("button")?.id;
   const command = { "pause-session": "pause", "resume-session": "resume", "end-session": "end" }[id || ""];
@@ -226,8 +334,17 @@ body.addEventListener("change", event => {
   if (target.id === "settings-theme") void send({ kind: "settings_set", key: "theme", value: target.value });
 });
 chrome.runtime.onMessage.addListener(message => {
-  if (message?.kind === "transport") { transport = message.state; if (transport.kind === "offline") settingsOpen = false; render(); }
-  if (message?.kind === "session_state") { session = message.state; receivedAt = Date.now(); render(); }
+  if (message?.kind === "transport") {
+    transport = message.state;
+    if (transport.kind === "offline") { settingsOpen = false; clearReaction(); }
+    render();
+  }
+  if (message?.kind === "session_state") {
+    session = message.state;
+    if (session?.mode !== "watching") clearReaction();
+    receivedAt = Date.now(); render();
+  }
+  if (message?.kind === "reader_reaction") playReaction(message.reaction);
   if (message?.kind === "settings_state") { settings = message.settings; render(); }
   if (message?.kind === "reader_error") { readerError = message.message || ""; render(); }
   if (message?.kind === "import_state") {
@@ -250,3 +367,4 @@ void Promise.all([
   receivedAt = Date.now(); render();
 }).catch(error => { transport = { kind: "error", message: String(error) }; render(); });
 window.setInterval(updateTimer, 1000);
+window.setInterval(decorateOtters, 10 * 60 * 1000);

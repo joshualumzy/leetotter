@@ -62,6 +62,20 @@ beforeEach(() => {
 });
 
 describe("worker reader delivery", () => {
+  it("relays reactions only for delivered events while watching", async () => {
+    await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" });
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    const run = { type: "run_result", payload: { slug: "duplicate-integer", cases: [{ passed: false, error_type: null, error_message: "", runtime: "", failing_case: null }] } };
+    await dispatch({ kind: "reader_event", event: run }, tab);
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "reader_reaction", reaction: "run_fail" });
+    vi.mocked(chrome.runtime.sendMessage).mockClear();
+    pushSession("paused"); await dispatch({ kind: "get_mode" });
+    await dispatch({ kind: "reader_event", event: { type: "submit_result", payload: { slug: "duplicate-integer", accepted: false, error_type: null, error_message: "", runtime: "", memory: 0, passed: 0, total: 1, failing_case: null } } }, tab);
+    expect(chrome.runtime.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "reader_reaction" }));
+    pushSession("idle"); await dispatch({ kind: "get_mode" });
+    await dispatch({ kind: "reader_event", event: run }, tab);
+    expect(chrome.runtime.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "reader_reaction" }));
+  });
   it("requests settings on connect, forwards updates, and relays panel changes", async () => {
     await start(); socket.readyState = 1;
     socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });

@@ -33,7 +33,7 @@ describe("panel actions", () => {
   it("starts, pauses, resumes and ends through session commands", async () => {
     click("skip-name");
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "", theme: "match" } });
-    expect(document.getElementById("budget-minutes")).toBeNull();
+    expect((document.getElementById("budget-minutes") as HTMLInputElement).value).toBe("");
     expect(document.querySelectorAll(".budget-chip")).toHaveLength(4);
     expect(document.getElementById("budget-45")?.getAttribute("aria-pressed")).toBe("true");
     click("start-session");
@@ -50,6 +50,42 @@ describe("panel actions", () => {
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume" });
     click("end-session");
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "end" });
+  });
+  it("uses valid custom minutes and clears them when a chip is pressed", () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "", theme: "match" } });
+    const custom = document.getElementById("budget-minutes") as HTMLInputElement;
+    const start = document.getElementById("start-session") as HTMLButtonElement;
+    for (const value of ["", "0", "1.5", "1441"]) {
+      custom.value = value;
+      custom.dispatchEvent(new window.Event("input", { bubbles: true }));
+      expect(start.disabled).toBe(true);
+      expect(document.querySelector('.budget-chip[aria-pressed="true"]')).toBeNull();
+    }
+    custom.value = "1440";
+    custom.dispatchEvent(new window.Event("input", { bubbles: true }));
+    expect(start.disabled).toBe(false);
+    click("start-session");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 1440 });
+    custom.value = "1";
+    custom.dispatchEvent(new window.Event("input", { bubbles: true }));
+    click("start-session");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 1 });
+    click("budget-60");
+    expect(custom.value).toBe("");
+    expect(document.getElementById("budget-60")?.getAttribute("aria-pressed")).toBe("true");
+    click("start-session");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 60 });
+  });
+  it("perks before a run outcome and clears the reaction on pause", async () => {
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45 } });
+    const normal = document.getElementById("remark")?.textContent;
+    notify({ kind: "reader_reaction", reaction: "run_fail" });
+    expect(document.getElementById("remark")?.textContent).toMatch(/Oof|not quite|close/i);
+    expect(document.querySelector("#header-otter .otter")?.classList.contains("react-perk")).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector("#header-otter .otter")?.classList.contains("react-oof")).toBe(true));
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "button", budget_minutes: 45 } });
+    expect(document.getElementById("remark")?.textContent).not.toBe(normal);
+    expect(document.querySelector("#header-otter .otter")?.classList.contains("react-oof")).toBe(false);
   });
   it("asks for the first name and supports Enter, Skip and settings", () => {
     expect(document.getElementById("first-run")?.textContent).toContain("What should I call you?");

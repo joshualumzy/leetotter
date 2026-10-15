@@ -1,5 +1,6 @@
 import { CompanionConnection, type ConnectionState } from "./connection";
 import { readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type SessionState, type SettingsState } from "./protocol";
+import { reactionForReaderEvent } from "./reader-reaction";
 
 declare const __LEETOTTER_PORT__: number;
 type Mode = "idle" | "watching" | "paused";
@@ -120,7 +121,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const command = message.command;
       const types = { start: "session_start", pause: "session_pause", resume: "session_resume", end: "session_end", overrun_finish: "session_overrun", overrun_stop: "session_overrun" } as const;
       if (!(command in types)) return { error: "Unknown session command." };
-      if (command === "start" && (!Number.isInteger(message.budget_minutes) || message.budget_minutes <= 0)) return { error: "Invalid session budget." };
+      if (command === "start" && (!Number.isInteger(message.budget_minutes) || message.budget_minutes < 1 || message.budget_minutes > 1440)) return { error: "Invalid session budget." };
       const type = types[command as keyof typeof types];
       const payload = command === "start" ? { budget_minutes: message.budget_minutes } : command === "overrun_finish" ? { choice: "finish" } : command === "overrun_stop" ? { choice: "stop" } : undefined;
       return connection.send({ type, ts: new Date().toISOString(), ...(payload ? { payload } : {}) }) ? { sent: true } : { error: "Tutor service isn't connected." };
@@ -170,6 +171,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (event.type === "focus_changed") return { accepted: false, mode };
       const payload = validateReaderPayload(event.type as ReaderMessageType, event.payload);
       const delivered = send(event.type as ReaderMessageType, payload);
+      if (delivered && mode === "watching") {
+        const reaction = reactionForReaderEvent(event.type as ReaderMessageType, payload);
+        if (reaction) panel({ kind: "reader_reaction", reaction });
+      }
       if (delivered && event.type === "problem_opened") {
         problemTabs.set(tab.id, { windowId: tab.windowId, active: Boolean(tab.active) });
         sendFocus(tab.id);
