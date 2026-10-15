@@ -66,6 +66,7 @@ Each page reader produces the same events regardless of site:
 | `problem_opened` | site, problem slug, title |
 | `code_changed` | diff against the previous snapshot (debounced to at most one every 3 s while typing) |
 | `code_snapshot` | full code (on problem open, every 60 s while active, before every run/submit) |
+| `problem_statement` | slug and the problem description text, read from NeetCode's Question tab (it is in the page only while that tab shows, so it can arrive after `problem_opened` and is re-sent if the text changes; best-effort, its absence is not a reader failure) |
 | `run_result` | passed/failed per test case, error type and message, runtime |
 | `submit_result` | accepted or not, failing case, runtime and memory |
 | `focus_changed` | problem tab active or not, Chrome window focused or not |
@@ -172,7 +173,7 @@ From the diagnosis it chooses the next move. Its default is to build your intuit
 - weigh the value of more struggle against the time left in the session
 - after a solution is shown, add only the explanation you still need, with no repeated Socratic process
 
-**Each help turn is logged** with its gap and kind so the attempt can be graded (§8): `question`, `trace`, `analogy`, `teach_tool` (explaining a data structure or algorithm you didn't know), `syntax` (Python mechanics, such as how `heapq` is called, never the algorithm), `snippet`, `partial_logic`, `full_solution`. The Tutor labels each turn; the Grader checks the labels against the turns' text and corrects any that are wrong, and corrections are logged.
+**Each help turn is logged** with its gap and kind so the attempt can be graded (§8). A gap that fits none of the table's rows is `other`, with a one-line `gap_note` in the Tutor's own words. A chat reply that gives no help ("thanks, got it") is labelled `none` for both gap and kind and doesn't count as help; a press of "I need help" is never `none`, and a first press is never `full_solution`. The kinds are `question`, `trace`, `analogy`, `teach_tool` (explaining a data structure or algorithm you didn't know), `syntax` (Python mechanics, such as how `heapq` is called, never the algorithm), `snippet`, `partial_logic`, `full_solution`. The Tutor labels each turn; the Grader checks the labels against the turns' text and corrects any that are wrong, and corrections are logged.
 
 **Leetotter's Tutor is the only helper during a session.** It replaces any other AI assistant you'd use while solving: outside help is invisible to Leetotter and would make your progress look better than it is. (Chrome shows one side panel at a time anyway.) NeetCode's own hints, solutions and NeetBot aren't used and aren't tracked.
 
