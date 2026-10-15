@@ -201,7 +201,7 @@ Examples of good replies (invented problems; never reuse their wording):
 # Bounds on what is sent, so a huge paste or a long session can't swamp the prompt; anything cut is said.
 STATEMENT_LIMIT = 6000
 CODE_LIMIT = 12000
-CONVERSATION_LIMIT = 12000
+CONVERSATION_LIMIT = 3000
 RECENT_EDITS = 5
 EDIT_LIMIT = 1500
 RECENT_RESULTS = 4
