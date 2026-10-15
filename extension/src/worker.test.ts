@@ -244,6 +244,13 @@ describe("worker reader delivery", () => {
       expect(socket.sent.at(-1)).toMatchObject({ type, ...(payload ? { payload } : {}) });
     }
   });
+  it("only starts on the requested tab's current problem URL, while resume accepts another NeetCode page", async () => {
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
+    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 25, tabId: 7 })).toEqual({ error: "Open a problem on NeetCode to start a session." });
+    expect(socket.sent.some(item => item.type === "session_start")).toBe(false);
+    expect(await dispatch({ kind: "session_command", command: "resume", tabId: 7 })).toEqual({ sent: true });
+  });
   it("binds a session to one tab, routes watch mode, and refuses another tab", async () => {
     await start(); socket.readyState = 1;
     vi.mocked(chrome.tabs.query).mockResolvedValue([
@@ -361,6 +368,31 @@ describe("worker reader delivery", () => {
     focused.at(-1)?.(-1);
     await dispatch({ kind: "get_mode" });
     expect(socket.sent).toHaveLength(before);
+  });
+
+  it("accepts the new problem after tab navigation clears its map and the sender URL lags", async () => {
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
+    socket.readyState = 1;
+    const first = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, first);
+    updated.at(-1)?.(7, { url: "https://neetcode.io/practice/" }, { ...first, url: "https://neetcode.io/practice/" });
+    await vi.waitFor(() => expect(saved.readerState.problemTabs).toHaveLength(0));
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ ...first, url: "https://neetcode.io/problems/two-sum/" } as chrome.tabs.Tab);
+    const next = { kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "two-sum", title: "Two Sum" } } };
+    expect(await dispatch(next, { ...first, url: "https://neetcode.io/practice/" })).toEqual({ accepted: true, mode: "watching" });
+    expect(socket.sent.at(-2)).toMatchObject({ type: "problem_opened", payload: { slug: "two-sum", title: "Two Sum" } });
+    expect(saved.readerState.problemTabs).toHaveLength(1);
+  });
+
+  it("forwards the contents-page self-check while the bound tab remains on NeetCode", async () => {
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
+    socket.readyState = 1;
+    updated.at(-1)?.(7, { url: "https://neetcode.io/practice/" }, { id: 7, url: "https://neetcode.io/practice/" });
+    await vi.waitFor(() => expect(saved.readerState.problemTabs).toHaveLength(0));
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
+    const message = "Open a problem and I'll pick the timer back up.";
+    expect(await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: false, message } } }, { id: 7, url: "https://neetcode.io/practice/" })).toEqual({ accepted: true, mode: "watching" });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: false, message } });
   });
 
   it("sends a focus change that was dropped while disconnected once it reconnects", async () => {

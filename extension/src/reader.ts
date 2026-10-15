@@ -74,6 +74,7 @@ export class NeetCodeReader {
   private openedSlug = "";
   private titleOf?: { slug: string; title: string };
   private resultFailure = false;
+  private offProblemReported = false;
   private cleanup: (() => void)[] = [];
   constructor(private emit: (event: ReaderEvent) => void, private page: Window = window) {}
 
@@ -136,7 +137,7 @@ export class NeetCodeReader {
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
     if (mode !== "watching") {
       for (const timer of this.pending) clearTimeout(timer);
-      if (mode === "idle") { this.pending.clear(); this.openedSlug = ""; }
+      if (mode === "idle") { this.pending.clear(); this.openedSlug = ""; this.offProblemReported = false; }
     }
     if (mode === "watching") {
       if (was !== "watching") this.resultFailure = false;
@@ -177,7 +178,16 @@ export class NeetCodeReader {
   open(force = false): void {
     if (this.mode === "idle") return;
     const slug = this.slugFromUrl();
-    if (!slug) return;
+    if (!slug) {
+      this.slug = "";
+      this.ready = false;
+      if (!this.offProblemReported) {
+        this.offProblemReported = true;
+        this.fail("Open a problem and I'll pick the timer back up.");
+      }
+      return;
+    }
+    this.offProblemReported = false;
     if (slug !== this.slug) this.ready = false;
     if (!force && slug === this.slug && this.ready) return;
     this.slug = slug;

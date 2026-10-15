@@ -28,6 +28,11 @@ describe("panel state", () => {
   ] as const)("maps %s pause", (reason, controls, pool) => {
     expect(view({ ...base, state: "paused", mode: "paused", paused_reason: reason, budget_minutes: 45, check_message: "Editor missing" })).toMatchObject({ body: "paused", controls, remarkPool: pool, statusTone: "paused" });
   });
+  it("uses the page instruction for a contents-page check and keeps real reader failures", () => {
+    const paused = { ...base, state: "paused", mode: "paused", paused_reason: "check", check_message: "Open a problem and I'll pick the timer back up." } as SessionState;
+    expect(view(paused)).toMatchObject({ pauseTitle: "Paused", pauseText: paused.check_message, remarkPool: "pause_check_page" });
+    expect(view({ ...paused, check_message: "Can't read the editor on this page" })).toMatchObject({ pauseTitle: "Paused for a reader check", pauseText: "Can't read the editor on this page", remarkPool: "pause_check" });
+  });
   it("welcomes back closed, restarted, and unbound disconnect pauses", () => {
     for (const reason of ["closed", "restart", "disconnect"] as const) {
       expect(panelView({ transport: { kind: "connected" }, session_state: { ...base, state: "paused", mode: "paused", paused_reason: reason }, settings, readerError: "", boundTabExists: false })).toMatchObject({ body: "welcome_back", controls: ["end"], remarkPool: `pause_${reason}` });

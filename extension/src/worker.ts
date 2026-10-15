@@ -190,7 +190,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (command === "start" && (!Number.isInteger(message.budget_minutes) || message.budget_minutes < 1 || message.budget_minutes > 1440)) return { error: "Invalid session budget." };
       if (command === "start" || command === "resume") {
         if (sessionState && ["active", "paused"].includes(sessionState.state) && sessionTabId !== message.tabId && await tabExists(sessionTabId)) return { error: "A session is running in another tab." };
-        if (!Number.isInteger(message.tabId) || !await tabExists(message.tabId) || !neetcodeUrl((await chrome.tabs.get(message.tabId)).url)) return { error: "Open a NeetCode tab to start or resume." };
+        let tab: chrome.tabs.Tab;
+        try { tab = await chrome.tabs.get(message.tabId); } catch { return { error: "Open a NeetCode tab to start or resume." }; }
+        if (!Number.isInteger(message.tabId) || !neetcodeUrl(tab.url)) return { error: "Open a NeetCode tab to start or resume." };
+        if (command === "start" && !problemUrl(tab.url)) return { error: "Open a problem on NeetCode to start a session." };
       }
       const type = types[command as keyof typeof types];
       const payload = command === "start" ? { budget_minutes: message.budget_minutes } : command === "overrun_finish" ? { choice: "finish" } : command === "overrun_stop" ? { choice: "stop" } : undefined;
@@ -219,8 +222,16 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if (message?.kind !== "reader_event") return undefined;
     const event = message.event, tab = sender.tab;
-    if (tab?.id === undefined || !problemUrl(tab.url) || !event || typeof event.type !== "string") return { accepted: false, mode };
+    if (tab?.id === undefined || !event || typeof event.type !== "string") return { accepted: false, mode };
     if (tab.id !== sessionTabId) return { accepted: false, mode };
+    let currentUrl = tab.url;
+    if (!problemUrl(currentUrl) || event.type === "problem_opened") {
+      try { currentUrl = (await chrome.tabs.get(tab.id)).url; } catch { return { accepted: false, mode }; }
+    }
+    if (event.type === "reader_check") {
+      if (!neetcodeUrl(currentUrl)) return { accepted: false, mode };
+    } else if (!problemUrl(currentUrl)) return { accepted: false, mode };
+    if (event.type === "problem_opened" && new URL(currentUrl!).pathname.split("/")[2] !== event.payload?.slug) return { accepted: false, mode };
     if (event.type === "reader_notice") {
       if (mode === "idle" || typeof event.payload?.message !== "string" || !event.payload.message) return { accepted: false, mode };
       notice = event.payload.message;

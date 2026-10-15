@@ -34,18 +34,21 @@ const pools: Record<Exclude<RemarkPool, "offline">, Line[]> = {
   pause_button: [plain("Zzz… wake me when you're back."), plain("Floating in place."), named("Rest easy, {name}.")],
   pause_focus: [plain("Napping till you're back on the problem."), plain("I'll be here when the tab is active."), named("See you soon, {name}.")],
   pause_check: [plain("The page reader's check failed.")],
+  pause_check_page: [plain("I'll wait here for a problem.")],
   pause_disconnect: [plain("The tutor connection was lost.")],
   pause_closed: [plain("Welcome back."), plain("I'm still here."), named("Good to see you, {name}.")],
   pause_restart: [plain("Ready when you are."), plain("Here again, whenever you like."), named("Welcome back, {name}.")],
   overrun: [plain("Time's up. Your call."), plain("One more, or float ashore?"), named("Your call, {name}.")],
   ended: [plain("A good place to rest."), plain("That session is tucked away."), named("See you next time, {name}.")],
+  name_first: [named("Nice to meet you, {name}!"), named("Hello, {name}!"), named("Glad to meet you, {name}!")],
+  name_settings: [named("Got it, {name}."), named("Noted, {name}."), named("Okay, {name}.")],
 };
-let last = "";
+const lastByPool = new Map<RemarkPool, string>();
 export function remark(pool: RemarkPool, context: Context, random = Math.random): string {
   if (pool === "offline") return "The tutor service isn't running.";
   const available = pools[pool].map(line => line(context)).filter((line): line is string => Boolean(line));
-  const choices = available.filter(line => line !== last);
+  const choices = available.filter(line => line !== lastByPool.get(pool));
   const selected = (choices.length ? choices : available)[Math.floor(random() * (choices.length ? choices.length : available.length))];
-  last = selected;
+  lastByPool.set(pool, selected);
   return selected;
 }

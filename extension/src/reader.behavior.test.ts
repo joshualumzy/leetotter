@@ -157,6 +157,24 @@ describe("page reader", () => {
     expect(events.filter(e => e.type === "problem_opened").at(-1)?.payload).toMatchObject({ slug: "two-sum", title: "Two Sum" });
   });
 
+  it("pauses once on a contents route and announces the next problem from its own timer", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.history.pushState({}, "", "/practice/");
+    vi.advanceTimersByTime(1000);
+    expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: "Open a problem and I'll pick the timer back up." } });
+    const failures = events.filter(e => e.type === "reader_check" && e.payload.ok === false);
+    vi.advanceTimersByTime(3000);
+    expect(events.filter(e => e.type === "reader_check" && e.payload.ok === false)).toEqual(failures);
+    reader.setMode("paused");
+    page.history.pushState({}, "", "/problems/two-sum/");
+    page.document.querySelector("h1")!.textContent = "Two Sum";
+    page.localStorage.setItem("two-sum_python_tabs", JSON.stringify([{ code: "next" }]));
+    vi.advanceTimersByTime(1000);
+    expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: true } });
+    reader.setMode("watching");
+    expect(events.filter(e => e.type === "problem_opened").at(-1)?.payload).toEqual({ site: "neetcode", slug: "two-sum", title: "Two Sum" });
+  });
+
   it("announces a new route after a title check recovers from pause", () => {
     ready(); reader.install(); reader.setMode("watching");
     page.history.pushState({}, "", "/problems/two-sum/");

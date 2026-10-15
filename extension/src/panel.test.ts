@@ -6,7 +6,9 @@ import type { SessionState } from "./protocol";
 let listener: (message: any) => void;
 let sendMessage: ReturnType<typeof vi.fn>;
 let activeTab: number;
+let activeUrl: string;
 let activated: (info: { tabId: number; windowId: number }) => void;
+let updatedTab: (id: number, change: { url?: string }) => void;
 let tabUpdate: ReturnType<typeof vi.fn>;
 let windowUpdate: ReturnType<typeof vi.fn>;
 const session: SessionState = { type: "session_state", ts: "now", state: "idle", mode: "idle", paused_reason: null, check_message: null, budget_minutes: null, active_seconds: 0, running: false, overrun_prompt: false, problem: null, accepted: false };
@@ -20,6 +22,7 @@ beforeEach(async () => {
   vi.stubGlobal("document", dom.window.document);
   vi.stubGlobal("window", dom.window);
   activeTab = 7;
+  activeUrl = "https://neetcode.io/problems/duplicate-integer/";
   tabUpdate = vi.fn(async () => {});
   windowUpdate = vi.fn(async () => {});
   sendMessage = vi.fn(async (message: any) => {
@@ -33,13 +36,53 @@ beforeEach(async () => {
     return { sent: true };
   });
   vi.stubGlobal("chrome", { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, sendMessage },
-    tabs: { query: vi.fn(async () => [{ id: activeTab }]), get: vi.fn(async (id: number) => ({ id, windowId: 3 })), update: tabUpdate,
-      onActivated: { addListener: (fn: typeof activated) => { activated = fn; } } }, windows: { update: windowUpdate } });
+    tabs: { query: vi.fn(async () => [{ id: activeTab, url: activeUrl }]), get: vi.fn(async (id: number) => ({ id, windowId: 3, url: activeUrl })), update: tabUpdate,
+      onActivated: { addListener: (fn: typeof activated) => { activated = fn; } }, onUpdated: { addListener: (fn: typeof updatedTab) => { updatedTab = fn; } } }, windows: { update: windowUpdate } });
   await import("./panel");
   await vi.waitFor(() => expect(document.getElementById("first-run")).toBeTruthy());
 });
 
 describe("panel actions", () => {
+  it("disables Start off a problem and refreshes after navigation", async () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    activeUrl = "https://neetcode.io/practice/";
+    updatedTab(7, { url: activeUrl });
+    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(true));
+    expect(document.getElementById("session-body")?.textContent).toContain("Open a problem on NeetCode to start.");
+    click("budget-30"); click("start-session");
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "session_command", command: "start" }));
+    activeUrl = "https://neetcode.io/problems/two-sum/";
+    updatedTab(7, { url: activeUrl });
+    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(false));
+    expect(document.getElementById("session-body")?.textContent).not.toContain("Open a problem on NeetCode to start.");
+  });
+  it("acknowledges a saved first name for four seconds", async () => {
+    vi.useFakeTimers();
+    const input = document.getElementById("first-name") as HTMLInputElement;
+    input.value = "Ada"; click("save-first-name");
+    await Promise.resolve();
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    expect(document.getElementById("remark")?.textContent).toMatch(/Ada/);
+    expect(document.getElementById("remark")?.textContent).toMatch(/meet|hello|glad/i);
+    vi.advanceTimersByTime(4000);
+    expect(document.getElementById("remark")?.textContent).not.toMatch(/meet|hello|glad/i);
+    vi.useRealTimers();
+  });
+  it("does not acknowledge a skipped name", () => {
+    click("skip-name");
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "", theme: "match" } });
+    expect(document.getElementById("remark")?.textContent).not.toMatch(/meet|hello|glad|got it|noted|okay/i);
+  });
+  it("acknowledges a settings Save after confirmation", async () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    click("header-otter");
+    const input = document.getElementById("settings-name") as HTMLInputElement;
+    input.value = "Grace"; input.dispatchEvent(new window.Event("input", { bubbles: true })); click("save-settings-name");
+    await Promise.resolve();
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Grace", theme: "match" } });
+    expect(document.getElementById("remark")?.textContent).toMatch(/Grace/);
+    expect(document.getElementById("remark")?.textContent).toMatch(/got it|noted|okay/i);
+  });
   it("shows only a route back to the bound tab and follows it", async () => {
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
     notify({ kind: "session_binding", tabId: 8 });

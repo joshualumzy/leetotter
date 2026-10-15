@@ -21,6 +21,7 @@ let transport: ConnectionState = { kind: "offline" };
 let session: SessionState | undefined;
 let sessionTabId: number | null = null;
 let panelTabId: number | null = null;
+let panelTabUrl = "";
 let boundTabExists = false;
 let startAfterEnd = false;
 let settings: SettingsState | undefined;
@@ -32,6 +33,9 @@ let settingsOpen = false;
 let receivedAt = Date.now();
 let currentRemark = "";
 let remarkKey = "";
+let pendingName: { value: string; pool: "name_first" | "name_settings" } | null = null;
+let nameAcknowledgement = "";
+let acknowledgementTimer: number | undefined;
 let selectedBudget = 45;
 let customBudget = "";
 let reactionCaption: string | null = null;
@@ -136,8 +140,10 @@ function updateTimer(): void {
 async function refreshPanelTab(): Promise<void> {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   panelTabId = tabs[0]?.id ?? null;
+  panelTabUrl = tabs[0]?.url ?? "";
   render();
 }
+function onProblemPage(): boolean { return /^https:\/\/neetcode\.io\/problems\/[^/]+/.test(panelTabUrl); }
 async function refreshBinding(id: number | null): Promise<void> {
   sessionTabId = id;
   boundTabExists = false;
@@ -148,6 +154,7 @@ async function refreshBinding(id: number | null): Promise<void> {
 }
 function newRemark(view: PanelView): void {
   if (transport.kind === "error") { remarkNode!.textContent = `Tutor service error: ${transport.message}`; return; }
+  if (nameAcknowledgement) { remarkNode!.textContent = nameAcknowledgement; return; }
   const key = `${view.remarkPool}:${session?.state || "idle"}:${session?.paused_reason || ""}:${session?.overrun_prompt || false}:${session?.problem?.slug || ""}`;
   if (key !== remarkKey) {
     const minutesLeft = session?.budget_minutes == null ? null : Math.ceil((session.budget_minutes * 60 - currentSeconds()) / 60);
@@ -199,8 +206,9 @@ function startCard(): HTMLElement {
   label.append(custom);
   choices.append(label);
   const start = button("start-session", "Start", "btn primary");
-  start.disabled = budgetValue() === null;
+  start.disabled = budgetValue() === null || !onProblemPage();
   card.append(choices, start);
+  if (!onProblemPage()) appendText(card, "p", "Open a problem on NeetCode to start.", "quiet");
   return card;
 }
 function firstRun(): HTMLElement {
@@ -317,7 +325,9 @@ function saveName(id: string): void {
     return;
   }
   if (id === "settings-name" && value === (settings?.name || "")) return;
-  void send({ kind: "settings_set", key: "name", value });
+  const request = { value, pool: id === "first-name" ? "name_first" : "name_settings" } as const;
+  pendingName = request;
+  void send({ kind: "settings_set", key: "name", value }).then(ok => { if (!ok && pendingName === request) pendingName = null; });
 }
 headerOtter.addEventListener("click", () => { settingsOpen = !settingsOpen; render(); });
 body.addEventListener("click", event => {
@@ -331,12 +341,12 @@ body.addEventListener("click", event => {
     customBudget = "";
     const custom = document.getElementById("budget-minutes") as HTMLInputElement;
     custom.value = "";
-    (document.getElementById("start-session") as HTMLButtonElement).disabled = false;
+    (document.getElementById("start-session") as HTMLButtonElement).disabled = !onProblemPage();
     for (const chip of body!.querySelectorAll<HTMLButtonElement>(".budget-chip")) chip.setAttribute("aria-pressed", String(chip.id === id));
   }
   if (id === "start-session") {
     const value = budgetValue();
-    if (value !== null) void send({ kind: "session_command", command: "start", budget_minutes: value, tabId: panelTabId });
+    if (value !== null && onProblemPage()) void send({ kind: "session_command", command: "start", budget_minutes: value, tabId: panelTabId });
   }
   if (id === "go-to-session-tab" && sessionTabId !== null) void chrome.tabs.get(sessionTabId).then(async tab => {
     await chrome.tabs.update(tab.id!, { active: true });
@@ -368,7 +378,7 @@ body.addEventListener("input", event => {
   customBudget = target.value;
   selectedBudget = 0;
   for (const chip of body!.querySelectorAll<HTMLButtonElement>(".budget-chip")) chip.setAttribute("aria-pressed", "false");
-  (document.getElementById("start-session") as HTMLButtonElement).disabled = budgetValue() === null;
+  (document.getElementById("start-session") as HTMLButtonElement).disabled = budgetValue() === null || !onProblemPage();
 });
 root.addEventListener("pointermove", event => {
   pointer = { x: event.clientX, y: event.clientY };
@@ -403,7 +413,16 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "session_binding") void refreshBinding(message.tabId);
   if (message?.kind === "reader_reaction") playReaction(message.reaction);
-  if (message?.kind === "settings_state") { settings = message.settings; render(); }
+  if (message?.kind === "settings_state") {
+    settings = message.settings;
+    if (pendingName && settings?.name === pendingName.value) {
+      window.clearTimeout(acknowledgementTimer);
+      nameAcknowledgement = remark(pendingName.pool, { name: pendingName.value, minutesLeft: null, now: new Date() });
+      pendingName = null;
+      acknowledgementTimer = window.setTimeout(() => { nameAcknowledgement = ""; render(); }, 4000);
+    }
+    render();
+  }
   if (message?.kind === "reader_error") { readerError = message.message || ""; render(); }
   if (message?.kind === "import_state") {
     imported = message.imported;
@@ -414,6 +433,7 @@ chrome.runtime.onMessage.addListener(message => {
 });
 render();
 chrome.tabs.onActivated.addListener(() => { void refreshPanelTab(); });
+chrome.tabs.onUpdated.addListener((id, change) => { if (id === panelTabId && change.url) void refreshPanelTab(); });
 void refreshPanelTab();
 void Promise.all([
   chrome.runtime.sendMessage({ kind: "get_status" }),

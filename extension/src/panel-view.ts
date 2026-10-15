@@ -4,7 +4,7 @@ import type { SessionState, SettingsState } from "./protocol";
 export type Control = "pause" | "resume" | "end";
 export type Body = "offline" | "first_run" | "start" | "active" | "paused" | "welcome_back" | "another_tab" | "overrun" | "ended";
 export type RemarkPool = "offline" | "start" | "active" | "accepted" |
-  "pause_button" | "pause_focus" | "pause_check" | "pause_disconnect" | "pause_closed" | "pause_restart" | "overrun" | "ended";
+  "pause_button" | "pause_focus" | "pause_check" | "pause_check_page" | "pause_disconnect" | "pause_closed" | "pause_restart" | "overrun" | "ended" | "name_first" | "name_settings";
 export type PanelView = {
   title: string;
   statusTone: "live" | "good" | "paused" | "error" | "idle";
@@ -37,13 +37,14 @@ export function panelView(input: { transport: ConnectionState; session_state?: S
   if (session.state === "ended") return { ...common, statusTone: transport.kind === "error" ? "error" : "idle", controls: [], body: "ended", remarkPool: "ended" };
   if (session.state === "paused") {
     const reason = session.paused_reason || "button";
+    const pageCheck = reason === "check" && session.check_message === "Open a problem and I'll pick the timer back up.";
     if (["closed", "restart"].includes(reason) || (reason === "disconnect" && !boundTabExists)) {
       return { ...common, statusTone: "paused", controls: ["end"], body: "welcome_back", remarkPool: `pause_${reason}` as RemarkPool };
     }
     const info = {
       button: ["Paused", "The timer's stopped and nothing is watched until you resume."],
       focus: ["Paused while you're away", "The problem tab isn't active. This resumes on its own when you're back on it."],
-      check: ["Paused for a reader check", session.check_message || "The page reader's self-check failed. The session resumes when the check passes."],
+      check: [pageCheck ? "Paused" : "Paused for a reader check", session.check_message || "The page reader's self-check failed. The session resumes when the check passes."],
       disconnect: ["Paused while disconnected", "The connection to the tutor was lost. This resumes when it returns."],
       closed: ["Paused", "The tab was closed."],
       restart: ["Paused", "The tutor restarted."],
@@ -53,7 +54,7 @@ export function panelView(input: { transport: ConnectionState; session_state?: S
       statusTone: transport.kind === "error" ? "error" : "paused",
       controls: reason === "button" ? ["resume", "end"] : ["end"],
       body: "paused",
-      remarkPool: `pause_${reason}`,
+      remarkPool: pageCheck ? "pause_check_page" : `pause_${reason}`,
       pauseTitle: info[0],
       pauseText: info[1],
     };
