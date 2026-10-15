@@ -1,10 +1,14 @@
 """Session state, active-time accounting, and append-only session events."""
 
 import json
+import logging
+from datetime import datetime
 from companion.store import open_store
 
 
 READER_TYPES = frozenset({"problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
+EVENT_TYPES = READER_TYPES | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "overrun_prompted", "overrun_choice", "session_restored"}
+logger = logging.getLogger(__name__)
 
 
 class SessionCoordinator:
@@ -24,12 +28,152 @@ class SessionCoordinator:
         self.accepted = False
         self.pending_accept = False
         with open_store(db_path) as db:
-            rows = db.execute("SELECT id, started_at FROM sessions WHERE ended_at IS NULL").fetchall()
-            for session_id, started_at in rows:
-                last = db.execute("SELECT ts FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
-                ended_at = last[0] if last else started_at
-                db.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (ended_at, session_id))
-                self._event(db, session_id, ended_at, "session_interrupted", {})
+            rows = db.execute("SELECT id, started_at, budget_minutes FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC").fetchall()
+            if rows:
+                ids = [row[0] for row in rows]
+                placeholders = ",".join("?" for _ in ids)
+                event_rows = db.execute(
+                    f"SELECT session_id, ts, type, payload FROM events WHERE session_id IN ({placeholders}) ORDER BY id", ids
+                ).fetchall()
+                history = {session_id: [] for session_id in ids}
+                for session_id, ts, kind, payload in event_rows:
+                    history[session_id].append((ts, kind, payload))
+                for session_id, started_at, budget in rows[1:]:
+                    self._interrupt(db, session_id, self._last_event_time(history[session_id], started_at))
+                session_id, started_at, budget = rows[0]
+                try:
+                    restored = self._replay(started_at, budget, history[session_id])
+                except (ValueError, TypeError, KeyError, OverflowError) as exc:
+                    logger.error("Cannot restore session %s: %s", session_id, exc, exc_info=True)
+                    self._interrupt(db, session_id, self._last_event_time(history[session_id], started_at))
+                else:
+                    self.session_id = session_id
+                    self.budget_minutes = budget
+                    self.elapsed = restored[0]
+                    self.problem = restored[1]
+                    self.accepted = restored[2]
+                    self.pending_accept = restored[3]
+                    self.overrun_prompt = restored[4]
+                    self.prompted = restored[5]
+                    self.state = "paused"
+                    self.paused_reason = "restart"
+                    self._event(db, session_id, clock().isoformat(), "session_restored", {"active_seconds": int(self.elapsed)})
+
+    def _interrupt(self, db, session_id, ended_at):
+        db.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (ended_at, session_id))
+        self._event(db, session_id, ended_at, "session_interrupted", {})
+
+    @staticmethod
+    def _last_event_time(history, started_at):
+        if history:
+            try:
+                last = datetime.fromisoformat(history[-1][0])
+                if last.tzinfo is not None:
+                    return history[-1][0]
+            except (TypeError, ValueError):
+                pass
+        return started_at
+
+    @staticmethod
+    def _replay(started_at, budget, history):
+        if type(budget) is not int or budget <= 0:
+            raise ValueError("Invalid session budget")
+        started = datetime.fromisoformat(started_at)
+        if started.tzinfo is None:
+            raise ValueError("Session start has no timezone")
+        elapsed = 0.0
+        started_seen = False
+        active_since = None
+        problem = None
+        accepted = pending_accept = prompted = overrun_prompt = False
+        if not history or history[0][1] != "session_started":
+            raise ValueError("Missing session_started event")
+        previous = started
+        for ts, kind, raw_payload in history:
+            at = datetime.fromisoformat(ts)
+            if at.tzinfo is None or at < previous:
+                raise ValueError("Invalid event timestamp")
+            previous = at
+            payload = json.loads(raw_payload)
+            if kind not in EVENT_TYPES or not isinstance(payload, dict):
+                raise ValueError(f"Unexpected {kind} event payload")
+            if kind == "session_started":
+                if started_seen or at != started or type(payload.get("budget_minutes")) is not int or payload["budget_minutes"] != budget:
+                    raise ValueError("Invalid session_started event")
+                started_seen = True
+                active_since = at
+            elif kind == "session_paused":
+                if payload.get("reason") not in ("button", "focus", "check", "disconnect", "closed") or active_since is None:
+                    raise ValueError("Invalid session_paused event")
+                elapsed += (at - active_since).total_seconds()
+                active_since = None
+            elif kind == "session_resumed":
+                if payload.get("reason") not in ("button", "focus", "check", "disconnect", "closed", "restart") or active_since is not None:
+                    raise ValueError("Invalid session_resumed event")
+                active_since = at
+                if pending_accept and problem and not accepted:
+                    accepted = True
+                pending_accept = False
+            elif kind == "session_restored":
+                seconds = payload.get("active_seconds")
+                if type(seconds) is not int or seconds < 0:
+                    raise ValueError("Invalid session_restored event")
+                elapsed = seconds
+                active_since = None
+            elif kind == "problem_opened":
+                if (payload.get("site") != "neetcode" or not isinstance(payload.get("slug"), str)
+                        or not payload["slug"] or not isinstance(payload.get("title"), str) or not payload["title"]):
+                    raise ValueError("Invalid problem_opened event")
+                if problem is None or problem["slug"] != payload["slug"]:
+                    accepted = pending_accept = False
+                problem = {"slug": payload["slug"], "title": payload["title"]}
+            elif kind == "problem_left":
+                if not isinstance(payload.get("slug"), str) or not payload["slug"] or type(payload.get("accepted")) is not bool:
+                    raise ValueError("Invalid problem_left event")
+                if problem and problem["slug"] == payload["slug"]:
+                    problem = None
+                    accepted = pending_accept = False
+            elif kind == "accept_counted":
+                if not isinstance(payload.get("slug"), str) or not payload["slug"]:
+                    raise ValueError("Invalid accept_counted event")
+                if problem and problem["slug"] == payload["slug"]:
+                    accepted = True
+                    pending_accept = False
+            elif kind == "submit_result":
+                if type(payload.get("accepted")) is not bool or not isinstance(payload.get("slug"), str) or not payload["slug"]:
+                    raise ValueError("Invalid submit_result event")
+                if active_since is None and payload["accepted"] and problem and payload["slug"] == problem["slug"]:
+                    pending_accept = True
+            elif kind == "overrun_prompted":
+                prompted = overrun_prompt = True
+            elif kind == "overrun_choice":
+                if payload.get("choice") not in ("finish", "stop"):
+                    raise ValueError("Invalid overrun_choice event")
+                overrun_prompt = False
+            elif kind == "focus_changed":
+                if type(payload.get("tab_active")) is not bool or type(payload.get("window_focused")) is not bool:
+                    raise ValueError("Invalid focus_changed event")
+            elif kind == "reader_check":
+                if type(payload.get("ok")) is not bool or ("message" in payload and not isinstance(payload["message"], str)):
+                    raise ValueError("Invalid reader_check event")
+            elif kind == "code_snapshot":
+                if not isinstance(payload.get("code"), str):
+                    raise ValueError("Invalid code_snapshot event")
+            elif kind == "code_changed":
+                diff = payload.get("diff")
+                if (not isinstance(diff, dict) or type(diff.get("start_line")) is not int or diff["start_line"] <= 0
+                        or not isinstance(diff.get("removed"), list) or not all(isinstance(v, str) for v in diff["removed"])
+                        or not isinstance(diff.get("added"), list) or not all(isinstance(v, str) for v in diff["added"])):
+                    raise ValueError("Invalid code_changed event")
+            elif kind == "run_result":
+                if (not isinstance(payload.get("slug"), str) or not payload["slug"]
+                        or not isinstance(payload.get("cases"), list) or not payload["cases"]):
+                    raise ValueError("Invalid run_result event")
+            elif kind == "session_ended":
+                raise ValueError("Open session contains session_ended")
+        if active_since is not None:
+            elapsed += (previous - active_since).total_seconds()
+        return elapsed, problem, accepted, pending_accept, overrun_prompt, prompted
 
     def _event(self, db, session_id, ts, kind, payload):
         db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, ?, ?)",
@@ -100,8 +244,10 @@ class SessionCoordinator:
             return [{"type": "error", "message": "session_end requires a session"}]
         if kind == "session_overrun" and (not self.overrun_prompt or not isinstance(payload, dict) or payload.get("choice") not in ("finish", "stop")):
             return [{"type": "error", "message": "Invalid session_overrun"}]
-        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_overrun"}:
+        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "tab_closed"}:
             return [{"type": "error", "message": f"Unknown message type: {kind}"}]
+        if kind == "tab_closed" and self.state != "active":
+            return [self._state(now)]
         if kind in READER_TYPES and (self.state in ("idle", "ended") or
             (self.state == "paused" and kind not in ("focus_changed", "reader_check", "submit_result"))):
             return [self._state(now)]
@@ -114,6 +260,8 @@ class SessionCoordinator:
                 self._event(db, self.session_id, now.isoformat(), "session_started", {"budget_minutes": self.budget_minutes})
             elif kind == "session_pause":
                 self._pause(db, now, "button")
+            elif kind == "tab_closed":
+                self._pause(db, now, "closed")
             elif kind == "session_resume":
                 self._resume(db, now)
             elif kind == "session_end":
@@ -173,11 +321,7 @@ class SessionCoordinator:
         return [self._state(now)]
 
     def on_connect(self) -> list[dict]:
-        now = self.clock()
-        if self.state == "paused" and self.paused_reason == "disconnect":
-            with open_store(self.db_path) as db:
-                self._resume(db, now)
-        return [self._state(now)]
+        return [self._state(self.clock())]
 
     def on_disconnect(self) -> list[dict]:
         if self.state != "active":

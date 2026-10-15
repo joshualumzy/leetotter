@@ -17,7 +17,7 @@ from companion.store import open_store, store_path
 EXTENSION_ID = "oohbhndckkkkdngkglilcbpcoekapmgp"
 ALLOWED_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 READER_TYPES = frozenset({"problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
-SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state"})
+SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state", "tab_closed"})
 MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state"}) | READER_TYPES | SESSION_TYPES
 logger = logging.getLogger(__name__)
 _coordinator = None
@@ -123,6 +123,8 @@ def _validate(raw):
         payload = message.get("payload")
         if not isinstance(payload, dict) or payload.get("choice") not in ("finish", "stop"):
             raise ValueError("Invalid session_overrun payload")
+    if kind == "tab_closed" and "payload" in message:
+        raise ValueError("Invalid tab_closed payload")
     if kind == "import_history":
         payload = message.get("payload")
         urls = payload.get("urls") if isinstance(payload, dict) else None
