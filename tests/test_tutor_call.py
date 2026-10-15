@@ -49,7 +49,8 @@ def test_reply_text_streams_by_attempt_and_the_validated_reply_is_returned(tmp_p
     assert reply.reply_text == GOOD["reply_text"] and reply.gap == "stuck_optimising"
     assert len(seen) > 2 and {a for a, _ in seen} == {0}
     assert "".join(t for _, t in seen) == GOOD["reply_text"]
-    assert completions.requests[0]["response_format"]["json_schema"]["name"] == "firsthelpreply"
+    # Strict schema mode strips line breaks from the reply, so the Tutor asks for a plain JSON object.
+    assert completions.requests[0]["response_format"] == {"type": "json_object"}
 
 
 def test_an_invalid_first_attempt_is_retried_and_the_retry_streams_as_attempt_1(tmp_path, monkeypatch):

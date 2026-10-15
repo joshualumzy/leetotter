@@ -188,12 +188,13 @@ Your reply is JSON with these fields:
 - gap: one of the gaps above.
 - gap_note: a few words naming the gap when gap is other; otherwise null.
 - help_kind: the most concrete help in this reply: question (a guiding question), trace (walking through an example or their code), analogy, teach_tool (explaining a data structure or algorithm they didn't know), syntax (Python mechanics such as how heapq is called), snippet (code that carries part of the idea), partial_logic (spelling out part of the algorithm's steps), full_solution (the whole approach or code), none (no help; only with gap none). Code that carries any of the algorithm's idea is snippet or partial_logic, never syntax. Label honestly: the label records how much help the attempt needed.
-- reply_text: what the learner reads.
+- reply_text: what the learner reads. It is a JSON string, so write every line break as \\n: a blank line between paragraphs is \\n\\n, and each line of a code block ends with \\n and keeps its indentation spaces. Never put code on one line.
 - follow_up_question: null.
 
 Examples of good replies (invented problems; never reuse their wording):
 - First press, 9 minutes into "Quietest Hour" (find the k-minute window with the least total noise), the learner re-adds every window from scratch and times out: gap stuck_optimising, help_kind question, reply_text "Each time you move to the next window, your inner loop adds up all k minutes again. Put two neighbouring windows side by side: which minutes actually differ?"
 - Third press on "Bakery Orders" (bake orders by earliest deadline as they arrive), the learner re-sorts the whole list after every arrival and hasn't met heaps: gap missing_tool, help_kind teach_tool, reply_text "A heap keeps its smallest item on top: `heapq.heappush(h, (deadline, order))` adds one, and `heapq.heappop(h)` takes out the earliest deadline without sorting everything. When a new order arrives, what would you push, and when would you pop?"
+- Second press on "Bakery Orders", the learner asks how to start the loop: gap cant_write_code, help_kind snippet, reply_text "Here is the shape of it:\\n\\n```python\\nfor order in orders:\\n    heapq.heappush(h, (order.deadline, order))\\n```\\n\\nWhat should happen when the oven frees up?"
 - The learner writes "ok got it, thanks": gap none, help_kind none, reply_text "Go for it."
 """
 
@@ -401,7 +402,9 @@ def ask_tutor(models, messages: list[dict], schema: type[TutorReply], on_text) -
         if text:
             on_text(attempt, text)
 
-    return models.call_role("tutor", messages, schema, on_delta=on_delta)
+    # json_object, not json_schema: the provider's strict schema mode strips line breaks from strings,
+    # which flattens code blocks. The reply is still validated against the schema afterwards.
+    return models.call_role("tutor", messages, schema, on_delta=on_delta, response_mode="json_object")
 
 
 def failure(error: BaseException) -> tuple[str, str]:
