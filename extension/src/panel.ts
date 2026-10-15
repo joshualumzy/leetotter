@@ -27,6 +27,7 @@ let settingsOpen = false;
 let receivedAt = Date.now();
 let currentRemark = "";
 let remarkKey = "";
+let selectedBudget = 45;
 
 function element(tag: string, className = "", text = ""): HTMLElement {
   const node = document.createElement(tag);
@@ -65,11 +66,12 @@ function newRemark(view: PanelView): void {
 }
 function renderHeader(view: PanelView): void {
   root!.dataset.theme = settings?.theme || "match";
-  headerOtter!.innerHTML = otter(view.body === "paused" ? "doze" : view.body === "offline" ? "confused" : "float");
+  headerOtter!.innerHTML = otter(view.body === "paused" ? "doze" : view.body === "offline" ? "confused" : session?.accepted ? "shell" : "float");
   (headerOtter as HTMLButtonElement).disabled = view.body === "offline";
   headerOtter!.setAttribute("aria-expanded", String(settingsOpen && view.body !== "offline"));
   title!.textContent = view.title;
   dot!.className = `dot ${view.statusTone}`;
+  dot!.parentElement!.className = `status ${view.statusTone}`;
   newRemark(view);
   updateTimer();
   controls!.replaceChildren();
@@ -82,14 +84,17 @@ function renderHeader(view: PanelView): void {
 }
 function startCard(): HTMLElement {
   const card = element("section", "card");
-  appendText(card, "h4", "Set the timer");
-  appendText(card, "p", "It's a soft budget; you can always finish the problem you're on.");
-  const row = element("div", "row");
-  const input = element("input", "field minutes") as HTMLInputElement;
-  input.id = "budget-minutes"; input.type = "number"; input.min = "1"; input.max = "1440"; input.value = "45";
-  input.setAttribute("aria-label", "Minutes");
-  row.append(input, appendText(element("span"), "span", "minutes"), button("start-session", "Go", "btn primary"));
-  card.append(row);
+  appendText(card, "h4", "New session");
+  appendText(card, "p", "How long have you got? It's a soft budget; you can always finish the problem you're on.");
+  const choices = element("div", "budget-choices");
+  choices.setAttribute("role", "group");
+  choices.setAttribute("aria-label", "Session length");
+  for (const minutes of [30, 45, 60, 90]) {
+    const chip = button(`budget-${minutes}`, `${minutes} min`, "budget-chip");
+    chip.setAttribute("aria-pressed", String(selectedBudget === minutes));
+    choices.append(chip);
+  }
+  card.append(choices, button("start-session", "Start", "btn primary"));
   return card;
 }
 function firstRun(): HTMLElement {
@@ -101,6 +106,9 @@ function firstRun(): HTMLElement {
   const input = element("input", "field") as HTMLInputElement;
   input.id = "first-name"; input.placeholder = "Your name"; input.maxLength = 40; input.autocomplete = "off";
   row.append(input, button("save-first-name", "That's me", "btn primary")); block.append(row);
+  const hint = appendText(block, "p", "Type a name, or press Skip.", "name-hint");
+  hint.id = "name-hint";
+  hint.hidden = true;
   block.append(button("skip-name", "Skip", "link"));
   appendText(block, "p", "Tap me anytime to change it.", "fine");
   return block;
@@ -112,10 +120,12 @@ function settingsCard(): HTMLElement {
   const nameLabel = element("label"); appendText(nameLabel, "span", "What should I call you?");
   const input = element("input", "field") as HTMLInputElement;
   input.id = "settings-name"; input.value = settings?.name || ""; input.maxLength = 40; input.autocomplete = "off";
-  nameLabel.append(input); card.append(nameLabel);
+  const nameRow = element("div", "settings-name-row");
+  nameRow.append(input, button("save-settings-name", "Save", "btn"));
+  nameLabel.append(nameRow); card.append(nameLabel);
   const themeLabel = element("label"); appendText(themeLabel, "span", "Theme");
   const select = element("select", "field") as HTMLSelectElement; select.id = "settings-theme";
-  for (const [value, label] of [["match", "Match NeetCode"], ["light", "Light"], ["dark", "Dark"]]) {
+  for (const [value, label] of [["match", "Match my Mac"], ["light", "Light"], ["dark", "Dark"]]) {
     const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option);
   }
   select.value = settings?.theme || "match"; themeLabel.append(select); card.append(themeLabel);
@@ -148,8 +158,13 @@ function render(): void {
   if (!settingsOpen) {
     if (view.body === "first_run") body!.append(firstRun());
     if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0, session?.budget_minutes || 0).elapsed}`, "quiet");
-    if (["first_run", "start", "ended"].includes(view.body)) body!.append(startCard());
-    if (view.body === "active") { const node = element("div", "active-otter"); node.innerHTML = otter("float"); body!.append(node); }
+    if (["start", "ended"].includes(view.body)) body!.append(startCard());
+    if (view.body === "active") {
+      const node = element("figure", "active-otter");
+      node.innerHTML = otter(session?.accepted ? "shell" : "float");
+      appendText(node, "figcaption", session?.accepted ? "Accepted! Keep polishing, or move on." : currentRemark);
+      body!.append(node);
+    }
     if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
     if (view.body === "overrun") {
       const card = element("section", "card"); appendText(card, "h4", "Time's up. Finish this one or stop?");
@@ -167,18 +182,27 @@ async function send(message: object): Promise<void> {
 }
 function saveName(id: string): void {
   const input = document.getElementById(id) as HTMLInputElement | null;
-  if (input) void send({ kind: "settings_set", key: "name", value: input.value.trim() });
+  if (!input) return;
+  const value = input.value.trim();
+  if (id === "first-name" && !value) {
+    document.getElementById("name-hint")!.hidden = false;
+    return;
+  }
+  void send({ kind: "settings_set", key: "name", value });
 }
 headerOtter.addEventListener("click", () => { settingsOpen = !settingsOpen; render(); });
 body.addEventListener("click", event => {
   const id = (event.target as HTMLElement).closest("button")?.id;
   if (id === "close-settings") { settingsOpen = false; render(); }
   if (id === "save-first-name") saveName("first-name");
+  if (id === "save-settings-name") saveName("settings-name");
   if (id === "skip-name") void send({ kind: "settings_set", key: "name", value: "" });
+  if (id?.startsWith("budget-")) {
+    selectedBudget = Number(id.slice("budget-".length));
+    for (const chip of body!.querySelectorAll<HTMLButtonElement>(".budget-chip")) chip.setAttribute("aria-pressed", String(chip.id === id));
+  }
   if (id === "start-session") {
-    const value = Number((document.getElementById("budget-minutes") as HTMLInputElement).value);
-    if (!Number.isInteger(value) || value < 1 || value > 1440) { actionError = "Enter a timer from 1 to 1440 minutes."; render(); return; }
-    void send({ kind: "session_command", command: "start", budget_minutes: value });
+    void send({ kind: "session_command", command: "start", budget_minutes: selectedBudget });
   }
   const command = { "pause-session": "pause", "resume-session": "resume", "end-session": "end", "overrun-finish": "overrun_finish", "overrun-stop": "overrun_stop" }[id || ""];
   if (command) void send({ kind: "session_command", command });
@@ -199,7 +223,6 @@ body.addEventListener("keydown", event => {
 });
 body.addEventListener("change", event => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
-  if (target.id === "settings-name") saveName("settings-name");
   if (target.id === "settings-theme") void send({ kind: "settings_set", key: "theme", value: target.value });
 });
 chrome.runtime.onMessage.addListener(message => {

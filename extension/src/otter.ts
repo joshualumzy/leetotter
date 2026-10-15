@@ -1,4 +1,4 @@
-export type OtterPose = "float" | "doze" | "confused";
+export type OtterPose = "float" | "doze" | "confused" | "shell";
 
 export function otter(pose: OtterPose): string {
   return `<svg class="otter pose-${pose}" viewBox="0 0 100 100" aria-hidden="true">
@@ -19,6 +19,7 @@ export function otter(pose: OtterPose): string {
         <path class="whisk" d="M39 57.5l-10-1.8M39 60l-9.5 1.5M61 57.5l10-1.8M61 60l9.5 1.5"/>
       </g>
       <ellipse class="paw" cx="40" cy="72" rx="5.5" ry="4.5"/><ellipse class="paw" cx="60" cy="72" rx="5.5" ry="4.5"/>
+      <g class="shell"><path d="M44 77q-3-10 4-15l7 13-5 6zM56 77q3-10-4-15l-7 13 5 6z"/><path class="shell-crack" d="M50 65l-2 4 3 3-2 5"/></g>
       <g class="zzz"><text x="70" y="30">z</text><text x="77" y="22">z</text><text x="84" y="13">Z</text></g>
       <text class="question" x="76" y="30">?</text>
     </g>

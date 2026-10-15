@@ -28,7 +28,7 @@ This is the build spec. `design.html` (published at https://claude.ai/artifact/N
 | Quiet time and gap | 5 min | One number for two jobs: after the solving time, 5 quiet minutes count as stuck; and after any nudge or help, 5 minutes pass before the next nudge. Guides suggest asking for a hint after 2–5 min truly stuck; you think silently and it sees only edits, so the top of that range |
 | Chime | on | Off leaves a silent panel message |
 | Your name | none | Asked once, on first run, and skippable. Used only in the otter's remarks, now and then; never sent to the models |
-| Theme | match NeetCode | The panel sits beside NeetCode, so it follows NeetCode's light or dark theme, read by the page reader; with no NeetCode page to read, it follows the Mac. Light and Dark fix it |
+| Theme | match my Mac | The panel follows the Mac's light or dark setting. Light and Dark fix it. (Following NeetCode's own theme was dropped: you set the two independently, and reading NeetCode's theme off the page isn't worth the extra reader work.) |
 
 **Reset** (a button in the same settings, "Reset all my progress"): erases everything personal and returns the panel to the first-run flow (your name, then the history import). It takes two steps: a warning that this can't be undone, then typing RESET. It erases `events`, `sessions`, `reviews`, `hypotheses`, `teaching`, `notes`, `model_calls` and `settings` (which includes the name and the history-import flag) in one transaction, so it either finishes or changes nothing. It keeps what isn't personal: `references`, `fsrs`, the catalog, and the API key in the Keychain.
 
@@ -77,8 +77,6 @@ Each page reader produces the same events regardless of site:
 **Fail loudly.** Every reader runs a self-check when a problem page opens: can it find the editor, read the code, and identify the problem? Is its run/submit response hook installed? If not, the side panel names the check that failed (for example "Can't read the editor on this page"), and the session refuses to start or pauses. It never tutors without being able to read the code. And if a run or submit request goes out with no result seen within 30 s, the panel shows "Can't see run results on this page" and the session pauses, so a solve is never silently missed.
 
 **History import** (on first run only): your solved problems from NeetCode (the list shows a solved check per problem, with no dates). Stored as `prior_solve` events. They aren't reviews, since how much help you had is unknown (§8). They mark problems as seen, so they're never used as unfamiliar transfer checks, and they tell placement where to start. To verify: which request or page element carries NeetCode's solved status (the list page shows it).
-
-**Theme:** the reader also reports whether NeetCode is in light or dark mode, for the panel's theme setting (§2). To verify in phase 3: where NeetCode keeps it (a page class or a stored setting).
 
 ## 5. Sessions
 

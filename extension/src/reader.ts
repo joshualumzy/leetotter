@@ -136,7 +136,7 @@ export class NeetCodeReader {
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
     if (mode !== "watching") {
       for (const timer of this.pending) clearTimeout(timer);
-      if (mode === "idle") this.pending.clear();
+      if (mode === "idle") { this.pending.clear(); this.openedSlug = ""; }
     }
     if (mode === "watching") {
       if (was !== "watching") this.resultFailure = false;

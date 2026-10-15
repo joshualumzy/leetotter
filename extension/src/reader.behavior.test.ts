@@ -29,6 +29,19 @@ function ready() {
 async function flushUntil(test: () => boolean) { await vi.waitFor(() => { expect(test()).toBe(true); }); }
 
 describe("page reader", () => {
+  it("announces an already-open problem again for a new session, but not after pause", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    expect(events.filter(e => e.type === "problem_opened")).toHaveLength(1);
+
+    reader.setMode("paused"); reader.setMode("watching");
+    expect(events.filter(e => e.type === "problem_opened")).toHaveLength(1);
+
+    reader.setMode("idle"); reader.setMode("watching");
+    expect(events.filter(e => e.type === "problem_opened").map(e => e.payload)).toEqual([
+      { site: "neetcode", slug: "duplicate-integer", title: "Contains Duplicate" },
+      { site: "neetcode", slug: "duplicate-integer", title: "Contains Duplicate" },
+    ]);
+  });
   it("emits nothing while idle and cancels pending result checks on pause", () => {
     reader.install();
     vi.advanceTimersByTime(3000);

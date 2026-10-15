@@ -9,12 +9,15 @@ const view = (session: SessionState = base, readerError = "") => panelView({ tra
 describe("panel state", () => {
   it("shows first run and a start card, then an ordinary start card after a name is set", () => {
     expect(panelView({ transport: { kind: "connected" }, session_state: base, settings: { ...settings, name: null }, readerError: "" })).toMatchObject({ title: "Leetotter", body: "first_run", controls: [], remarkPool: "start" });
+    expect(panelView({ transport: { kind: "connected" }, session_state: base, readerError: "" }).body).toBe("first_run");
     expect(view()).toMatchObject({ body: "start", controls: [], remarkPool: "start" });
   });
   it("shows active, time-up, and ended states", () => {
     const active = { ...base, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "two-sum", title: "Two Sum" } } as const;
     expect(view(active)).toMatchObject({ title: "Two Sum", statusTone: "live", controls: ["pause", "end"], body: "active", remarkPool: "active" });
     expect(view({ ...active, overrun_prompt: true })).toMatchObject({ body: "overrun", remarkPool: "overrun" });
+    expect(view({ ...active, accepted: true })).toMatchObject({ body: "active", statusTone: "good", remarkPool: "accepted" });
+    expect(view({ ...active, accepted: true, overrun_prompt: true })).toMatchObject({ body: "overrun", statusTone: "good", remarkPool: "accepted" });
     expect(view({ ...active, state: "ended", mode: "idle", running: false })).toMatchObject({ body: "ended", controls: [], remarkPool: "ended" });
   });
   it.each([

@@ -26,12 +26,20 @@ beforeEach(async () => {
   });
   vi.stubGlobal("chrome", { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, sendMessage } });
   await import("./panel");
-  await vi.waitFor(() => expect(document.getElementById("start-session")).toBeTruthy());
+  await vi.waitFor(() => expect(document.getElementById("first-run")).toBeTruthy());
 });
 
 describe("panel actions", () => {
   it("starts, pauses, resumes and ends through session commands", async () => {
-    (document.getElementById("budget-minutes") as HTMLInputElement).value = "30";
+    click("skip-name");
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "", theme: "match" } });
+    expect(document.getElementById("budget-minutes")).toBeNull();
+    expect(document.querySelectorAll(".budget-chip")).toHaveLength(4);
+    expect(document.getElementById("budget-45")?.getAttribute("aria-pressed")).toBe("true");
+    click("start-session");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 45 });
+    click("budget-30");
+    expect(document.getElementById("budget-30")?.getAttribute("aria-pressed")).toBe("true");
     click("start-session");
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", budget_minutes: 30 });
     notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 30 } });
@@ -55,6 +63,45 @@ describe("panel actions", () => {
     expect(document.getElementById("settings-card")).toBeTruthy();
     click("close-settings");
     expect(document.getElementById("settings-card")).toBeFalsy();
+  });
+  it("keeps first run open when a blank name is confirmed", () => {
+    expect(document.getElementById("start-session")).toBeNull();
+    const input = document.getElementById("first-name") as HTMLInputElement;
+    input.value = "   ";
+    click("save-first-name");
+    expect(document.getElementById("name-hint")?.textContent).toBe("Type a name, or press Skip.");
+    expect(sendMessage).not.toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(sendMessage).not.toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
+    expect(document.getElementById("first-run")).toBeTruthy();
+    expect(document.getElementById("start-session")).toBeNull();
+  });
+  it("saves a cleared settings name only on Save or Enter and labels the Mac theme", () => {
+    click("header-otter");
+    expect(document.querySelector("#settings-theme option[value=match]")?.textContent).toBe("Match my Mac");
+    const input = document.getElementById("settings-name") as HTMLInputElement;
+    input.value = "";
+    input.dispatchEvent(new window.Event("change", { bubbles: true }));
+    expect(sendMessage).not.toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
+    click("save-settings-name");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
+    input.value = " Ada ";
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "Ada" });
+  });
+  it("shows an accepted remark and caption while preserving the time-up card", () => {
+    const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "two-sum", title: "Two Sum" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    expect(document.querySelector(".active-otter figcaption")?.textContent).toBe(document.getElementById("remark")?.textContent);
+    notify({ kind: "session_state", state: { ...active, accepted: true } });
+    expect(document.getElementById("status-dot")?.classList.contains("good")).toBe(true);
+    expect(document.getElementById("remark")?.textContent).toMatch(/Accepted|Cracked|Shell/);
+    expect(document.querySelector(".active-otter figcaption")?.textContent).toContain("Accepted! Keep polishing, or move on.");
+    notify({ kind: "session_state", state: { ...active, accepted: true, overrun_prompt: true } });
+    expect(document.getElementById("status-dot")?.classList.contains("good")).toBe(true);
+    expect(document.getElementById("remark")?.textContent).toMatch(/Accepted|Cracked|Shell/);
+    expect(document.querySelector(".card")?.textContent).toContain("Time's up");
+    expect(document.querySelector(".active-otter")).toBeNull();
   });
   it("sends both overrun choices and hides auto-resume", () => {
     notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, overrun_prompt: true } });
