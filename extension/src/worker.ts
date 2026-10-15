@@ -4,8 +4,9 @@ import { reactionForReaderEvent } from "./reader-reaction";
 
 declare const __LEETOTTER_PORT__: number;
 type Mode = "idle" | "watching" | "paused";
-type ProblemTab = { windowId: number; active: boolean; lastFocus?: string };
-type Saved = { readerError: string; readerActivity: string; focusedWindow: number; problemTabs: [number, ProblemTab][]; sessionTabId?: number | null };
+// Where the session's bound tab is, tracked from the tab itself: a navigation inside NeetCode or a pause must not lose it.
+type BoundFocus = { windowId: number; active: boolean; lastFocus?: string };
+type Saved = { readerError: string; readerActivity: string; focusedWindow: number; sessionTabId?: number | null; boundFocus?: BoundFocus };
 let state: ConnectionState = { kind: "offline" };
 let mode: Mode = "idle";
 let readerError = "";
@@ -20,14 +21,14 @@ let sessionTabId: number | null = null;
 let orphanReported = false;
 let disconnectResumeSent = false;
 let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
-const problemTabs = new Map<number, ProblemTab>();
+let boundFocus: BoundFocus | undefined;
 const failedModeTabs = new Set<number>();
 const missingReaderMessage = "Leetotter can't see this NeetCode page. Reload the tab.";
 function panel(message: unknown): void { chrome.runtime.sendMessage(message).catch(() => {}); }
 function showReaderAlert(): void { panel({ kind: "reader_error", message: readerError || notice }); }
 let savedInOrder: Promise<void> = Promise.resolve();
 function save(): Promise<void> {
-  const readerState: Saved = { readerError, readerActivity, focusedWindow, problemTabs: [...problemTabs], sessionTabId };
+  const readerState: Saved = { readerError, readerActivity, focusedWindow, sessionTabId, boundFocus };
   savedInOrder = savedInOrder.then(() => chrome.storage.session.set({ readerState }));
   return savedInOrder;
 }
@@ -37,9 +38,18 @@ async function tabExists(id: number | null): Promise<boolean> {
   if (id === null) return false;
   try { await chrome.tabs.get(id); return true; } catch { return false; }
 }
+async function trackBoundTab(): Promise<void> {
+  if (sessionTabId === null) return;
+  try {
+    const tab = await chrome.tabs.get(sessionTabId);
+    boundFocus = { windowId: tab.windowId, active: tab.active };
+  } catch { /* The tab is gone; its removal unbinds the session. */ }
+}
 async function bindTab(id: number | null): Promise<void> {
   if (sessionTabId === id) return;
   sessionTabId = id;
+  boundFocus = undefined;
+  await trackBoundTab();
   panel({ kind: "session_binding", tabId: id });
   await save();
   await setMode(mode);
@@ -62,15 +72,14 @@ const ready = (async () => {
   if (saved) {
     readerError = saved.readerError;
     readerActivity = saved.readerActivity; focusedWindow = saved.focusedWindow;
-    for (const [id, tab] of saved.problemTabs) problemTabs.set(id, tab);
     sessionTabId = saved.sessionTabId ?? null;
+    boundFocus = saved.boundFocus;
   } else {
     const window = await chrome.windows.getLastFocused();
     focusedWindow = window.focused ? window.id! : chrome.windows.WINDOW_ID_NONE;
   }
   const tabs = (await configureSidePanel()).filter(tab => problemUrl(tab.url));
-  const live = new Set(tabs.map(tab => tab.id));
-  for (const id of problemTabs.keys()) if (!live.has(id)) problemTabs.delete(id);
+  if (sessionTabId !== null) await trackBoundTab();
   await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode: tab.id === sessionTabId ? mode : "idle" }).catch(() => {})));
   await save();
 })();
@@ -134,18 +143,16 @@ function send(type: ReaderMessageType, payload: Record<string, unknown>): boolea
   }
   return delivered;
 }
-function sendFocus(id: number): void {
-  if (mode === "idle" || id !== sessionTabId) return;
-  const tab = problemTabs.get(id);
-  if (!tab) return;
-  const payload = { tab_active: tab.active, window_focused: tab.windowId === focusedWindow };
+function sendFocus(): void {
+  if (mode === "idle" || !boundFocus) return;
+  const payload = { tab_active: boundFocus.active, window_focused: boundFocus.windowId === focusedWindow };
   const key = JSON.stringify(payload);
-  if (key === tab.lastFocus) return;
-  if (send("focus_changed", payload)) tab.lastFocus = key;
+  if (key === boundFocus.lastFocus) return;
+  if (send("focus_changed", payload)) boundFocus.lastFocus = key;
 }
 // A focus change that could not be delivered, or happened while the session was not watching, is sent again.
 function resyncFocus(): void {
-  for (const [id, tab] of problemTabs) { tab.lastFocus = undefined; sendFocus(id); }
+  if (boundFocus) { boundFocus.lastFocus = undefined; sendFocus(); }
 }
 async function setMode(next: Mode): Promise<void> {
   const changed = next !== mode;
@@ -291,10 +298,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         const reaction = reactionForReaderEvent(event.type as ReaderMessageType, payload);
         if (reaction) panel({ kind: "reader_reaction", reaction });
       }
-      if (delivered && event.type === "problem_opened") {
-        problemTabs.set(tab.id, { windowId: tab.windowId, active: Boolean(tab.active) });
-        sendFocus(tab.id);
-      }
       await save(); return { accepted: delivered, mode };
     } catch (error) {
       readerError = (error as Error).message;
@@ -306,15 +309,18 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 chrome.tabs.onActivated.addListener(info => {
   void ready.then(async () => {
-    const tab = sessionTabId === null ? undefined : problemTabs.get(sessionTabId);
-    if (tab && tab.windowId === info.windowId) { tab.active = info.tabId === sessionTabId; sendFocus(sessionTabId!); }
+    if (boundFocus) {
+      if (info.tabId === sessionTabId) { boundFocus.windowId = info.windowId; boundFocus.active = true; }
+      else if (boundFocus.windowId === info.windowId) boundFocus.active = false;
+      sendFocus();
+    }
     await save();
     await setPanelForTab(await chrome.tabs.get(info.tabId));
   });
 });
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
   if (change.url) void ready.then(async () => {
-    problemTabs.delete(id); failedModeTabs.delete(id);
+    failedModeTabs.delete(id);
     if (id === sessionTabId && !change.url!.startsWith("https://neetcode.io/")) {
       // The session's tab left NeetCode: nothing is watching any more, so it pauses like a closed tab.
       if (!orphanReported) orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
@@ -325,7 +331,7 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
 });
 chrome.tabs.onCreated.addListener(tab => { void ready.then(() => setPanelForTab(tab)); });
 chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => {
-  problemTabs.delete(id); failedModeTabs.delete(id);
+  failedModeTabs.delete(id);
   if (id === sessionTabId) {
     if (!orphanReported) orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
     await bindTab(null);
@@ -333,6 +339,6 @@ chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => {
 }); });
 chrome.runtime.onInstalled.addListener(() => { void ready.then(() => configureSidePanel()); });
 chrome.windows.onFocusChanged.addListener(id => {
-  void ready.then(async () => { focusedWindow = id; for (const tabId of problemTabs.keys()) sendFocus(tabId); await save(); });
+  void ready.then(async () => { focusedWindow = id; sendFocus(); await save(); });
 });
 connection.start();

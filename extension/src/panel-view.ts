@@ -39,7 +39,8 @@ export function panelView(input: { transport: ConnectionState; session_state?: S
     const reason = session.paused_reason || "button";
     const pageCheck = reason === "check" && session.check_message === "Open a problem and I'll pick the timer back up.";
     const resumeFromPageCheck = Boolean(pageCheck && session.problem && panelOnProblemPage === false);
-    if (["closed", "restart"].includes(reason) || (reason === "disconnect" && !boundTabExists) || resumeFromPageCheck) {
+    const noLiveBoundTab = sessionTabId == null || !boundTabExists;
+    if (noLiveBoundTab || resumeFromPageCheck) {
       return { ...common, statusTone: "paused", controls: ["end"], body: "welcome_back", remarkPool: resumeFromPageCheck ? "pause_restart" : `pause_${reason}` as RemarkPool };
     }
     const info = {

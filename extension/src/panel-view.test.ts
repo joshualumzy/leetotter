@@ -40,9 +40,13 @@ describe("panel state", () => {
     expect(panelView({ ...input, panelOnProblemPage: true })).toMatchObject({ body: "paused", pauseText: paused.check_message });
     expect(panelView({ ...input, session_state: { ...paused, check_message: "Editor missing" } })).toMatchObject({ body: "paused", pauseText: "Editor missing" });
   });
-  it("welcomes back closed, restarted, and unbound disconnect pauses", () => {
-    for (const reason of ["closed", "restart", "disconnect"] as const) {
-      expect(panelView({ transport: { kind: "connected" }, session_state: { ...base, state: "paused", mode: "paused", paused_reason: reason }, settings, readerError: "", boundTabExists: false })).toMatchObject({ body: "welcome_back", controls: ["end"], remarkPool: `pause_${reason}` });
+  it("welcomes back a paused session with no live bound tab, whatever the pause reason", () => {
+    const unbound = [{ sessionTabId: null }, { sessionTabId: undefined, boundTabExists: false }, { sessionTabId: 7, boundTabExists: false }];
+    for (const reason of ["button", "focus", "check", "disconnect", "closed", "restart"] as const) {
+      for (const binding of unbound) {
+        const session: SessionState = { ...base, state: "paused", mode: "paused", paused_reason: reason, check_message: "Editor missing", budget_minutes: 45, problem: { slug: "two-sum", title: "Two Sum" } };
+        expect(panelView({ transport: { kind: "connected" }, session_state: session, settings, readerError: "", panelTabId: 7, boundTabExists: true, ...binding })).toMatchObject({ body: "welcome_back", controls: ["end"], remarkPool: `pause_${reason}` });
+      }
     }
   });
   it("does not claim another tab is running the session while the panel's own tab is unknown", () => {

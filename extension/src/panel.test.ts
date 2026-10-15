@@ -14,6 +14,11 @@ let windowUpdate: ReturnType<typeof vi.fn>;
 const session: SessionState = { type: "session_state", ts: "now", state: "idle", mode: "idle", paused_reason: null, check_message: null, budget_minutes: null, active_seconds: 0, running: false, overrun_prompt: false, problem: null, accepted: false };
 const notify = (message: any) => listener(message);
 const click = (id: string) => document.getElementById(id)?.click();
+// A session whose bound tab is the panel's own, still open: the views for a paused session need one.
+async function bindPanelTab() {
+  notify({ kind: "session_binding", tabId: 7 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+}
 
 beforeEach(async () => {
   vi.resetModules();
@@ -79,7 +84,8 @@ describe("panel actions", () => {
     notify({ kind: "tutor", message: { type: "tutor_error", ts: "now", turn_id: null, message: "Wait a moment" } });
     expect(document.querySelector(".chat-notice")?.textContent).toBe("Wait a moment");
   });
-  it("keeps the composer visible with a reason while paused and rejects over-limit dictation", () => {
+  it("keeps the composer visible with a reason while paused and rejects over-limit dictation", async () => {
+    await bindPanelTab();
     const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
     notify({ kind: "session_state", state: active });
     const input = document.getElementById("chat-input") as HTMLTextAreaElement;
@@ -93,7 +99,8 @@ describe("panel actions", () => {
     expect(document.getElementById("composer-reason")?.textContent).toMatch(/paused/i);
     expect(document.getElementById("chat-input")).toBeTruthy();
   });
-  it("paces incoming words and keeps a reply visible when the session pauses", () => {
+  it("paces incoming words and keeps a reply visible when the session pauses", async () => {
+    await bindPanelTab();
     vi.useFakeTimers();
     const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
     notify({ kind: "session_state", state: active });
@@ -208,6 +215,13 @@ describe("panel actions", () => {
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
   });
 
+  it.each(["check", "focus"] as const)("offers the welcome-back card for a %s pause whose session tab is lost, and Resume binds the panel tab", reason => {
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: reason, check_message: "Can't read the editor", budget_minutes: 45, active_seconds: 600, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    expect(document.querySelector(".welcome-back")?.textContent).toContain("Duplicate Integer, 10 min of 45");
+    click("welcome-resume");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
+  });
+
   it("recognizes the saved problem URL without a trailing slash", async () => {
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
     activeUrl = "https://neetcode.io/problems/duplicate-integer";
@@ -233,7 +247,8 @@ describe("panel actions", () => {
     expect(document.getElementById("session-body")?.textContent).not.toContain("Daily Temperatures");
   });
 
-  it("labels a quiet End session button and accessible pause/resume icons", () => {
+  it("labels a quiet End session button and accessible pause/resume icons", async () => {
+    await bindPanelTab();
     notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45 } });
     expect(document.getElementById("end-session")?.textContent).toBe("End session");
     expect(document.getElementById("end-session")?.classList.contains("end-session")).toBe(true);
@@ -244,6 +259,7 @@ describe("panel actions", () => {
     expect(document.getElementById("end-session")).toBeNull();
   });
   it("starts, pauses, resumes and ends through session commands", async () => {
+    await bindPanelTab();
     click("skip-name");
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "", theme: "match" } });
     expect((document.getElementById("budget-minutes") as HTMLInputElement).value).toBe("");
