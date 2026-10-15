@@ -10,6 +10,5 @@
   "content_scripts": [
     { "matches": ["https://neetcode.io/*"], "js": ["page-reader.js"], "world": "MAIN", "run_at": "document_start" },
     { "matches": ["https://neetcode.io/*"], "js": ["page-bridge.js"], "world": "ISOLATED", "run_at": "document_start" }
-  ],
-  "side_panel": { "default_path": "panel.html" }
+  ]
 }

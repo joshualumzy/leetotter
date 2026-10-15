@@ -29,6 +29,20 @@ function save(): Promise<void> {
   return savedInOrder;
 }
 function problemUrl(url?: string): boolean { return Boolean(url && /^https:\/\/neetcode\.io\/problems\/[^/]+/.test(url)); }
+function neetcodeUrl(url?: string): boolean { return Boolean(url && /^https:\/\/neetcode\.io(?:\/|$)/.test(url)); }
+function setPanelForTab(tab: chrome.tabs.Tab): Promise<void> {
+  if (tab.id === undefined) return Promise.resolve();
+  return chrome.sidePanel.setOptions(neetcodeUrl(tab.url)
+    ? { tabId: tab.id, path: "panel.html", enabled: true }
+    : { tabId: tab.id, enabled: false });
+}
+async function configureSidePanel(): Promise<chrome.tabs.Tab[]> {
+  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  await chrome.sidePanel.setOptions({ enabled: false });
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(tabs.map(setPanelForTab));
+  return tabs;
+}
 const ready = (async () => {
   const saved = (await chrome.storage.session.get("readerState")).readerState as Saved | undefined;
   if (saved) {
@@ -39,7 +53,7 @@ const ready = (async () => {
     const window = await chrome.windows.getLastFocused();
     focusedWindow = window.focused ? window.id! : chrome.windows.WINDOW_ID_NONE;
   }
-  const tabs = await chrome.tabs.query({ url: "https://neetcode.io/problems/*" });
+  const tabs = (await configureSidePanel()).filter(tab => problemUrl(tab.url));
   const live = new Set(tabs.map(tab => tab.id));
   for (const id of problemTabs.keys()) if (!live.has(id)) problemTabs.delete(id);
   await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode }).catch(() => {})));
@@ -222,12 +236,18 @@ chrome.tabs.onActivated.addListener(info => {
   void ready.then(async () => {
     for (const [id, tab] of problemTabs) if (tab.windowId === info.windowId) { tab.active = id === info.tabId; sendFocus(id); }
     await save();
+    await setPanelForTab(await chrome.tabs.get(info.tabId));
   });
 });
-chrome.tabs.onUpdated.addListener((id, change) => {
-  if (change.url) void ready.then(async () => { problemTabs.delete(id); failedModeTabs.delete(id); await save(); });
+chrome.tabs.onUpdated.addListener((id, change, tab) => {
+  if (change.url) void ready.then(async () => {
+    problemTabs.delete(id); failedModeTabs.delete(id); await save();
+    await setPanelForTab({ ...tab, id, url: change.url });
+  });
 });
+chrome.tabs.onCreated.addListener(tab => { void ready.then(() => setPanelForTab(tab)); });
 chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => { problemTabs.delete(id); failedModeTabs.delete(id); await save(); }); });
+chrome.runtime.onInstalled.addListener(() => { void ready.then(() => configureSidePanel()); });
 chrome.windows.onFocusChanged.addListener(id => {
   void ready.then(async () => { focusedWindow = id; for (const tabId of problemTabs.keys()) sendFocus(tabId); await save(); });
 });

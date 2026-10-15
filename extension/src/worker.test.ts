@@ -4,7 +4,9 @@ type Listener = (...args: any[]) => any;
 const messages: Listener[] = [];
 const activated: Listener[] = [];
 const updated: Listener[] = [];
+const created: Listener[] = [];
 const removed: Listener[] = [];
+const installed: Listener[] = [];
 const focused: Listener[] = [];
 const sent: { tab: number; message: any }[] = [];
 let saved: Record<string, any> = {};
@@ -42,22 +44,66 @@ async function start() {
 
 beforeEach(() => {
   vi.useRealTimers();
-  messages.length = activated.length = updated.length = removed.length = focused.length = sent.length = 0;
+  messages.length = activated.length = updated.length = created.length = removed.length = installed.length = focused.length = sent.length = 0;
   saved = {};
   historyReply = { urls: ["https://leetcode.com/problems/contains-duplicate/"] };
   vi.stubGlobal("__LEETOTTER_PORT__", 8765);
   vi.stubGlobal("WebSocket", FakeSocket);
   vi.stubGlobal("chrome", {
     storage: { session: { get: vi.fn(async () => ({ readerState: saved.readerState })), set: vi.fn(async (value: any) => { saved = { ...saved, ...value }; }) } },
-    runtime: { onMessage: { addListener: (fn: Listener) => messages.push(fn) }, sendMessage: vi.fn(async () => {}) },
+    runtime: { onMessage: { addListener: (fn: Listener) => messages.push(fn) }, onInstalled: { addListener: (fn: Listener) => installed.push(fn) }, sendMessage: vi.fn(async () => {}) },
+    sidePanel: { setPanelBehavior: vi.fn(async () => {}), setOptions: vi.fn(async () => {}) },
     tabs: {
       query: vi.fn(async () => [{ id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" }]),
+      get: vi.fn(async (id: number) => ({ id, url: id === 7 ? "https://neetcode.io/problems/duplicate-integer/" : "https://example.com/" })),
       sendMessage: vi.fn(async (tab: number, message: any) => { sent.push({ tab, message }); return message.kind === "read_history" ? historyReply : undefined; }),
       onActivated: { addListener: (fn: Listener) => activated.push(fn) },
       onUpdated: { addListener: (fn: Listener) => updated.push(fn) },
+      onCreated: { addListener: (fn: Listener) => created.push(fn) },
       onRemoved: { addListener: (fn: Listener) => removed.push(fn) },
     },
     windows: { WINDOW_ID_NONE: -1, getLastFocused: vi.fn(async () => ({ id: 3, focused: true })), onFocusChanged: { addListener: (fn: Listener) => focused.push(fn) } },
+  });
+});
+
+describe("side panel availability", () => {
+  it("sets toolbar behavior, disables the default panel, and enables existing NeetCode tabs on worker start", async () => {
+    vi.mocked(chrome.tabs.query).mockImplementation(async (query: any) => query.url
+      ? [{ id: 7, url: "https://neetcode.io/problems/duplicate-integer/" } as chrome.tabs.Tab]
+      : [
+          { id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab,
+          { id: 8, url: "https://example.com/" } as chrome.tabs.Tab,
+        ]);
+    await start();
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 8, enabled: false }));
+    expect(chrome.sidePanel.setPanelBehavior).toHaveBeenCalledWith({ openPanelOnActionClick: true });
+    expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ enabled: false });
+    expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 7, path: "panel.html", enabled: true });
+  });
+  it("updates availability when a tab is activated, navigated, or created", async () => {
+    await start();
+    vi.mocked(chrome.sidePanel.setOptions).mockClear();
+    activated.at(-1)?.({ tabId: 8, windowId: 3 });
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 8, enabled: false }));
+    activated.at(-1)?.({ tabId: 7, windowId: 3 });
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 7, path: "panel.html", enabled: true }));
+    updated.at(-1)?.(8, { url: "https://neetcode.io/practice/" }, { id: 8 });
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 8, path: "panel.html", enabled: true }));
+    updated.at(-1)?.(8, { url: "https://example.com/" }, { id: 8 });
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 8, enabled: false }));
+    created.at(-1)?.({ id: 9, url: "https://neetcode.io/" });
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 9, path: "panel.html", enabled: true }));
+    created.at(-1)?.({ id: 10, url: "https://other.example/" });
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 10, enabled: false }));
+    created.at(-1)?.({ id: 11, url: "https://neetcode.io.evil.example/" });
+    await vi.waitFor(() => expect(chrome.sidePanel.setOptions).toHaveBeenCalledWith({ tabId: 11, enabled: false }));
+    expect(await dispatch({ kind: "get_mode" })).toBe("idle");
+  });
+  it("sets toolbar behavior again on install", async () => {
+    await start();
+    vi.mocked(chrome.sidePanel.setPanelBehavior).mockClear();
+    installed.at(-1)?.();
+    await vi.waitFor(() => expect(chrome.sidePanel.setPanelBehavior).toHaveBeenCalledWith({ openPanelOnActionClick: true }));
   });
 });
 
