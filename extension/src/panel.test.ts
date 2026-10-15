@@ -101,6 +101,15 @@ describe("panel actions", () => {
     expect(input.value).toBe("Second question");
     expect(document.getElementById("composer-reason")?.textContent).toMatch(/still answering/i);
   });
+  it("clears the problem title and the timer from the header once the session has ended", () => {
+    const active = { ...session, state: "active", mode: "watching", running: true, active_seconds: 52, budget_minutes: 30, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    expect(document.getElementById("title")?.textContent || document.body.textContent).toContain("Duplicate Integer");
+    notify({ kind: "session_state", state: { ...active, state: "ended", mode: "idle", running: false } });
+    expect(document.body.textContent).not.toContain("Duplicate Integer");
+    expect((document.getElementById("timer") as HTMLElement).hidden).toBe(true);
+    expect(document.body.textContent).toContain("Session ended · 0:52");
+  });
   it("keeps a single composer, and the same text box, across the redraws the timer causes", () => {
     const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
     notify({ kind: "session_state", state: active });

@@ -18,7 +18,8 @@ export type PanelView = {
 
 export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string; sessionTabId?: number | null; panelTabId?: number | null; boundTabExists?: boolean; panelOnProblemPage?: boolean }): PanelView {
   const { transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage } = input;
-  const title = session?.problem?.title || "Leetotter";
+  // An ended session leaves no problem or timer in the header; "Session ended · time" below is its recap.
+  const title = session?.state === "ended" ? "Leetotter" : session?.problem?.title || "Leetotter";
   if (session && ["active", "paused"].includes(session.state) && sessionTabId != null && panelTabId != null && boundTabExists && sessionTabId !== panelTabId) {
     return { title, statusTone: "paused", controls: [], body: "another_tab", remarkPool: "active", alerts: [] };
   }

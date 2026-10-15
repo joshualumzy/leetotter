@@ -146,7 +146,7 @@ function currentSeconds(): number {
   return Math.max(0, (session?.active_seconds || 0) + (session?.running ? Math.floor((Date.now() - receivedAt) / 1000) : 0));
 }
 function updateTimer(): void {
-  if (!session || session.budget_minutes === null || transport.kind === "offline") { timer!.hidden = true; return; }
+  if (!session || session.state === "ended" || session.budget_minutes === null || transport.kind === "offline") { timer!.hidden = true; return; }
   timer!.hidden = false;
   const shown = timerText(currentSeconds(), session.budget_minutes);
   elapsed!.textContent = shown.elapsed;
