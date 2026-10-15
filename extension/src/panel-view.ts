@@ -19,7 +19,7 @@ export type PanelView = {
 export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string; sessionTabId?: number | null; panelTabId?: number | null; boundTabExists?: boolean }): PanelView {
   const { transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists } = input;
   const title = session?.problem?.title || "Leetotter";
-  if (session && ["active", "paused"].includes(session.state) && sessionTabId != null && boundTabExists && sessionTabId !== panelTabId) {
+  if (session && ["active", "paused"].includes(session.state) && sessionTabId != null && panelTabId != null && boundTabExists && sessionTabId !== panelTabId) {
     return { title, statusTone: "paused", controls: [], body: "another_tab", remarkPool: "active", alerts: [] };
   }
   if (transport.kind === "offline") return { title, statusTone: "error", controls: [], body: "offline", remarkPool: "offline", alerts: [] };

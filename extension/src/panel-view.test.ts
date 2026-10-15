@@ -33,6 +33,10 @@ describe("panel state", () => {
       expect(panelView({ transport: { kind: "connected" }, session_state: { ...base, state: "paused", mode: "paused", paused_reason: reason }, settings, readerError: "", boundTabExists: false })).toMatchObject({ body: "welcome_back", controls: ["end"], remarkPool: `pause_${reason}` });
     }
   });
+  it("does not claim another tab is running the session while the panel's own tab is unknown", () => {
+    const view = panelView({ transport: { kind: "connected" }, session_state: { ...base, state: "active", mode: "watching", running: true, budget_minutes: 25 }, readerError: "", sessionTabId: 7, panelTabId: null, boundTabExists: true });
+    expect(view.body).not.toBe("another_tab");
+  });
   it("blocks offline and shows transport and reader errors as alerts", () => {
     expect(panelView({ transport: { kind: "offline" }, session_state: base, settings, readerError: "" })).toMatchObject({ body: "offline", statusTone: "error", remarkPool: "offline" });
     expect(panelView({ transport: { kind: "error", message: "Bad reply" }, session_state: base, settings, readerError: "" })).toMatchObject({ statusTone: "error", alerts: ["Bad reply"] });

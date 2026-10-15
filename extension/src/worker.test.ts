@@ -387,10 +387,27 @@ describe("worker reader delivery", () => {
     await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, tab);
     expect(socket.sent.map(item => item.type)).toEqual(["problem_opened", "focus_changed"]);
     activated.at(-1)?.({ tabId: 8, windowId: 3 });
-    await dispatch({ kind: "get_mode" });
-    expect(socket.sent).toHaveLength(2);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect(socket.sent.at(-1).payload).toEqual({ tab_active: false, window_focused: true });
     activated.at(-1)?.({ tabId: 8, windowId: 3 });
     await dispatch({ kind: "get_mode" });
-    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent).toHaveLength(3);
+    activated.at(-1)?.({ tabId: 7, windowId: 3 });
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(4));
+    expect(socket.sent.at(-1).payload).toEqual({ tab_active: true, window_focused: true });
+  });
+
+  it("pauses the session when the session tab navigates away from NeetCode, but not within NeetCode", async () => {
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
+    socket.readyState = 1;
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    await dispatch({ kind: "session_command", command: "start", budget_minutes: 25, tabId: 7 });
+    await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, tab);
+    const before = socket.sent.length;
+    updated.at(-1)?.(7, { url: "https://neetcode.io/problems/two-integer-sum/" }, { id: 7, url: "https://neetcode.io/problems/two-integer-sum/" });
+    await dispatch({ kind: "get_mode" });
+    expect(socket.sent.slice(before).map(item => item.type)).not.toContain("tab_closed");
+    updated.at(-1)?.(7, { url: "https://example.com/" }, { id: 7, url: "https://example.com/" });
+    await vi.waitFor(() => expect(socket.sent.map(item => item.type)).toContain("tab_closed"));
   });
 });

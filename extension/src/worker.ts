@@ -272,17 +272,20 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 chrome.tabs.onActivated.addListener(info => {
   void ready.then(async () => {
-    if (info.tabId === sessionTabId) {
-      const tab = problemTabs.get(info.tabId);
-      if (tab) { tab.active = true; sendFocus(info.tabId); }
-    }
+    const tab = sessionTabId === null ? undefined : problemTabs.get(sessionTabId);
+    if (tab && tab.windowId === info.windowId) { tab.active = info.tabId === sessionTabId; sendFocus(sessionTabId!); }
     await save();
     await setPanelForTab(await chrome.tabs.get(info.tabId));
   });
 });
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
   if (change.url) void ready.then(async () => {
-    problemTabs.delete(id); failedModeTabs.delete(id); await save();
+    problemTabs.delete(id); failedModeTabs.delete(id);
+    if (id === sessionTabId && !change.url!.startsWith("https://neetcode.io/")) {
+      // The session's tab left NeetCode: nothing is watching any more, so it pauses like a closed tab.
+      if (!orphanReported) orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
+      await bindTab(null);
+    } else await save();
     await setPanelForTab({ ...tab, id, url: change.url });
   });
 });
