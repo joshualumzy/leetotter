@@ -144,9 +144,13 @@ class TutorReply(BaseModel):
     follow_up_question: str | None
 
     @model_validator(mode="after")
-    def _named_other(self):
+    def _consistent_labels(self):
+        if (self.gap == "none") != (self.help_kind == "none"):
+            raise ValueError("gap and help_kind must both be none (no help given) or both name what was given")
         if self.gap == "other" and not (self.gap_note or "").strip():
             raise ValueError("gap_note must describe the gap when gap is other")
+        if self.gap != "other" and self.gap_note is not None:
+            raise ValueError("gap_note must be null unless gap is other")
         return self
 
 

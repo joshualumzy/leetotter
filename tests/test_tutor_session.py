@@ -255,3 +255,46 @@ def test_a_turn_open_when_the_companion_died_is_logged_failed_on_restore(tmp_pat
     fresh.finish_turn(again, reply(), "x-test-1")
     SessionCoordinator(path, clock)
     assert len(of_type(path, "help_failed")) == 1
+
+
+# --- help history belongs to the problem, across the session -------------------------
+
+def test_a_reply_finishing_after_a_switch_does_not_count_on_the_new_problem(tmp_path):
+    coord, _, _ = active(tmp_path)
+    _, turn = begin(coord)
+    coord.handle(opened(SLUG_B, TITLE_B))
+    coord.finish_turn(turn, reply(reply_text="A late hint for A"), "x-test-1")
+    out, turn_b = begin(coord)
+    assert out[0]["press_index"] == 1 and turn_b.schema.__name__ == "FirstHelpReply"
+    assert "A late hint for A" not in context(turn_b)
+    assert [t for t in coord.chat_state()["turns"] if t["turn_id"] == turn.turn_id] == []
+
+
+def test_coming_back_to_a_problem_in_the_same_session_continues_its_help(tmp_path):
+    coord, _, _ = active(tmp_path)
+    _, turn = begin(coord)
+    coord.finish_turn(turn, reply(reply_text="Hint one on A"), "x-test-1")
+    coord.handle(opened(SLUG_B, TITLE_B))
+    coord.handle(opened())
+    out, again = begin(coord)
+    assert out[0]["press_index"] == 2 and "Hint one on A" in context(again)
+    assert [t["kind"] for t in coord.chat_state()["turns"]] == ["press", "reply", "press"]
+
+
+def test_a_new_session_starts_the_problem_at_press_one(tmp_path):
+    coord, _, _ = active(tmp_path)
+    _, turn = begin(coord)
+    coord.finish_turn(turn, reply(reply_text="Old session hint"), "x-test-1")
+    coord.handle(msg("session_end"))
+    coord.handle(start_msg())
+    coord.handle(opened())
+    out, fresh = begin(coord)
+    assert out[0]["press_index"] == 1 and "Old session hint" not in context(fresh)
+
+
+def test_failing_a_turn_that_already_finished_logs_nothing(tmp_path):
+    coord, _, path = active(tmp_path)
+    _, turn = begin(coord)
+    coord.finish_turn(turn, reply(), "x-test-1")
+    assert coord.fail_turn(turn, "shutdown", "stopped") == []
+    assert of_type(path, "help_failed") == []

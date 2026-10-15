@@ -162,8 +162,9 @@ Every time, in this order:
 - bugs_and_edge_cases: nearly right. What helps: let them find it themselves ("try the smallest input").
 - other: a gap not on this list. Describe it in gap_note in a few words.
 - none: they aren't stuck and you give no help (a remark, thanks, a plan they're only sharing).
+Close calls: if they already use the tool correctly elsewhere, it's pattern_not_recognised, not missing_tool. If the code doesn't yet express a right idea, it's cant_write_code; if it does and fails on some inputs, bugs_and_edge_cases. No direction at all is weak_intuition; a direction that can't work is wrong_intuition.
 
-2. Choose the next move. By default, build their intuition with a question. Go direct only where questions can't help: a tool they've never seen, or Python mechanics. Get more concrete only as needed, in this order: a question, a trace or illustrative example, an analogy, a code snippet, partial logic, and eventually the full solution.
+2. Choose the next move. The help ladder, least to most concrete: a question, a trace or illustrative example, an analogy, a code snippet, partial logic, the full solution. Questions are the default for a chat message and for the first hint: build their intuition with a question, and go direct only where questions can't help (a tool they've never seen, Python mechanics). A further press of "I need help" is the learner asking to climb: go one rung more concrete at once.
 
 3. Follow their approach, even when it isn't one the reference lists. Brute force is never a wrong path. Going straight for the optimal solution is fine; only when that has left them with nothing working, suggest getting a brute force working first.
 
@@ -171,24 +172,28 @@ Every time, in this order:
 
 5. Once a full solution has been shown, add only the explanation they still need. Don't restart the questioning.
 
+6. After an accepted submission, chat is a discussion. If they solved it on their own, they may ask you to compare approaches or help improve theirs.
+
 Rules:
 - Never give a hint nobody asked for. If their message isn't asking for help, reply briefly with no hint and label it gap none, help_kind none. Checking a plan they ask you about is help: label it.
+- If they ask outright for the answer, give the full solution only when lighter help has already been tried or they've clearly decided to stop; otherwise give the next rung.
 - No grades and no judgement of the learner ("this one is easy", "you should know this"). Be warm and plain.
-- The reference is for you. Don't reveal its pattern names, approach names or target complexity unless the help you chose needs it, and never name the problem's pattern or category unless you're teaching a missing tool.
+- The reference is for judging their approach, not for quoting. Never name a pattern, an approach or its complexity unless the learner has already named or used it themselves.
+- Never state the time or space complexity of their approach or any other, unless they ask after solving it: their own complexity analysis is measured.
 - Refer to their code concretely (a line, a variable name) so they can see you followed it. It may be mid-edit. You can't run it; the run results show what NeetCode returned. If it's only NeetCode's starter code (the empty function signature), they haven't started writing yet.
-- If the problem statement isn't available, don't invent details: work from the title (these are well-known problems), the test cases in the run results and the reference, and ask them when a detail matters and you're unsure.
+- If the problem statement isn't available, don't invent details: work from the title, the test cases in the run results and the reference, and ask them when a detail matters and you're unsure.
 - Keep replies short for a narrow panel: usually one to four sentences, and any code only as long as it must be. Plain text; `inline code` and fenced ```python blocks are fine; no headings or tables.
 
 Your reply is JSON with these fields:
 - gap: one of the gaps above.
 - gap_note: a few words naming the gap when gap is other; otherwise null.
-- help_kind: the most concrete help in this reply: question (a guiding question), trace (walking through an example or their code), analogy, teach_tool (explaining a data structure or algorithm they didn't know), syntax (Python mechanics such as how heapq is called, never the algorithm), snippet (code that carries part of the idea), partial_logic (spelling out part of the algorithm's steps), full_solution (the whole approach or code), none (no help). Label honestly: the label records how much help the attempt needed.
+- help_kind: the most concrete help in this reply: question (a guiding question), trace (walking through an example or their code), analogy, teach_tool (explaining a data structure or algorithm they didn't know), syntax (Python mechanics such as how heapq is called), snippet (code that carries part of the idea), partial_logic (spelling out part of the algorithm's steps), full_solution (the whole approach or code), none (no help; only with gap none). Code that carries any of the algorithm's idea is snippet or partial_logic, never syntax. Label honestly: the label records how much help the attempt needed.
 - reply_text: what the learner reads.
 - follow_up_question: null.
 
-Examples of good replies:
-- First press, 9 minutes into Contains Duplicate, two nested loops that time out on submit: gap stuck_optimising, help_kind question, reply_text "Your two loops compare every pair, so each number gets checked against all the others. Going through `nums` once, what could you remember about the numbers you've already passed?"
-- Third press on Top K Frequent Elements, counts done in a dict, no idea how to keep the k largest: gap missing_tool, help_kind teach_tool, reply_text "A heap keeps its smallest item on top: `heapq.heappush(h, (count, num))` adds one and `heapq.heappop(h)` removes the smallest, both in O(log n). If you never let `h` grow past k items, what's left in it at the end?"
+Examples of good replies (invented problems; never reuse their wording):
+- First press, 9 minutes into "Quietest Hour" (find the k-minute window with the least total noise), the learner re-adds every window from scratch and times out: gap stuck_optimising, help_kind question, reply_text "Each time you move to the next window, your inner loop adds up all k minutes again. Put two neighbouring windows side by side: which minutes actually differ?"
+- Third press on "Bakery Orders" (bake orders by earliest deadline as they arrive), the learner re-sorts the whole list after every arrival and hasn't met heaps: gap missing_tool, help_kind teach_tool, reply_text "A heap keeps its smallest item on top: `heapq.heappush(h, (deadline, order))` adds one, and `heapq.heappop(h)` takes out the earliest deadline without sorting everything. When a new order arrives, what would you push, and when would you pop?"
 - The learner writes "ok got it, thanks": gap none, help_kind none, reply_text "Go for it."
 """
 
@@ -257,9 +262,7 @@ def _reference(stored: StoredReference | None):
         return ("## Reference\nThere's no reference for this problem yet. Work from the problem itself, "
                 "and follow the learner's approach.")
     ref = stored.reference
-    lines = ["## Reference (for you, not the learner)",
-             f"Difficulty {ref.difficulty}; category {ref.neetcode_category}; patterns: {', '.join(ref.patterns) or 'none listed'}.",
-             "Known approaches:"]
+    lines = ["## Reference (for judging their approach, not for quoting)", f"Difficulty {ref.difficulty}.", "Known approaches:"]
     for a in ref.approaches:
         trick = "; a one-off trick" if a.trick else ""
         lines.append(f"- {a.id}: {a.name}. {a.idea}. Time {a.time}, space {a.space}; interviewers expect it {a.interview_expected}{trick}.")
@@ -331,28 +334,30 @@ def _request(request: TutorRequest, events):
     if any(p["help_kind"] == "full_solution" for p in helped):
         concrete = "A full solution has already been shown: add only the explanation they still need."
     elif helped:
-        concrete = f"The kinds of help you've given on this problem so far: {', '.join(dict.fromkeys(p['help_kind'] for p in helped))}."
+        concrete = (f"The kinds of help you've given on this problem so far: {', '.join(dict.fromkeys(p['help_kind'] for p in helped))}; "
+                    f"the last was {helped[-1]['help_kind']}.")
     else:
         concrete = "You haven't helped on this problem yet."
     if request.kind == "chat":
         return (f'## Now\nThe learner wrote:\n"""\n{request.text}\n"""\n{concrete} Answer it the same way as a help request: '
-                "diagnose, then help only as much as they need. If they're not asking for help, give none. "
-                "If they ask for more (a bigger hint, the solution), you may give it.")
+                "diagnose, then help only as much as they need; if they're not asking for help, give none. If they ask for the "
+                "solution, give it only if lighter help has already been tried or they've clearly decided to stop; otherwise give the next rung.")
     if request.press_index == 1:
         return ('## Now\nThe learner pressed "I need help" for the first time on this problem. ' + concrete +
-                " Give the smallest useful hint: just enough to get them unstuck, never the solution.")
+                " Give the smallest hint beyond what you've already given: just enough to get them unstuck, never the solution.")
     return (f'## Now\nThe learner pressed "I need help" again: press {request.press_index} on this problem. {concrete} '
-            "Give the next hint right away, clearly more concrete than your last help (beyond a question if you last asked one). "
-            "Don't ask them anything first; the hint itself may end with a question.")
+            "Go exactly one rung more concrete than your last help, at once; give the full solution only when the ladder has "
+            "genuinely reached it. Don't ask a diagnostic question before helping; you may end with one only if it moves them forward.")
 
 
 def build_messages(problem: dict, events: list, *, reference: StoredReference | None, prior_solve: bool,
                    problem_seconds: int, seconds_left: int, request: TutorRequest) -> list[dict]:
-    """The Tutor's prompt, from the current problem and this attempt's events before the request, oldest first.
+    """The Tutor's prompt, from the current problem and this session's events about it, oldest first.
 
-    `events` are (type, payload) pairs. Only this attempt is used and never the learner's name, so nothing
-    from outside the session is sent (beyond whether NeetCode shows the problem solved). New context (Observer
-    notes, Reflector hypotheses, framings that worked) is a new argument and one more section here.
+    `events` are (type, payload) pairs; the code events are those since the problem was last opened. Only this
+    session is used and never the learner's name, so nothing from outside the session is sent (beyond whether
+    NeetCode shows the problem solved). New context (Observer notes, Reflector hypotheses, framings that worked)
+    is a new argument and one more section here.
     """
     statements = [p["statement"] for kind, p in events if kind == "problem_statement" and p["slug"] == problem["slug"]]
     statement = (f"## Statement\n{_clip(statements[-1], STATEMENT_LIMIT)}" if statements else

@@ -208,3 +208,63 @@ def test_stopping_the_companion_mid_reply_logs_the_turn_failed(tmp_path, monkeyp
     failed, = of_type(path, "help_failed")
     assert failed[1]["reason"] == "shutdown"
     assert of_type(path, "help_turn") == []
+
+
+def test_a_failure_before_the_call_starts_closes_the_turn_and_later_requests_work(tmp_path, monkeypatch):
+    import companion.socket as socket_module
+    path = tmp_path / "db.sqlite3"
+    real = socket_module._broadcast
+    failed_once = []
+
+    async def flaky(outgoing, sender, broadcast=True):
+        if any(m["type"] == "tutor_start" for m in outgoing) and not failed_once:
+            failed_once.append(True)
+            raise RuntimeError("send failed")
+        await real(outgoing, sender, broadcast)
+
+    monkeypatch.setattr(socket_module, "_broadcast", flaky)
+
+    async def body(ws, _):
+        await in_session(ws)
+        await ws.send(wire("help_request"))
+        error, _ = await until(ws, "tutor_error")
+        assert error["turn_id"] is not None and "send failed" in error["message"]
+        await ws.send(wire("help_request"))
+        start, _ = await until(ws, "tutor_start")
+        assert start["press_index"] == 1
+        await until(ws, "tutor_done")
+
+    run(path, monkeypatch, models(monkeypatch, path, chunks(json.dumps(REPLY))), body)
+    failed, = of_type(path, "help_failed")
+    assert failed[1]["reason"] == "error"
+
+
+def test_stopping_the_companion_after_the_reply_was_stored_logs_no_failure(tmp_path, monkeypatch):
+    import companion.socket as socket_module
+    path = tmp_path / "db.sqlite3"
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(path))
+    real = socket_module._broadcast
+
+    async def stuck(outgoing, sender, broadcast=True):
+        if any(m["type"] == "tutor_done" for m in outgoing):
+            await asyncio.Event().wait()
+        await real(outgoing, sender, broadcast)
+
+    monkeypatch.setattr(socket_module, "_broadcast", stuck)
+    client = models(monkeypatch, path, chunks(json.dumps(REPLY)))
+
+    async def check():
+        async with serve_companion(port=0, models=client) as server:
+            port = server.sockets[0].getsockname()[1]
+            async with connect(f"ws://127.0.0.1:{port}", origin=ALLOWED_ORIGIN, proxy=None) as ws:
+                await in_session(ws)
+                await ws.send(wire("help_request"))
+                await until(ws, "tutor_start")
+                for _ in range(100):
+                    if of_type(path, "help_turn"):
+                        break
+                    await asyncio.sleep(0.02)
+
+    asyncio.run(check())
+    assert len(of_type(path, "help_turn")) == 1
+    assert of_type(path, "help_failed") == []

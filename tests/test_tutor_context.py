@@ -69,7 +69,8 @@ def test_reference_is_helper_knowledge_with_its_status_and_uncertain_labels():
     out = build()
     assert "Hash set" in out and "O(n^2)" in out and "usually" in out
     assert "needs_review" in out and "set.complexity" in out
-    assert "follow the learner's approach" in out.lower()
+    assert "follow the learner's approach" in out.lower() and "not for quoting" in out
+    assert "Arrays & Hashing" not in out and "hash-set" not in out
 
 
 def test_missing_reference_is_said_plainly():
@@ -134,13 +135,13 @@ def test_conversation_so_far_with_labels():
 
 def test_first_press_asks_for_the_smallest_hint_and_never_the_solution():
     out = build(request=TutorRequest("help", 1, None))
-    assert "smallest useful hint" in out and "never the solution" in out
+    assert "smallest hint beyond what you've already given" in out and "never the solution" in out
 
 
 def test_a_further_press_asks_for_the_next_more_concrete_hint_with_no_questions_first():
     out = build([turn("What repeats?")], request=TutorRequest("help", 2, None))
-    assert "press 2" in out and "more concrete" in out and "question" in out
-    assert "Don't ask them anything first" in out
+    assert "press 2" in out and "one rung more concrete" in out and "the last was question" in out
+    assert "Don't ask a diagnostic question before helping" in out
 
 
 def test_after_a_full_solution_only_what_is_still_needed():
@@ -151,6 +152,7 @@ def test_after_a_full_solution_only_what_is_still_needed():
 def test_a_chat_message_is_quoted_and_answered_the_same_way():
     out = build(request=TutorRequest("chat", None, "why does [1,1] fail?"))
     assert "why does [1,1] fail?" in out and "diagnose" in out.lower()
+    assert "lighter help has already been tried" in out
 
 
 def test_long_code_is_trimmed_with_a_notice():
@@ -181,3 +183,13 @@ def test_answered_presses_count_only_presses_that_got_a_reply():
 def test_reply_schema_allows_only_the_help_kinds_a_request_may_get(request_, kinds):
     schema = reply_schema(request_).model_json_schema()
     assert set(schema["properties"]["help_kind"]["enum"]) == kinds
+
+
+def test_the_prompt_guards_the_measured_skills_and_uses_only_invented_examples():
+    from companion.catalog import load_catalog
+    from companion.tutor import SYSTEM_PROMPT
+    assert "unless the learner has already named or used it" in SYSTEM_PROMPT
+    assert "Never state the time or space complexity" in SYSTEM_PROMPT
+    assert "never syntax" in SYSTEM_PROMPT
+    titles = [entry["title"] for entry in load_catalog().entries]
+    assert [t for t in titles if t in SYSTEM_PROMPT] == []

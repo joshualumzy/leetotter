@@ -18,6 +18,7 @@ READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed",
 TURN_REQUESTS = frozenset({"chat_message", "help_request"})
 TURN_EVENTS = TURN_REQUESTS | {"help_turn", "help_failed"}
 EVENT_TYPES = READER_TYPES | TURN_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "overrun_prompted", "overrun_choice", "session_restored"}
+CODE_EVENTS = frozenset({"code_snapshot", "code_changed"})
 RESTART_MESSAGE = "The companion restarted before the Tutor finished."
 logger = logging.getLogger(__name__)
 
@@ -372,7 +373,7 @@ class SessionCoordinator:
             return [self._tutor_error(now, None, "The Tutor is still answering. Wait for that reply, then ask again.")], None
         slug = self.problem["slug"]
         with open_store(self.db_path) as db:
-            events = [(kind_, payload) for _, kind_, payload in self._attempt_events(db)]
+            events = [(kind_, payload) for _, kind_, payload in self._problem_events(db)]
             if kind == "help":
                 request = TutorRequest("help", answered_presses(events) + 1, None)
                 turn_id = self._event(db, self.session_id, now.isoformat(), "help_request", {"slug": slug, "press_index": request.press_index})
@@ -397,20 +398,26 @@ class SessionCoordinator:
         return [{"type": "tutor_start", "ts": now.isoformat(), "turn_id": turn_id, "request": kind,
                  "press_index": request.press_index}], turn
 
-    def _attempt_events(self, db):
-        """(id, type, payload) of every event in the current problem's attempt, oldest first."""
-        rows = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id >= ? ORDER BY id",
-                          (self.session_id, self.attempt_start)).fetchall()
-        return [(event_id, kind, json.loads(payload)) for event_id, kind, payload in rows]
+    def _problem_events(self, db):
+        """(id, type, payload) of this session's events about the current problem, oldest first: every event
+        naming its slug (help, chat, statements, results), so help continues when you come back to it, plus the
+        code events since it was last opened (they name no slug)."""
+        rows = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? ORDER BY id", (self.session_id,)).fetchall()
+        events = []
+        for event_id, kind, raw in rows:
+            payload = json.loads(raw)
+            if (payload.get("slug") == self.problem["slug"] if kind not in CODE_EVENTS else event_id >= self.attempt_start):
+                events.append((event_id, kind, payload))
+        return events
 
     def chat_state(self) -> dict:
-        """The conversation on the current attempt, rebuilt from stored events: the same events the Tutor's
-        context uses. Empty outside an active or paused session on a problem. `streaming` is the turn in flight."""
+        """The conversation on the current problem in this session, rebuilt from stored events: the same events
+        the Tutor's context uses. Empty outside an active or paused session on a problem. `streaming` is the turn in flight."""
         now = self.clock()
         turns = []
         if self.state in ("active", "paused") and self.problem is not None:
             with open_store(self.db_path) as db:
-                events = self._attempt_events(db)
+                events = self._problem_events(db)
             for event_id, kind, payload in events:
                 if kind == "help_request":
                     turns.append({"turn_id": event_id, "kind": "press", "press_index": payload["press_index"]})
@@ -440,7 +447,9 @@ class SessionCoordinator:
                  **labels, "follow_up_question": reply.follow_up_question}]
 
     def fail_turn(self, turn: Turn, reason: str, message: str) -> list[dict]:
-        """Log a turn that ended without a valid reply and tell the panel."""
+        """Log a turn that ended without a valid reply and tell the panel; nothing if it already ended."""
+        if self.turn != turn.turn_id:
+            return []
         now = self.clock()
         try:
             with open_store(self.db_path) as db:

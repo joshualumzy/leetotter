@@ -89,3 +89,23 @@ def test_an_unavailable_model_is_named_with_what_it_affects(tmp_path, monkeypatc
         ask_tutor(models, MESSAGES, FirstHelpReply, lambda *_: None)
     reason, message = failure(caught.value)
     assert reason == "model_unavailable" and "GLM 5.3 Flash" in message and "tutoring" in message
+
+
+@pytest.mark.parametrize("changes", [
+    {"gap": "none"},                                   # help given, but labelled as no gap
+    {"help_kind": "none"},                             # a gap diagnosed, but no help labelled
+    {"gap": "other", "gap_note": None},
+    {"gap": "other", "gap_note": "  "},
+    {"gap_note": "a note on a listed gap"},
+])
+def test_labels_must_agree_with_each_other(changes):
+    from pydantic import ValidationError
+    from companion.model import TutorReply
+    with pytest.raises(ValidationError):
+        TutorReply.model_validate({**GOOD, **changes})
+
+
+def test_consistent_labels_are_valid():
+    from companion.model import TutorReply
+    TutorReply.model_validate({**GOOD, "gap": "none", "help_kind": "none"})
+    TutorReply.model_validate({**GOOD, "gap": "other", "gap_note": "mixes up rows and columns"})

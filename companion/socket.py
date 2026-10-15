@@ -26,8 +26,8 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 # replaces what was shown); tutor_done {reply_text, gap, gap_note, help_kind, follow_up_question}, the
 # validated reply, which replaces the streamed text; tutor_error {message}, the turn failed and anything
 # streamed for it is withdrawn. A refused request gets tutor_error with turn_id null, to the sender only.
-# chat_get (no payload) answers the sender only with chat_state {turns, streaming}: the current attempt's
-# conversation from the store, oldest first, empty outside an active or paused session on a problem; each turn is
+# chat_get (no payload) answers the sender only with chat_state {turns, streaming}: the current problem's
+# conversation in this session, from the store, oldest first, empty outside an active or paused session on a problem; each turn is
 #   {turn_id, kind: "press", press_index} | {turn_id, kind: "chat", text}
 #   | {turn_id, kind: "reply", text, gap, gap_note, help_kind} | {turn_id, kind: "failed", reason, message}
 # and streaming is the id of the turn whose reply is still coming, or null.
@@ -193,9 +193,10 @@ async def _handle(connection):
                 elif kind in TUTOR_TYPES:
                     text = message["payload"]["text"].strip() if kind == "chat_message" else None
                     outgoing, turn = _coordinator.begin_turn("chat" if kind == "chat_message" else "help", text)
-                    await _broadcast(outgoing, connection)
-                    if turn is not None:
-                        task = asyncio.create_task(_run_turn(turn))
+                    if turn is None:
+                        await _broadcast(outgoing, connection)
+                    else:
+                        task = asyncio.create_task(_run_turn(turn, outgoing))
                         _turns.add(task)
                         task.add_done_callback(_turns.discard)
                 elif kind != "ping":
@@ -224,9 +225,10 @@ async def _broadcast(outgoing, sender, broadcast=True):
                 logger.warning("Connection closed before %s could be delivered", message["type"])
 
 
-async def _run_turn(turn):
-    """Run one Tutor call in a worker thread, so the event loop (the timer, other clients) never waits on it,
-    and relay its streamed text to every panel in order. The turn always ends logged: done or failed."""
+async def _run_turn(turn, started):
+    """Announce a turn (`started`), run its Tutor call in a worker thread, so the event loop (the timer, other
+    clients) never waits on it, and relay its streamed text to every panel in order. Whatever goes wrong, the turn
+    ends logged, done or failed, so it never blocks later requests."""
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
 
@@ -246,8 +248,9 @@ async def _run_turn(turn):
         except Exception as exc:
             post(("failed", exc))
 
-    loop.run_in_executor(None, work)
     try:
+        await _broadcast(started, None)
+        loop.run_in_executor(None, work)
         while True:
             item = await queue.get()
             if item[0] == "chunk":
@@ -266,8 +269,16 @@ async def _run_turn(turn):
         raise
     except Exception as exc:
         logger.exception("Tutor turn %s could not be completed", turn.turn_id)
-        await _broadcast([{"type": "tutor_error", "ts": _timestamp(), "turn_id": turn.turn_id,
-                           "message": f"The Tutor's reply couldn't be saved: {exc}"}], None)
+        message = f"The Tutor's turn failed: {exc}"
+        try:
+            outgoing = _coordinator.fail_turn(turn, "error", message)
+        except Exception:
+            logger.exception("Could not log Tutor turn %s as failed", turn.turn_id)
+            outgoing = [{"type": "tutor_error", "ts": _timestamp(), "turn_id": turn.turn_id, "message": message}]
+        try:
+            await _broadcast(outgoing, None)
+        except Exception:
+            logger.exception("Could not report Tutor turn %s failure", turn.turn_id)
 
 
 async def _ticker():
