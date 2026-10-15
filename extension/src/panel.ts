@@ -306,6 +306,11 @@ function fillBubble(node: HTMLElement, turn: ChatTurn, text: string): void {
   if (turn.kind === "reply") paintReply(node, text);
   else { node.textContent = text; painted.set(node, text); }
 }
+// Shown from the moment you ask until the first word arrives; the CSS adds the longer-wait line on its own after 10 s.
+const waiting = element("div", "chat-line chat-waiting");
+waiting.setAttribute("role", "status");
+waiting.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="wait-text">Thinking it through</span><span class="wait-more">, still working on it</span>';
+function waitingNode(): HTMLElement { return waiting; }
 function nearBottom(): boolean { return body!.scrollHeight - body!.scrollTop - body!.clientHeight < 60; }
 function scrollToEnd(): void { body!.scrollTop = body!.scrollHeight; }
 function renderChat(): void {
@@ -323,6 +328,8 @@ function renderChat(): void {
     }
     return node;
   });
+  const last = chat.turns.at(-1);
+  if (last && (last.kind === "press" || last.kind === "chat") && !chat.notice) nodes.push(waitingNode());
   if (chat.notice) nodes.push(element("div", "chat-notice", chat.notice));
   if (nodes.length !== stream.children.length || nodes.some((node, index) => stream.children[index] !== node)) stream.replaceChildren(...nodes);
   if (follow) scrollToEnd();
@@ -440,6 +447,7 @@ function render(): void {
   // The conversation survives a redraw as the same elements, so scroll position, selection and code scrolling stay put.
   const keptStream = document.getElementById("chat-stream");
   const scrollTop = body!.scrollTop;
+  const followEnd = nearBottom();
   body!.replaceChildren();
   if (view.body === "another_tab") {
     const card = element("section", "card");
@@ -488,6 +496,8 @@ function render(): void {
   }
   body!.append(historyRow());
   body!.scrollTop = scrollTop;
+  // A note added below the conversation (such as "Paused while you're away") must come into view when you were reading the end.
+  if (followEnd) scrollToEnd();
   renderChat();
   decorateOtters();
 }

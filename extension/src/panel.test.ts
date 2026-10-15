@@ -62,6 +62,26 @@ describe("panel actions", () => {
     expect((document.getElementById("help-request") as HTMLButtonElement).disabled).toBe(true);
     expect(document.getElementById("composer-reason")?.textContent).toMatch(/still answering/i);
   });
+  it("shows a waiting indicator from the ask until the first word of the reply", () => {
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 5, request: "help", press_index: 1 } });
+    expect(document.querySelectorAll(".chat-waiting")).toHaveLength(1);
+    notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 5, attempt: 0, text: "Try " } });
+    expect(document.querySelector(".chat-waiting")).toBeNull();
+  });
+  it("scrolls the pause note into view when you were reading the end of the conversation", async () => {
+    await bindPanelTab();
+    const active = { ...session, state: "active", mode: "watching", running: true, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", streaming: null, turns: [{ turn_id: 1, kind: "press", press_index: 1 }, { turn_id: 1, kind: "reply", text: "Try a set", gap: "pattern_not_recognised", gap_note: null, help_kind: "question" }] } });
+    const scroller = document.getElementById("session-body") as HTMLElement;
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => 900 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 400 });
+    scroller.scrollTop = 500;
+    notify({ kind: "session_state", state: { ...active, state: "paused", mode: "paused", running: false, paused_reason: "focus" } });
+    expect(document.body.textContent).toContain("Paused while you're away");
+    expect(scroller.scrollTop).toBe(900);
+  });
   it("keeps a single composer, and the same text box, across the redraws the timer causes", () => {
     const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
     notify({ kind: "session_state", state: active });
