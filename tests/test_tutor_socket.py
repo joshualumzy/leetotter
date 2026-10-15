@@ -118,7 +118,7 @@ def test_a_press_streams_its_reply_then_sends_the_labels_and_logs_the_turn(tmp_p
 
     run(path, monkeypatch, models(monkeypatch, path, chunks(json.dumps(REPLY))), body)
     turn, = of_type(path, "help_turn")
-    assert turn[1]["gap"] == "bugs_and_edge_cases" and turn[1]["model"] == "x-test-1"
+    assert turn[1]["gap"] == "bugs_and_edge_cases" and turn[1]["model"] == "x-test-2"
 
 
 def test_a_chat_message_is_answered_and_logged(tmp_path, monkeypatch):

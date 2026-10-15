@@ -98,13 +98,13 @@ def test_tutor_reply_rejects_wrong_labels_and_extra_fields(data):
 
 
 def test_model_not_found_uses_provider_signal_and_display_name(tmp_path, monkeypatch):
-    error = RuntimeError("The model x-test-1 does not exist")
+    error = RuntimeError("The model x-test-2 does not exist")
     error.status_code = 404
     instance, _, path = model_client(tmp_path, monkeypatch, error)
     with pytest.raises(ModelUnavailable) as caught:
         instance.call_role("tutor", message(), Reply)
-    assert caught.value.model == "x-test-1"
-    assert "GLM 5.3 Flash" in str(caught.value)
+    assert caught.value.model == "x-test-2"
+    assert "DeepSeek V4.1 Flash" in str(caught.value)
     assert "tutoring" in str(caught.value) and "grading continues with one grader" in str(caught.value)
     assert rows(path)[0][-1] == "unavailable"
 
@@ -153,7 +153,7 @@ def test_two_consecutive_provider_failures_raise_unavailable(tmp_path, monkeypat
         instance.call_role("checker", message(), Reply)
     with pytest.raises(ModelUnavailable) as caught:
         instance.call_role("checker", message(), Reply)
-    assert caught.value.affected_roles == ("checker", "grader") or set(caught.value.affected_roles) == {"checker", "grader"}
+    assert set(caught.value.affected_roles) == {"checker", "grader", "tutor"}
     assert [row[-1] for row in rows(path)] == ["error", "unavailable"]
 
 

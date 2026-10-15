@@ -1,6 +1,6 @@
 [roles]
 observer = "qwen3.8:27b"
-tutor = "x-test-1"
+tutor = "x-test-2"
 reflector = "x-test-1"
 planner = "x-test-1"
 grader = ["x-test-1", "x-test-2"]

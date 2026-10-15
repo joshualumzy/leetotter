@@ -186,7 +186,7 @@ Each agent is one prompt template plus a context builder plus an output validato
 | Agent | Trigger | Input | Output | Model |
 |---|---|---|---|---|
 | Observer | once when the solving time ends (for the §6 check), then each `code_changed`/`run_result` batch, at most every 5 s | reference summary, the diffs since its last call plus the current code, your recent messages, recent observations, recent results | `{approach_id or "new", state: progressing / circling / dead_end, note}`; the approach and note go to the Tutor as recent observations. `circling` only once a loop has held (the same failure across several runs, rewriting the same block); `dead_end` only for an approach that can't work, never for brute force | qwen3.8:27b, thinking off |
-| Tutor | your message, a press of "I need help", a solve | see §6 | reply text, gap, help kind, optional follow-up question | GLM 5.3 Flash |
+| Tutor | your message, a press of "I need help", a solve | see §6 | reply text, gap, help kind, optional follow-up question | DeepSeek V4.1 Flash |
 | Grader (two, independently) | two separate calls: the `solve` grade when you leave a problem you solved or moved on from (not after a full solution, which code grades), and the `analysis` grade when a complexity answer is given (if one is). A skipped question never holds up the `solve` grade | the problem statement, the reference's approaches (with complexity and `interview_expected`), all your submissions and runs on the problem, the help turns for this problem with their labels, your complexity answer and reasoning | `solve` call: `{best_self_approach_id or "new", meets_expected: bool, corrected_help_labels}`; `analysis` call: `{complexity_verdict: right / right_after_followup / wrong / wrong_reasoning / no_reasoning}`. `meets_expected` says whether that approach's time complexity is no worse than the best approach the reference marks `usually`, with space breaking ties; the Grader judges a "new" approach the same way. Code turns this plus the logged help kinds into the grade (§8). Two graders on different model families judge each attempt independently (§8) | GLM 5.3 Flash and DeepSeek V4.1 Flash |
 | Reflector | session ended | full session event log, current learner model, teaching memory | session summary, hypotheses added/changed (each with an optional category and skill, and citing event ids that must exist), teaching-attempt outcomes, recap bullets (possibly none) | GLM 5.3 Flash |
 | Planner | session start, between problems, swap | learner summary (computed by code, §8, including each category's recent results by difficulty, such as "Trees: Medium Good, Good; Hard Again, 2 weeks ago"), imported history, time left, unfinished problems, preferences | one suggested problem with an internal reason | GLM 5.3 Flash |
@@ -342,7 +342,7 @@ All models are served by your provider's OpenAI-compatible endpoint; none run on
 ```toml
 [roles]
 observer   = "qwen3.8:27b"     # thinking disabled
-tutor      = "x-test-1"        # GLM 5.3 Flash
+tutor      = "x-test-2"        # DeepSeek V4.1 Flash
 reflector  = "x-test-1"
 planner    = "x-test-1"
 grader     = ["x-test-1", "x-test-2"]   # two graders, independently
@@ -359,6 +359,7 @@ References are written once, mostly in a batch, so quality matters more than spe
 - **Timeouts:** Observer 20 s (nudges work on a minutes timescale, so its judgment matters more than its speed), Tutor 60 s (streamed), Grader 60 s, Planner 180 s at session start and 30 s between problems (so a solve is never followed by a long wait), Reflector 180 s.
 - **An unavailable model is reported, not worked around.** If a model fails twice in a row (or returns "model not found"), the panel names the model and what it affects (for example "GLM 5.3 Flash isn't responding: tutoring and suggestions are unavailable; grading continues with one grader"), and it's logged. You fix it in the configuration. What happens to each role meanwhile is in §13.
 - Phase-1 checks (run 2026-10-15 with `python -m companion.check`): `x-test-2` is reachable and, like the other two models, supports JSON schema, JSON object and plain output; thinking can be disabled for `qwen3.8:27b` through `chat_template_kwargs.enable_thinking=false` (about 11 completion tokens in 0.4 s against 198 in 2.6 s without it); the Tutor's median time to first token on GLM 5.3 Flash is about 1.9 s.
+- **Tutor model and latency (measured 2026-10-15):** the Tutor runs on DeepSeek V4.1 Flash with thinking on; in a replay of a long real conversation it answered in about 6 s, against about 21–33 s on GLM 5.3 Flash, and sending the full conversation (about 4,300 tokens) cost nothing extra. The Tutor asks for a plain JSON object, not strict JSON schema, because the provider's strict schema mode strips line breaks from strings and flattens code blocks; the reply is still validated against the schema. Turning thinking off cut a GLM reply from about 9 s to about 1.5 s but gave a weaker hint and a doubtful gap label, so it stays on. The panel shows a waiting indicator until the first word.
 
 ## 13. Failure handling
 

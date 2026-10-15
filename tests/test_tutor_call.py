@@ -84,12 +84,12 @@ def test_provider_failures_are_named(tmp_path, monkeypatch, error, reason, words
 
 
 def test_an_unavailable_model_is_named_with_what_it_affects(tmp_path, monkeypatch):
-    error = type("NotFound", (Exception,), {"status_code": 404})("The model x-test-1 does not exist")
+    error = type("NotFound", (Exception,), {"status_code": 404})("The model x-test-2 does not exist")
     models, _ = client(tmp_path, monkeypatch, error)
     with pytest.raises(Exception) as caught:
         ask_tutor(models, MESSAGES, FirstHelpReply, lambda *_: None)
     reason, message = failure(caught.value)
-    assert reason == "model_unavailable" and "GLM 5.3 Flash" in message and "tutoring" in message
+    assert reason == "model_unavailable" and "DeepSeek V4.1 Flash" in message and "tutoring" in message
 
 
 @pytest.mark.parametrize("changes", [
