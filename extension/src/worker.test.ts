@@ -133,6 +133,58 @@ describe("worker reader delivery", () => {
     expect(await dispatch({ kind: "get_mode" })).toBe("watching");
   });
 
+  it("pauses through a reader check when an existing problem tab cannot hear watch mode, once until recovery", async () => {
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.sendMessage).mockImplementation(async (_tab: number, message: any) => {
+      if (message.kind === "watch_mode" && message.mode === "watching") throw new Error("Receiving end does not exist");
+    });
+    const error = "Leetotter can't see this NeetCode page. Reload the tab.";
+    pushSession("watching");
+    await vi.waitFor(() => expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(1));
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: false, message: error } });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "reader_error", message: error });
+    expect(await dispatch({ kind: "get_reader_error" })).toBe(error);
+    pushSession("paused");
+    pushSession("watching");
+    await vi.waitFor(() => expect(chrome.tabs.query).toHaveBeenCalledTimes(4));
+    expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(1);
+
+    vi.mocked(chrome.tabs.sendMessage).mockResolvedValue(undefined);
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    expect((await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: true } } }, tab)).accepted).toBe(true);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: true } });
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+    pushSession("watching");
+    expect(await dispatch({ kind: "get_mode" })).toBe("watching");
+  });
+
+  it("does not fail a reader check without a problem tab or while idle", async () => {
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.sendMessage).mockRejectedValue(new Error("Receiving end does not exist"));
+    vi.mocked(chrome.tabs.query).mockResolvedValueOnce([]);
+    pushSession("watching");
+    await vi.waitFor(() => expect(chrome.tabs.query).toHaveBeenCalledTimes(2));
+    expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(0);
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+    const newTab = { id: 8, windowId: 3, active: true, url: "https://neetcode.io/problems/two-sum/" };
+    expect((await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: true } } }, newTab)).accepted).toBe(true);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: true } });
+    pushSession("idle");
+    await vi.waitFor(() => expect(chrome.tabs.query).toHaveBeenCalledTimes(3));
+    expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(1);
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+  });
+
+  it("ignores failed watch mode delivery to a tab outside problem pages", async () => {
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.query).mockResolvedValueOnce([{ id: 9, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab]);
+    vi.mocked(chrome.tabs.sendMessage).mockRejectedValue(new Error("Receiving end does not exist"));
+    pushSession("watching");
+    await vi.waitFor(() => expect(chrome.tabs.query).toHaveBeenCalledTimes(2));
+    expect(socket.sent.filter(item => item.type === "reader_check")).toHaveLength(0);
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+  });
+
   it("forwards a reader check and panel session commands", async () => {
     await start(); socket.readyState = 1;
     socket.onmessage?.({ data: JSON.stringify({ type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null, check_message: null, budget_minutes: 25, active_seconds: 0, running: true, overrun_prompt: false, problem: null, accepted: false }) });

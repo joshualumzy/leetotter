@@ -210,9 +210,11 @@ function settingsCard(): HTMLElement {
   const input = element("input", "field") as HTMLInputElement;
   input.id = "settings-name"; input.value = settings?.name || ""; input.maxLength = 40; input.autocomplete = "off";
   const nameRow = element("div", "settings-name-row");
-  nameRow.append(input, button("save-settings-name", "Save", "btn"));
+  const save = button("save-settings-name", "Save", "btn");
+  save.disabled = true;
+  nameRow.append(input, save);
   nameLabel.append(nameRow); card.append(nameLabel);
-  const hint = appendText(card, "p", "Type a name, or press Skip.", "name-hint");
+  const hint = appendText(card, "p", "Type a name to save it.", "name-hint");
   hint.id = "name-hint"; hint.hidden = true;
   const themeLabel = element("label"); appendText(themeLabel, "span", "Theme");
   const select = element("select", "field") as HTMLSelectElement; select.id = "settings-theme";
@@ -280,6 +282,7 @@ function saveName(id: string): void {
     document.getElementById("name-hint")!.hidden = false;
     return;
   }
+  if (id === "settings-name" && value === (settings?.name || "")) return;
   void send({ kind: "settings_set", key: "name", value });
 }
 headerOtter.addEventListener("click", () => { settingsOpen = !settingsOpen; render(); });
@@ -311,6 +314,10 @@ body.addEventListener("click", event => {
 });
 body.addEventListener("input", event => {
   const target = event.target as HTMLInputElement;
+  if (target.id === "settings-name") {
+    (document.getElementById("save-settings-name") as HTMLButtonElement).disabled = !target.value.trim() || target.value.trim() === (settings?.name || "");
+    return;
+  }
   if (target.id !== "budget-minutes") return;
   customBudget = target.value;
   selectedBudget = 0;

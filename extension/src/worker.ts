@@ -18,6 +18,8 @@ let sessionState: SessionState | undefined;
 let settingsState: SettingsState | undefined;
 let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
 const problemTabs = new Map<number, ProblemTab>();
+const failedModeTabs = new Set<number>();
+const missingReaderMessage = "Leetotter can't see this NeetCode page. Reload the tab.";
 function panel(message: unknown): void { chrome.runtime.sendMessage(message).catch(() => {}); }
 function showReaderAlert(): void { panel({ kind: "reader_error", message: readerError || notice }); }
 let savedInOrder: Promise<void> = Promise.resolve();
@@ -98,9 +100,22 @@ function resyncFocus(): void {
 async function setMode(next: Mode): Promise<void> {
   const changed = next !== mode;
   mode = next; await save();
+  if (mode === "idle") failedModeTabs.clear();
   if (changed) resyncFocus();
   const tabs = await chrome.tabs.query({ url: "https://neetcode.io/problems/*" });
-  await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode }).catch(() => {})));
+  await Promise.all(tabs.map(async tab => {
+    if (tab.id === undefined) return;
+    try {
+      await chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode });
+    } catch {
+      if (mode !== "watching" || !problemUrl(tab.url) || failedModeTabs.has(tab.id)) return;
+      failedModeTabs.add(tab.id);
+      send("reader_check", { ok: false, message: missingReaderMessage });
+      readerError = missingReaderMessage;
+      showReaderAlert();
+      await save();
+    }
+  }));
 }
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   void (async () => {
@@ -168,6 +183,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         readerError = String(payload.message || "Reader check failed");
         showReaderAlert();
         } else {
+        failedModeTabs.delete(tab.id);
         readerError = ""; showReaderAlert();
         }
         const delivered = send("reader_check", payload);
@@ -209,9 +225,9 @@ chrome.tabs.onActivated.addListener(info => {
   });
 });
 chrome.tabs.onUpdated.addListener((id, change) => {
-  if (change.url) void ready.then(async () => { problemTabs.delete(id); await save(); });
+  if (change.url) void ready.then(async () => { problemTabs.delete(id); failedModeTabs.delete(id); await save(); });
 });
-chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => { problemTabs.delete(id); await save(); }); });
+chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => { problemTabs.delete(id); failedModeTabs.delete(id); await save(); }); });
 chrome.windows.onFocusChanged.addListener(id => {
   void ready.then(async () => { focusedWindow = id; for (const tabId of problemTabs.keys()) sendFocus(tabId); await save(); });
 });
