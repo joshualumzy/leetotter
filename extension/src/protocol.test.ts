@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { parseMessage, validateReaderPayload, validateImportUrls } from "./protocol";
 
 describe("wire messages", () => {
+  it("accepts a problem statement with optional truncation and extra fields on both wire paths", () => {
+    const payload = { slug: "duplicate-integer", statement: "Given an integer array nums...", truncated: true, source: "question-tab" };
+    expect(validateReaderPayload("problem_statement", payload)).toEqual(payload);
+    expect(parseMessage(JSON.stringify({ type: "problem_statement", ts: "now", payload }))).toMatchObject({ type: "problem_statement", payload });
+    for (const invalid of [
+      { slug: "", statement: "text" }, { slug: "duplicate-integer", statement: "" },
+      { slug: "duplicate-integer", statement: "x".repeat(20_001) },
+      { slug: "duplicate-integer", statement: "text", truncated: "true" },
+    ]) {
+      expect(() => validateReaderPayload("problem_statement", invalid)).toThrow("Invalid problem_statement payload");
+      expect(() => parseMessage(JSON.stringify({ type: "problem_statement", ts: "now", payload: invalid }))).toThrow("Invalid problem_statement payload");
+    }
+  });
   it("accepts null failing_case like the Python validator", () => {
     expect(validateReaderPayload("run_result", { slug: "two-sum", cases: [{ passed: true, error_type: null, error_message: "", runtime: "0.1", failing_case: null }] })).toBeDefined();
   });

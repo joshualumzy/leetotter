@@ -17,8 +17,8 @@ export type Message =
 
 export type SessionState = { type: "session_state"; ts: string; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | "closed" | "restart" | null; check_message: string | null; budget_minutes: number | null; active_seconds: number; running: boolean; overrun_prompt: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" };
 export type SettingsState = { type: "settings_state"; ts: string; name: string | null; theme: "match" | "light" | "dark" };
-export type ReaderMessageType = "problem_opened" | "code_changed" | "code_snapshot" | "run_result" | "submit_result" | "focus_changed" | "reader_check";
-export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
+export type ReaderMessageType = "problem_opened" | "problem_statement" | "code_changed" | "code_snapshot" | "run_result" | "submit_result" | "focus_changed" | "reader_check";
+export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
 const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_overrun", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", ...readerTypes]);
 
@@ -47,6 +47,7 @@ export function validateReaderPayload(type: ReaderMessageType, value: unknown): 
   const p = record(value);
   let valid = false;
   if (type === "problem_opened") valid = p.site === "neetcode" && nonempty(p.slug) && nonempty(p.title);
+  if (type === "problem_statement") valid = nonempty(p.slug) && nonempty(p.statement) && (p.statement as string).length <= 20_000 && (p.truncated === undefined || typeof p.truncated === "boolean");
   if (type === "code_snapshot") valid = typeof p.code === "string";
   if (type === "code_changed") {
     const diff = record(p.diff);

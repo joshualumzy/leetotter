@@ -72,6 +72,8 @@ export class NeetCodeReader {
   private hooked = false;
   private ready = false;
   private openedSlug = "";
+  private statements = new Map<string, string>();
+  private lastStatement?: { slug: string; text: string };
   private titleOf?: { slug: string; title: string };
   private resultFailure = false;
   private offProblemReported = false;
@@ -117,7 +119,7 @@ export class NeetCodeReader {
       return originalSend.call(this, body);
     };
     this.cleanup.push(() => { proto.open = originalOpen; proto.send = originalSend; });
-    const poll = this.page.setInterval(() => { this.open(); this.codeWrite(); }, 1000);
+    const poll = this.page.setInterval(() => { this.open(); this.statement(); this.codeWrite(); }, 1000);
     const first = this.page.setTimeout(() => this.open(), 2000);
     this.cleanup.push(() => { this.page.clearInterval(poll); this.page.clearTimeout(first); });
   }
@@ -137,7 +139,7 @@ export class NeetCodeReader {
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
     if (mode !== "watching") {
       for (const timer of this.pending) clearTimeout(timer);
-      if (mode === "idle") { this.pending.clear(); this.openedSlug = ""; this.offProblemReported = false; }
+      if (mode === "idle") { this.pending.clear(); this.openedSlug = ""; this.offProblemReported = false; this.statements.clear(); }
     }
     if (mode === "watching") {
       if (was !== "watching") this.resultFailure = false;
@@ -203,6 +205,17 @@ export class NeetCodeReader {
     } catch (error) {
       this.ready = false;
       this.fail((error as Error).message);
+    }
+  }
+  private statement(): void {
+    if (this.mode !== "watching" || !this.ready || this.slug !== this.slugFromUrl()) return;
+    const element = this.page.document.querySelector<HTMLElement>(".question-tab .my-div > div");
+    const statement = (element?.innerText ?? element?.textContent ?? "").trim();
+    if (statement && this.statements.get(this.slug) !== statement &&
+        !(this.lastStatement && this.lastStatement.slug !== this.slug && this.lastStatement.text === statement)) {
+      this.send("problem_statement", { slug: this.slug, statement: statement.slice(0, 20_000), ...(statement.length > 20_000 ? { truncated: true } : {}) });
+      this.statements.set(this.slug, statement);
+      this.lastStatement = { slug: this.slug, text: statement };
     }
   }
   codeWrite(): void {

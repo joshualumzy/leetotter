@@ -109,6 +109,19 @@ describe("side panel availability", () => {
 });
 
 describe("worker reader delivery", () => {
+  it("forwards a validated problem statement without a panel reaction", async () => {
+    await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" });
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    const payload = { slug: "duplicate-integer", statement: "Given an integer array nums...", truncated: true, source: "question-tab" };
+    const before = vi.mocked(chrome.runtime.sendMessage).mock.calls.length;
+    expect(await dispatch({ kind: "reader_event", event: { type: "problem_statement", payload } }, tab)).toEqual({ accepted: true, mode: "watching" });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "problem_statement", payload });
+    expect(vi.mocked(chrome.runtime.sendMessage).mock.calls.slice(before).some(([message]) => {
+      const value: unknown = message;
+      return typeof value === "object" && value !== null && "kind" in value &&
+        (value.kind === "reader_reaction" || value.kind === "reader_error");
+    })).toBe(false);
+  });
   it("shows rate-limit notices without forwarding or pausing, then clears them on a result and new session", async () => {
     await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" });
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };

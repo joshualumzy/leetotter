@@ -26,9 +26,71 @@ function ready() {
   page.document.body.innerHTML = "<h1>Contains Duplicate</h1><div class='monaco-editor'></div>";
   page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "one\ntwo" }]));
 }
+function questionTab(statement: string) {
+  const tab = page.document.createElement("div");
+  tab.className = "question-tab";
+  tab.innerHTML = '<div class="tab-content-padding"><h2>Contains Duplicate</h2><span>Easy</span><div>Topics</div><div>Company Tags</div><div>Hints</div><div class="my-div"><div></div></div></div>';
+  tab.querySelector(".my-div > div")!.textContent = statement;
+  page.document.body.append(tab);
+  return tab;
+}
 async function flushUntil(test: () => boolean) { await vi.waitFor(() => { expect(test()).toBe(true); }); }
 
 describe("page reader", () => {
+  it("reads the Question tab statement when it appears on a later poll, without treating Solution as a failure", () => {
+    ready(); reader.install(); reader.setMode("watching");
+    page.document.body.insertAdjacentHTML("beforeend", '<div class="solution-tab">Solution</div>');
+    vi.advanceTimersByTime(3000);
+    expect(events.filter(e => e.type === "problem_statement")).toEqual([]);
+    expect(events.some(e => e.type === "reader_check" && e.payload.ok === false)).toBe(false);
+
+    questionTab("  Given an integer array nums, return true if any value appears more than once.\n\nExample 1: nums = [1,2,1]  ");
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_statement")).toEqual([{ type: "problem_statement", payload: {
+      slug: "duplicate-integer", statement: "Given an integer array nums, return true if any value appears more than once.\n\nExample 1: nums = [1,2,1]",
+    } }]);
+  });
+  it("emits a statement once until its text changes across several polls", () => {
+    ready(); const tab = questionTab("First statement"); reader.install(); reader.setMode("watching");
+    vi.advanceTimersByTime(4000);
+    expect(events.filter(e => e.type === "problem_statement")).toEqual([
+      { type: "problem_statement", payload: { slug: "duplicate-integer", statement: "First statement" } },
+    ]);
+    tab.querySelector(".my-div > div")!.textContent = "Revised statement";
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_statement").at(-1)?.payload).toEqual({ slug: "duplicate-integer", statement: "Revised statement" });
+    expect(events.filter(e => e.type === "problem_statement")).toHaveLength(2);
+  });
+  it("sends the statement again when a new session starts on the same problem", () => {
+    ready(); questionTab("Same problem statement"); reader.install(); reader.setMode("watching");
+    vi.advanceTimersByTime(1000);
+    reader.setMode("idle");
+    reader.setMode("watching");
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_statement")).toHaveLength(2);
+  });
+  it("waits for a new statement after a checked SPA navigation leaves the old statement in place", () => {
+    ready(); const tab = questionTab("Old problem statement"); reader.install(); reader.setMode("watching");
+    vi.advanceTimersByTime(1000);
+    page.history.pushState({}, "", "/problems/two-sum/");
+    page.localStorage.setItem("two-sum_python_tabs", JSON.stringify([{ code: "next" }]));
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_statement")).toHaveLength(1);
+    page.document.querySelector("h1")!.textContent = "Two Sum";
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_opened").at(-1)?.payload.slug).toBe("two-sum");
+    expect(events.filter(e => e.type === "problem_statement")).toHaveLength(1);
+    tab.querySelector(".my-div > div")!.textContent = "New problem statement";
+    vi.advanceTimersByTime(1000);
+    expect(events.filter(e => e.type === "problem_statement").at(-1)?.payload).toEqual({ slug: "two-sum", statement: "New problem statement" });
+  });
+  it("caps a long statement and marks the payload as truncated", () => {
+    ready(); questionTab("x".repeat(20_001)); reader.install(); reader.setMode("watching");
+    vi.advanceTimersByTime(1000);
+    expect(events.find(e => e.type === "problem_statement")?.payload).toEqual({
+      slug: "duplicate-integer", statement: "x".repeat(20_000), truncated: true,
+    });
+  });
   it("announces an already-open problem again for a new session, but not after pause", () => {
     ready(); reader.install(); reader.setMode("watching");
     expect(events.filter(e => e.type === "problem_opened")).toHaveLength(1);
