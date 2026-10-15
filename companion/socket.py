@@ -2,18 +2,25 @@
 
 import json
 import logging
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from websockets.asyncio.server import serve
 from companion.catalog import normalize_link
 from companion.history import import_history, import_status
+from companion.session import SessionCoordinator
+from companion.store import store_path
 
 
 EXTENSION_ID = "oohbhndckkkkdngkglilcbpcoekapmgp"
 ALLOWED_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
-READER_TYPES = frozenset({"problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result"}) | READER_TYPES
+READER_TYPES = frozenset({"problem_opened", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
+SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state"})
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state"}) | READER_TYPES | SESSION_TYPES
 logger = logging.getLogger(__name__)
+_coordinator = None
+_clients = set()
 
 
 def _timestamp():
@@ -68,6 +75,8 @@ def _reader_payload(kind, payload):
                  and _failure(payload.get("failing_case")))
     elif kind == "focus_changed":
         valid = type(payload.get("tab_active")) is bool and type(payload.get("window_focused")) is bool
+    elif kind == "reader_check":
+        valid = type(payload.get("ok")) is bool and ("message" not in payload or _string(payload["message"]))
     if not valid:
         raise ValueError(f"Invalid {kind} payload")
 
@@ -92,6 +101,14 @@ def _validate(raw):
         raise ValueError("Error requires message")
     if kind in READER_TYPES:
         _reader_payload(kind, message.get("payload"))
+    if kind == "session_start":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or not _integer(payload.get("budget_minutes")) or payload["budget_minutes"] <= 0:
+            raise ValueError("Invalid session_start payload")
+    if kind == "session_overrun":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or payload.get("choice") not in ("finish", "stop"):
+            raise ValueError("Invalid session_overrun payload")
     if kind == "import_history":
         payload = message.get("payload")
         urls = payload.get("urls") if isinstance(payload, dict) else None
@@ -107,28 +124,71 @@ def _validate(raw):
 
 
 async def _handle(connection):
-    async for raw in connection:
-        try:
-            message = _validate(raw)
-            if message["type"] not in {"hello", "ping", "get_import_status", "import_history"} | READER_TYPES:
-                raise ValueError(f"Unexpected client message type: {message['type']}")
-        except ValueError as exc:
-            logger.error("WebSocket protocol error: %s", exc)
-            await connection.send(json.dumps({"type": "error", "ts": _timestamp(), "message": str(exc)}))
-            continue
-        if message["type"] == "hello":
-            await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
-        elif message["type"] == "get_import_status":
-            await connection.send(json.dumps({"type": "import_status", "ts": _timestamp(), "imported": import_status()}))
-        elif message["type"] == "import_history":
+    _clients.add(connection)
+    try:
+        async for raw in connection:
             try:
-                result = import_history(message["payload"]["urls"])
-                await connection.send(json.dumps({"type": "import_result", "ts": _timestamp(), "result": result}))
-            except (ValueError, OSError) as exc:
-                logger.error("History import failed: %s", exc)
-                await connection.send(json.dumps({"type": "error", "ts": _timestamp(), "message": f"History import failed: {exc}"}))
+                message = _validate(raw)
+                kind = message["type"]
+                if kind not in {"hello", "ping", "get_import_status", "import_history"} | READER_TYPES | SESSION_TYPES:
+                    raise ValueError(f"Unexpected client message type: {kind}")
+                if kind == "hello":
+                    await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
+                    await _broadcast(_coordinator.on_connect(), connection)
+                elif kind == "get_import_status":
+                    await connection.send(json.dumps({"type": "import_status", "ts": _timestamp(), "imported": import_status()}))
+                elif kind == "import_history":
+                    result = import_history(message["payload"]["urls"])
+                    await connection.send(json.dumps({"type": "import_result", "ts": _timestamp(), "result": result}))
+                elif kind != "ping":
+                    outgoing = _coordinator.handle(message)
+                    await _broadcast(outgoing, connection, kind != "session_get_state")
+            except Exception as exc:
+                logger.exception("WebSocket request failed: %s", exc)
+                await connection.send(json.dumps({"type": "error", "ts": _timestamp(), "message": str(exc)}))
+    finally:
+        _clients.discard(connection)
+        if not _clients and _coordinator is not None:
+            await _broadcast(_coordinator.on_disconnect(), connection)
 
 
-def serve_companion(port=8765):
+async def _broadcast(outgoing, sender, broadcast=True):
+    for message in outgoing:
+        if message["type"] == "error":
+            logger.error("Session request rejected: %s", message["message"])
+            message = {**message, "ts": _timestamp()}
+        targets = tuple(_clients) if broadcast and message["type"] == "session_state" else (sender,)
+        for target in targets:
+            await target.send(json.dumps(message))
+
+
+async def _ticker():
+    while True:
+        await asyncio.sleep(1)
+        try:
+            await _broadcast(_coordinator.tick(), None)
+        except Exception as exc:
+            logger.exception("Session timer failed")
+            for client in tuple(_clients):
+                try:
+                    await client.send(json.dumps({"type": "error", "ts": _timestamp(), "message": f"Session timer failed: {exc}"}))
+                except Exception:
+                    logger.exception("Could not report session timer failure to client")
+
+
+@asynccontextmanager
+async def serve_companion(port=8765):
     """Create the loopback-only WebSocket server for use in main and tests."""
-    return serve(_handle, "127.0.0.1", port, origins=[ALLOWED_ORIGIN])
+    global _coordinator
+    _coordinator = SessionCoordinator(store_path(), lambda: datetime.now(timezone.utc))
+    async with serve(_handle, "127.0.0.1", port, origins=[ALLOWED_ORIGIN]) as server:
+        tick_task = asyncio.create_task(_ticker())
+        try:
+            yield server
+        finally:
+            tick_task.cancel()
+            try:
+                await tick_task
+            except asyncio.CancelledError:
+                pass
+            _coordinator = None

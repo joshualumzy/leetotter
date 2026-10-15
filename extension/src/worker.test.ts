@@ -30,6 +30,9 @@ async function dispatch(message: any, tab?: any): Promise<any> {
   });
 }
 async function flush() { await vi.waitFor(() => { expect(messages.length).toBeGreaterThan(0); }); }
+function pushSession(mode: "idle" | "watching" | "paused") {
+  socket.onmessage?.({ data: JSON.stringify({ type: "session_state", ts: "now", state: mode === "watching" ? "active" : mode, mode, paused_reason: mode === "paused" ? "button" : null, check_message: null, budget_minutes: mode === "idle" ? null : 25, active_seconds: 0, running: mode === "watching", overrun_prompt: false, problem: null, accepted: false }) });
+}
 async function start() {
   vi.resetModules();
   await import("./worker");
@@ -59,6 +62,31 @@ beforeEach(() => {
 });
 
 describe("worker reader delivery", () => {
+  it("takes reader mode from session_state and delivers the full state to the panel", async () => {
+    await start(); socket.readyState = 1;
+    const session = { type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null,
+      check_message: null, budget_minutes: 25, active_seconds: 0, running: true, overrun_prompt: false, problem: null, accepted: false };
+    socket.onmessage?.({ data: JSON.stringify(session) });
+    await vi.waitFor(() => expect(sent).toContainEqual({ tab: 7, message: { kind: "watch_mode", mode: "watching" } }));
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "session_state", state: session });
+    expect(await dispatch({ kind: "set_mode", mode: "idle" })).toBeUndefined();
+    expect(await dispatch({ kind: "get_mode" })).toBe("watching");
+  });
+
+  it("forwards a reader check and panel session commands", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null, check_message: null, budget_minutes: 25, active_seconds: 0, running: true, overrun_prompt: false, problem: null, accepted: false }) });
+    await dispatch({ kind: "get_mode" });
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    expect((await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: false, message: "Editor missing" } } }, tab)).accepted).toBe(true);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: false, message: "Editor missing" } });
+    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 25 })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "session_start", payload: { budget_minutes: 25 } });
+    for (const [command, type, payload] of [["pause", "session_pause", undefined], ["resume", "session_resume", undefined], ["end", "session_end", undefined], ["overrun_finish", "session_overrun", { choice: "finish" }], ["overrun_stop", "session_overrun", { choice: "stop" }]] as const) {
+      expect(await dispatch({ kind: "session_command", command })).toEqual({ sent: true });
+      expect(socket.sent.at(-1)).toMatchObject({ type, ...(payload ? { payload } : {}) });
+    }
+  });
   it("asks an open NeetCode tab for history and sends typed URLs to the companion", async () => {
     await start(); socket.readyState = 1;
     socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
@@ -77,18 +105,19 @@ describe("worker reader delivery", () => {
     historyReply = { error: "synced-progress-cache is missing" };
     expect(await dispatch({ kind: "import_history" })).toEqual({ error: "synced-progress-cache is missing" });
   });
-  it("restores watching and pushes the mode after a simulated worker restart", async () => {
+  it("waits for the companion mode after a simulated worker restart", async () => {
     await start();
-    await dispatch({ kind: "set_mode", mode: "watching" });
-    expect(saved.readerState.mode).toBe("watching");
+    pushSession("watching"); await dispatch({ kind: "get_mode" });
     messages.length = 0;
     await start();
+    expect(await dispatch({ kind: "get_mode" })).toBe("idle");
+    pushSession("watching"); await dispatch({ kind: "get_mode" });
     expect(await dispatch({ kind: "get_mode" })).toBe("watching");
     expect(sent).toContainEqual({ tab: 7, message: { kind: "watch_mode", mode: "watching" } });
   });
 
   it("surfaces a dropped send and records activity only after delivery", async () => {
-    await start(); await dispatch({ kind: "set_mode", mode: "watching" });
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
     const event = { kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } };
     expect((await dispatch(event, tab)).accepted).toBe(false);
@@ -101,7 +130,7 @@ describe("worker reader delivery", () => {
   });
 
   it("drops stale focus entries after navigating away", async () => {
-    await start(); await dispatch({ kind: "set_mode", mode: "watching" });
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
     socket.readyState = 1;
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
     await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, tab);
@@ -114,7 +143,7 @@ describe("worker reader delivery", () => {
   });
 
   it("waits for problem_opened after navigation to another problem", async () => {
-    await start(); await dispatch({ kind: "set_mode", mode: "watching" });
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
     socket.readyState = 1;
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
     await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, tab);
@@ -127,7 +156,7 @@ describe("worker reader delivery", () => {
   });
 
   it("reports focus once per switch and only after a problem opens", async () => {
-    await start(); await dispatch({ kind: "set_mode", mode: "watching" });
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
     socket.readyState = 1;
     activated.at(-1)?.({ tabId: 7, windowId: 3 });
     await vi.waitFor(() => expect(socket.sent).toHaveLength(0));

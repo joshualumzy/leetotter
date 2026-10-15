@@ -69,7 +69,7 @@ export class CompanionConnection {
         } else if (message.type === "error") {
           console.error("Companion error:", message.message);
           this.onState({ kind: "error", message: message.message });
-        } else if (message.type === "import_status" || message.type === "import_result") {
+        } else if (message.type === "import_status" || message.type === "import_result" || message.type === "session_state") {
           this.onMessage?.(message);
         } else {
           throw new Error(`Unexpected server message type: ${message.type}`);

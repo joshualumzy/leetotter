@@ -6,12 +6,11 @@ let sendMessage: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
   vi.resetModules();
-  const dom = new JSDOM('<p id="status"></p><p id="reader-error"></p><button id="reader-test"></button><p id="reader-activity"></p><button id="import-history"></button><p id="import-result"></p>');
+  const dom = new JSDOM('<p id="status"></p><p id="reader-error"></p><p id="reader-activity"></p><button id="import-history"></button><p id="import-result"></p>');
   vi.stubGlobal("document", dom.window.document);
   sendMessage = vi.fn(async (message: any) => {
     if (message.kind === "get_import_state") return { imported: false };
     if (message.kind === "get_status") return { kind: "connected" };
-    if (message.kind === "get_mode") return "idle";
     if (message.kind === "get_reader_error") return "";
     if (message.kind === "get_reader_activity") return "No reader events yet.";
     if (message.kind === "import_history") return { pending: true };
