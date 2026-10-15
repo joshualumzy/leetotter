@@ -46,7 +46,8 @@ describe("wire messages", () => {
     const valid = [
       { type: "help_request" }, { type: "chat_get" }, { type: "chat_message", payload: { text: "Why?" } },
       { type: "tutor_start", turn_id: 1, request: "help", press_index: 1 },
-      { type: "tutor_chunk", turn_id: 1, attempt: 1, text: "Try " },
+      { type: "tutor_chunk", turn_id: 1, attempt: 0, text: "Try " }, // the companion counts attempts from 0; a retry is 1
+      { type: "tutor_chunk", turn_id: 1, attempt: 1, text: "Try again " },
       { type: "tutor_done", turn_id: 1, reply_text: "Try a set", gap: "pattern", gap_note: null, help_kind: "hint", follow_up_question: null },
       { type: "tutor_error", turn_id: null, message: "Paused" },
       { type: "chat_state", turns: [{ turn_id: 1, kind: "press", press_index: 1 }, { turn_id: 1, kind: "reply", text: "Hint", gap: "pattern", gap_note: null, help_kind: "hint" }], streaming: null },
@@ -55,7 +56,7 @@ describe("wire messages", () => {
     const invalid = [
       { type: "help_request", payload: {} }, { type: "chat_get", payload: {} }, { type: "chat_message", payload: { text: " ".repeat(4001) } },
       { type: "tutor_start", turn_id: "1", request: "help", press_index: 1 },
-      { type: "tutor_chunk", turn_id: 1, attempt: 0, text: "x" },
+      { type: "tutor_chunk", turn_id: 1, attempt: -1, text: "x" },
       { type: "tutor_done", turn_id: 1, reply_text: "x", gap: "g", gap_note: "", help_kind: "hint" },
       { type: "tutor_done", turn_id: 1, reply_text: "", gap: "g", gap_note: "", help_kind: "hint", follow_up_question: null },
       { type: "tutor_error", turn_id: null, message: "" },

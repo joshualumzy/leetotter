@@ -8,10 +8,10 @@ describe("chat state", () => {
       { turn_id: 1, kind: "reply", text: "Earlier hint", gap: "weak_intuition", gap_note: null, help_kind: "question" },
     ], streaming: null });
     state = applyChat(state, { type: "tutor_start", ts: "now", turn_id: 2, request: "chat", press_index: null });
-    state = applyChat(state, { type: "tutor_chunk", ts: "now", turn_id: 2, attempt: 1, text: "Wrong " });
-    state = applyChat(state, { type: "tutor_chunk", ts: "now", turn_id: 2, attempt: 1, text: "path" });
+    state = applyChat(state, { type: "tutor_chunk", ts: "now", turn_id: 2, attempt: 0, text: "Wrong " });
+    state = applyChat(state, { type: "tutor_chunk", ts: "now", turn_id: 2, attempt: 0, text: "path" });
     expect(state.turns.at(-1)?.text).toBe("Wrong path");
-    state = applyChat(state, { type: "tutor_chunk", ts: "now", turn_id: 2, attempt: 2, text: "Better " });
+    state = applyChat(state, { type: "tutor_chunk", ts: "now", turn_id: 2, attempt: 1, text: "Better " });
     expect(state.turns.at(-1)?.text).toBe("Better ");
     state = applyChat(state, { type: "tutor_done", ts: "now", turn_id: 2, reply_text: "Validated answer", gap: "weak_intuition", gap_note: null, help_kind: "question", follow_up_question: null });
     expect(state.turns.at(-1)).toMatchObject({ kind: "reply", text: "Validated answer", streaming: false });

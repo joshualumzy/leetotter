@@ -94,7 +94,7 @@ export function parseMessage(raw: string): Message {
   if (["tutor_start", "tutor_chunk", "tutor_done", "tutor_error"].includes(String(message.type))) {
     if (!(Number.isInteger(message.turn_id) && (message.turn_id as number) > 0) && !(message.type === "tutor_error" && message.turn_id === null)) throw new Error("Invalid Tutor turn id");
     if (message.type === "tutor_start" && (!["help", "chat"].includes(String(message.request)) || !(message.press_index === null || (Number.isInteger(message.press_index) && (message.press_index as number) > 0)) || (message.request === "help" && message.press_index === null) || (message.request === "chat" && message.press_index !== null))) throw new Error("Invalid tutor_start");
-    if (message.type === "tutor_chunk" && (!Number.isInteger(message.attempt) || (message.attempt as number) < 1 || typeof message.text !== "string")) throw new Error("Invalid tutor_chunk");
+    if (message.type === "tutor_chunk" && (!Number.isInteger(message.attempt) || (message.attempt as number) < 0 || typeof message.text !== "string")) throw new Error("Invalid tutor_chunk");
     if (message.type === "tutor_done" && (!nonempty(message.reply_text) || !nonempty(message.gap) || !(message.gap_note === null || typeof message.gap_note === "string") || !nonempty(message.help_kind) || !(message.follow_up_question === null || typeof message.follow_up_question === "string"))) throw new Error("Invalid tutor_done");
     if (message.type === "tutor_error" && (typeof message.message !== "string" || !message.message)) throw new Error("Invalid tutor_error");
   }
