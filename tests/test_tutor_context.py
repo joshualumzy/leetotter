@@ -193,3 +193,10 @@ def test_the_prompt_guards_the_measured_skills_and_uses_only_invented_examples()
     assert "never syntax" in SYSTEM_PROMPT
     titles = [entry["title"] for entry in load_catalog().entries]
     assert [t for t in titles if t in SYSTEM_PROMPT] == []
+
+
+def test_prompt_allows_light_markdown_but_no_headings_or_links():
+    from companion.tutor import SYSTEM_PROMPT
+    assert "fenced code blocks (with real line breaks and indentation)" in SYSTEM_PROMPT
+    assert "no headings, tables, images or links" in SYSTEM_PROMPT
+    assert "Plain text;" not in SYSTEM_PROMPT

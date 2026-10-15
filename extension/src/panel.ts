@@ -6,6 +6,7 @@ import { otter, touchForDate } from "./otter";
 import type { ReaderReaction } from "./reader-reaction";
 import { applyChat, emptyChat, type ChatTurn } from "./chat-state";
 import { StreamPacer } from "./stream-pacer";
+import { renderMarkdown } from "./markdown";
 import { composerAvailability, enterAction, messageToSend } from "./composer-rules";
 import type { ChatState, TutorMessage } from "./protocol";
 
@@ -53,7 +54,11 @@ let chat = emptyChat();
 let chatSlug: string | null = null;
 let draft = "";
 let composerNote = "";
-const pacers = new Map<number, { attempt: number; pacer: StreamPacer }>();
+const FADE_MS = 280;
+type Birth = { from: number; at: number };
+const pacers = new Map<number, { attempt: number; pacer: StreamPacer; births: Birth[] }>();
+// The text each bubble currently shows, so an unchanged bubble is never rebuilt (that would drop a selection).
+const painted = new WeakMap<HTMLElement, string>();
 let paceTimer: number | undefined;
 const reactionCaptions = {
   typing: ["I'm here."],
@@ -289,8 +294,17 @@ function chatNode(turn: ChatTurn): HTMLElement {
   node.dataset.key = `${turn.turn_id}:${turn.kind}`;
   if (turn.kind === "press") node.textContent = "You asked for a hint";
   else if (turn.kind === "failed") { node.textContent = turn.message || "The Tutor couldn't answer."; node.setAttribute("role", "alert"); }
-  else node.textContent = turn.kind === "reply" && pacers.has(turn.turn_id) ? pacers.get(turn.turn_id)!.pacer.visible : turn.text || "";
+  else fillBubble(node, turn, turn.kind === "reply" && pacers.has(turn.turn_id) ? pacers.get(turn.turn_id)!.pacer.visible : turn.text || "");
   return node;
+}
+function paintReply(node: HTMLElement, text: string, freshFrom?: number): void {
+  node.replaceChildren(renderMarkdown(text, freshFrom));
+  painted.set(node, text);
+}
+function fillBubble(node: HTMLElement, turn: ChatTurn, text: string): void {
+  if (painted.get(node) === text) return;
+  if (turn.kind === "reply") paintReply(node, text);
+  else { node.textContent = text; painted.set(node, text); }
 }
 function nearBottom(): boolean { return body!.scrollHeight - body!.scrollTop - body!.clientHeight < 60; }
 function scrollToEnd(): void { body!.scrollTop = body!.scrollHeight; }
@@ -305,7 +319,7 @@ function renderChat(): void {
     if (turn.kind === "reply" && pacers.has(turn.turn_id)) {
       // The pacer owns visible text until it has played the whole answer.
     } else if (turn.kind === "reply" || turn.kind === "chat" || turn.kind === "failed") {
-      node.textContent = turn.kind === "failed" ? turn.message || "" : turn.text || "";
+      fillBubble(node, turn, turn.kind === "failed" ? turn.message || "" : turn.text || "");
     }
     return node;
   });
@@ -352,25 +366,33 @@ function updateComposer(): void {
   document.getElementById("composer-reason")!.textContent = availability.reason;
   document.getElementById("composer-note")!.textContent = composerNote;
 }
+function reducedMotion(): boolean { return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches); }
+// Each fading word started at its own moment: backdate its animation so a repaint does not restart the fade.
+function paintStreaming(node: HTMLElement, text: string, births: Birth[], now: number): void {
+  paintReply(node, text, reducedMotion() ? undefined : births[0]?.from);
+  for (const span of node.querySelectorAll<HTMLElement>(".stream-word")) {
+    const from = Number(span.dataset.from);
+    const birth = births.filter(candidate => candidate.from <= from).at(-1)!;
+    span.style.animationDelay = `${birth.at - now}ms`;
+  }
+}
 function pace(): void {
   window.clearTimeout(paceTimer);
   let pending = false;
   const follow = nearBottom();
+  const now = Date.now();
   for (const [id, entry] of pacers) {
-    const frame = entry.pacer.tick(Date.now());
+    const frame = entry.pacer.tick(now);
     const node = document.querySelector<HTMLElement>(`#chat-stream [data-key="${id}:reply"]`);
     if (node) {
-      const addedText = frame.added.join("");
-      if (!frame.finished) {
-        const prefix = frame.text.slice(0, frame.text.length - addedText.length);
-        if (node.textContent !== prefix) node.textContent = prefix;
-      }
-      for (const word of frame.added) appendText(node, "span", word, "stream-word");
-      if (frame.finished && node.textContent !== frame.text) {
-        const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      let from = frame.text.length - frame.added.join("").length;
+      for (const word of frame.added) { entry.births.push({ from, at: now }); from += word.length; }
+      entry.births = entry.births.filter(birth => now - birth.at < FADE_MS);
+      if (frame.added.length || painted.get(node) !== frame.text) paintStreaming(node, frame.text, entry.births, now);
+      if (frame.finished && node.querySelector(".stream-word")) {
         window.setTimeout(() => {
-          if (node.isConnected) node.textContent = frame.text;
-        }, reduced ? 0 : 280);
+          if (node.isConnected && painted.get(node) === frame.text) paintReply(node, frame.text);
+        }, FADE_MS);
       }
     }
     if (frame.finished) pacers.delete(id);
@@ -380,22 +402,26 @@ function pace(): void {
   updateComposer();
   if (pending) paceTimer = window.setTimeout(pace, 30);
 }
+function startPacer(turn_id: number, attempt: number, text: string): { attempt: number; pacer: StreamPacer; births: Birth[] } {
+  const pacer = new StreamPacer(); pacer.push(text);
+  const entry = { attempt, pacer, births: [] };
+  pacers.set(turn_id, entry);
+  return entry;
+}
 function receiveTutor(message: TutorMessage): void {
   if (message.type === "tutor_chunk") {
     const current = pacers.get(message.turn_id);
-    if (!current) {
-      const pacer = new StreamPacer(); pacer.push(message.text);
-      pacers.set(message.turn_id, { attempt: message.attempt, pacer });
-    } else if (message.attempt > current.attempt) {
+    if (!current) startPacer(message.turn_id, message.attempt, message.text);
+    else if (message.attempt > current.attempt) {
       current.pacer.replace(message.text);
       current.attempt = message.attempt;
+      current.births = [];
       const old = document.querySelector<HTMLElement>(`#chat-stream [data-key="${message.turn_id}:reply"]`);
-      if (old) old.textContent = "";
+      if (old) paintReply(old, "");
     } else if (message.attempt === current.attempt) current.pacer.push(message.text);
   }
   if (message.type === "tutor_done") {
-    let entry = pacers.get(message.turn_id);
-    if (!entry) { const pacer = new StreamPacer(); pacer.push(message.reply_text); entry = { attempt: 1, pacer }; pacers.set(message.turn_id, entry); }
+    const entry = pacers.get(message.turn_id) || startPacer(message.turn_id, 1, message.reply_text);
     entry.pacer.finish(message.reply_text);
   }
   if (message.type === "tutor_error" && message.turn_id !== null) pacers.delete(message.turn_id);
@@ -411,6 +437,9 @@ function render(): void {
   const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage() });
   renderHeader(view);
   renderComposer(view);
+  // The conversation survives a redraw as the same elements, so scroll position, selection and code scrolling stay put.
+  const keptStream = document.getElementById("chat-stream");
+  const scrollTop = body!.scrollTop;
   body!.replaceChildren();
   if (view.body === "another_tab") {
     const card = element("section", "card");
@@ -438,7 +467,8 @@ function render(): void {
       body!.append(node);
     }
     if (["active", "paused", "overrun"].includes(view.body) && chat.turns.length) {
-      const stream = element("section", "chat-stream"); stream.id = "chat-stream";
+      const stream = keptStream || element("section", "chat-stream");
+      stream.id = "chat-stream";
       body!.append(stream);
     }
     if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
@@ -457,6 +487,7 @@ function render(): void {
     }
   }
   body!.append(historyRow());
+  body!.scrollTop = scrollTop;
   renderChat();
   decorateOtters();
 }

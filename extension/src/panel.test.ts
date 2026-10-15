@@ -116,6 +116,75 @@ describe("panel actions", () => {
     expect(document.querySelector(".chat-reply")?.textContent).toBe("Try a set");
     vi.useRealTimers();
   });
+  describe("formatted replies", () => {
+    const reply = "Use a `dict` here:\n\n```python\nclass TrieNode:\n    def __init__(self):\n        self.children = {}\n```\n\n- then walk it";
+    const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    const streamReply = (text: string) => {
+      notify({ kind: "session_state", state: active });
+      notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 7, request: "help", press_index: 1 } });
+      for (let at = 0; at < text.length; at += 7) notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 7, attempt: 1, text: text.slice(at, at + 7) } });
+      notify({ kind: "tutor", message: { type: "tutor_done", ts: "now", turn_id: 7, reply_text: text, gap: "none", gap_note: null, help_kind: "none", follow_up_question: null } });
+    };
+    const restored = () => {
+      notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", streaming: null, turns: [{ turn_id: 1, kind: "reply", text: reply, gap: "none", gap_note: null, help_kind: "none" }] } });
+      return document.querySelector(".chat-reply")!.innerHTML;
+    };
+    it("shows inline code, a code block with its indentation, and a list for a reloaded reply", () => {
+      notify({ kind: "session_state", state: active });
+      restored();
+      const bubble = document.querySelector(".chat-reply")!;
+      expect(bubble.querySelector("p code")?.textContent).toBe("dict");
+      expect(bubble.querySelector("pre code")?.textContent).toBe("class TrieNode:\n    def __init__(self):\n        self.children = {}");
+      expect(bubble.querySelector("li")?.textContent).toBe("then walk it");
+      expect(bubble.textContent).not.toContain("`");
+      expect(bubble.querySelector(".stream-word")).toBeNull();
+    });
+    it("fades words in while streaming and ends identical to a reloaded reply, with no fade left", () => {
+      vi.useFakeTimers();
+      streamReply(reply);
+      vi.advanceTimersByTime(400);
+      expect(document.querySelector(".chat-reply .stream-word")).toBeTruthy();
+      expect((document.querySelector(".chat-reply .stream-word") as HTMLElement).style.animationDelay).toMatch(/^-?\d+ms$/);
+      vi.advanceTimersByTime(10000);
+      const streamed = document.querySelector(".chat-reply")!.innerHTML;
+      expect(streamed).not.toContain("stream-word");
+      expect(streamed).toBe(restored());
+      vi.useRealTimers();
+    });
+    it("shows the open code block while the fence is still unclosed", () => {
+      vi.useFakeTimers();
+      notify({ kind: "session_state", state: active });
+      notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 7, request: "help", press_index: 1 } });
+      notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 7, attempt: 1, text: "Try:\n```python\nx = 1\n  y = 2\n" } });
+      vi.advanceTimersByTime(2000);
+      expect(document.querySelector(".chat-reply pre code")?.textContent).toBe("x = 1\n  y = 2");
+      vi.useRealTimers();
+    });
+    it("uses no fade at all under reduced motion, with the same pacing and result", () => {
+      vi.useFakeTimers();
+      (window as any).matchMedia = () => ({ matches: true });
+      streamReply(reply);
+      for (let step = 0; step < 40; step++) {
+        vi.advanceTimersByTime(100);
+        expect(document.querySelector(".chat-reply .stream-word")).toBeNull();
+      }
+      expect(document.querySelector(".chat-reply")!.innerHTML).toBe(restored());
+      vi.useRealTimers();
+    });
+    it("does not rebuild an unchanged reply when the panel redraws", () => {
+      notify({ kind: "session_state", state: active });
+      restored();
+      const code = document.querySelector(".chat-reply pre");
+      notify({ kind: "session_state", state: { ...active, active_seconds: 5 } });
+      expect(document.querySelector(".chat-reply pre")).toBe(code);
+    });
+    it("shows a learner's own newlines", () => {
+      notify({ kind: "session_state", state: active });
+      notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", streaming: null, turns: [{ turn_id: 1, kind: "chat", text: "a\n  b" }] } });
+      expect(document.querySelector(".chat-you")?.textContent).toBe("a\n  b");
+      expect(readFileSync(new URL("../panel.css", import.meta.url), "utf8")).toMatch(/\.chat-you\s*\{\s*white-space:\s*pre-wrap/);
+    });
+  });
   it("clears the old problem's chat while requesting the new problem's snapshot", () => {
     const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
     notify({ kind: "session_state", state: active });
