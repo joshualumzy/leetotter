@@ -115,7 +115,7 @@ def _regenerate(models, reference, disagreements) -> Reference | None:
         return None
 
 
-def _load(db, slug) -> StoredReference | None:
+def load_reference(db, slug) -> StoredReference | None:
     row = db.execute('SELECT content, status FROM "references" WHERE problem_key = ?', (slug,)).fetchone()
     if row is None:
         return None
@@ -128,7 +128,7 @@ def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str 
     """Write, check and store one reference. A stored `checked` reference is returned as is; a stored
     `needs_review` one is replaced only by a result that is now `checked`."""
     with open_store(db_path) as db:
-        existing = _load(db, slug)
+        existing = load_reference(db, slug)
     if existing and existing.status == "checked":
         return existing
 

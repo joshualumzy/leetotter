@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from openai import APIConnectionError, APITimeoutError, OpenAI
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from companion.store import open_store
 
@@ -128,18 +128,26 @@ class RateLimiter:
                     self._live_waiters -= 1
 
 
+GAPS = ("misread_problem", "missing_tool", "pattern_not_recognised", "weak_intuition", "wrong_intuition",
+        "stuck_optimising", "cant_write_code", "bugs_and_edge_cases", "other", "none")
+HELP_KINDS = ("question", "trace", "analogy", "teach_tool", "syntax", "snippet", "partial_logic", "full_solution", "none")
+
+
+# One Tutor turn. The labels come first so the model diagnoses before it writes; `none` marks a reply
+# that gives no help (a remark answered), and `gap_note` names an `other` gap in the Tutor's own words.
 class TutorReply(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    gap: Literal[GAPS]
+    gap_note: str | None
+    help_kind: Literal[HELP_KINDS]
     reply_text: str = Field(min_length=1)
-    gap: Literal[
-        "misread_problem", "missing_tool", "weak_intuition", "wrong_intuition",
-        "stuck_optimising", "cant_write_code", "bugs_and_edge_cases",
-    ]
-    help_kind: Literal[
-        "question", "trace", "analogy", "teach_tool", "syntax", "snippet",
-        "partial_logic", "full_solution",
-    ]
     follow_up_question: str | None
+
+    @model_validator(mode="after")
+    def _named_other(self):
+        if self.gap == "other" and not (self.gap_note or "").strip():
+            raise ValueError("gap_note must describe the gap when gap is other")
+        return self
 
 
 def _credentials():
@@ -190,7 +198,7 @@ class ModelClient:
 
     def call_role(self, role: str, messages: list[dict], schema_class: type[BaseModel], *,
                   model: str | None = None, planner_phase: Literal["start", "between"] = "start",
-                  on_first_token=None, on_response=None, response_mode: Literal["json_schema", "json_object", "plain"] = "json_schema",
+                  on_first_token=None, on_response=None, on_delta=None, response_mode: Literal["json_schema", "json_object", "plain"] = "json_schema",
                   thinking_off: bool = True):
         if role not in self.config.roles:
             raise ValueError(f"Unknown role: {role}")
@@ -233,6 +241,8 @@ class ModelClient:
                             if not pieces and on_first_token:
                                 on_first_token(round((time.perf_counter() - started) * 1000))
                             pieces.append(piece)
+                            if on_delta:
+                                on_delta(attempt, piece)
                     content = "".join(pieces)
                 else:
                     if on_response:
