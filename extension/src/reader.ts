@@ -241,8 +241,14 @@ export class NeetCodeReader {
       if (!this.pending.delete(timer)) return;
       clearTimeout(timer);
       if (this.mode === "idle") return;
+      if (status !== 0 && (status < 200 || status >= 300)) {
+        this.emit({ type: "reader_notice", payload: { message: status === 429
+          ? "NeetCode is rate-limiting your runs. Wait a moment and try again."
+          : `NeetCode couldn't run that (HTTP ${status}). Try again in a moment.` } });
+        return;
+      }
       try {
-        if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
+        if (status === 0) throw new Error(parseError || "No response");
         if (parseError) throw new Error(parseError);
         const payload = kind === "run" ? parseRun(JSON.parse(body), JSON.parse(response)) : parseSubmit(JSON.parse(body), JSON.parse(response));
         this.resultFailure = false;

@@ -80,12 +80,31 @@ describe("page reader", () => {
     expect(events.at(-1)?.payload.message).toBe("Can't read run request body on this page");
   });
 
-  it("includes HTTP status for a failed matched response", async () => {
+  it("reports a non-429 HTTP run response as a notice without failing its check", async () => {
     page.fetch = vi.fn(async () => new Response("bad", { status: 503 }));
     ready(); reader.install(); reader.setMode("watching");
     await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
     await flushUntil(() => events.some(e => String(e.payload.message).includes("HTTP 503")));
-    expect(events.at(-1)?.payload.message).toContain("HTTP 503");
+    expect(events.at(-1)).toEqual({ type: "reader_notice", payload: { message: "NeetCode couldn't run that (HTTP 503). Try again in a moment." } });
+    expect(events.some(e => e.type === "reader_check" && e.payload.ok === false)).toBe(false);
+  });
+
+  it("reports a rate-limited Run as a notice without failing its check", async () => {
+    page.fetch = vi.fn(async () => new Response("rate limited", { status: 429 }));
+    ready(); reader.install(); reader.setMode("watching");
+    await page.fetch("/api/runCodeFunctionHttp", { method: "POST", body: JSON.stringify(runRequest) });
+    await flushUntil(() => events.some(e => e.type === "reader_notice"));
+    expect(events.at(-1)).toEqual({ type: "reader_notice", payload: { message: "NeetCode is rate-limiting your runs. Wait a moment and try again." } });
+    expect(events.some(e => e.type === "reader_check" && e.payload.ok === false)).toBe(false);
+  });
+
+  it("reports a non-2xx Submit as a notice without failing its check", async () => {
+    page.fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+    ready(); reader.install(); reader.setMode("watching");
+    await page.fetch("/api/executeCodeFunctionHttp", { method: "POST", body: JSON.stringify(submitRequest) });
+    await flushUntil(() => events.some(e => e.type === "reader_notice"));
+    expect(events.at(-1)).toEqual({ type: "reader_notice", payload: { message: "NeetCode couldn't run that (HTTP 503). Try again in a moment." } });
+    expect(events.some(e => e.type === "reader_check" && e.payload.ok === false)).toBe(false);
   });
 
   it("includes a parse failure and clears it on the next result", async () => {

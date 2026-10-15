@@ -212,6 +212,8 @@ function settingsCard(): HTMLElement {
   const nameRow = element("div", "settings-name-row");
   nameRow.append(input, button("save-settings-name", "Save", "btn"));
   nameLabel.append(nameRow); card.append(nameLabel);
+  const hint = appendText(card, "p", "Type a name, or press Skip.", "name-hint");
+  hint.id = "name-hint"; hint.hidden = true;
   const themeLabel = element("label"); appendText(themeLabel, "span", "Theme");
   const select = element("select", "field") as HTMLSelectElement; select.id = "settings-theme";
   for (const [value, label] of [["match", "Match my Mac"], ["light", "Light"], ["dark", "Dark"]]) {
@@ -274,7 +276,7 @@ function saveName(id: string): void {
   const input = document.getElementById(id) as HTMLInputElement | null;
   if (!input) return;
   const value = input.value.trim();
-  if (id === "first-name" && !value) {
+  if (!value) {
     document.getElementById("name-hint")!.hidden = false;
     return;
   }
@@ -286,7 +288,7 @@ body.addEventListener("click", event => {
   if (id === "close-settings") { settingsOpen = false; render(); }
   if (id === "save-first-name") saveName("first-name");
   if (id === "save-settings-name") saveName("settings-name");
-  if (id === "skip-name") void send({ kind: "settings_set", key: "name", value: "" });
+  if (id === "skip-name") void send({ kind: "skip_name" });
   if (id?.startsWith("budget-")) {
     selectedBudget = Number(id.slice("budget-".length));
     customBudget = "";

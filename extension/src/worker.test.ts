@@ -62,6 +62,28 @@ beforeEach(() => {
 });
 
 describe("worker reader delivery", () => {
+  it("shows rate-limit notices without forwarding or pausing, then clears them on a result and new session", async () => {
+    await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" });
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    const notice = "NeetCode is rate-limiting your runs. Wait a moment and try again.";
+    const before = socket.sent.length;
+    expect(await dispatch({ kind: "reader_event", event: { type: "reader_notice", payload: { message: notice } } }, tab)).toEqual({ accepted: true, mode: "watching" });
+    expect(socket.sent).toHaveLength(before);
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "reader_error", message: notice });
+    expect(await dispatch({ kind: "get_reader_error" })).toBe(notice);
+    expect(await dispatch({ kind: "get_mode" })).toBe("watching");
+    const run = { type: "run_result", payload: { slug: "duplicate-integer", cases: [{ passed: true, error_type: null, error_message: "", runtime: "", failing_case: null }] } };
+    await dispatch({ kind: "reader_event", event: run }, tab);
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+    await dispatch({ kind: "reader_event", event: { type: "reader_notice", payload: { message: notice } } }, tab);
+    const submit = { type: "submit_result", payload: { slug: "duplicate-integer", accepted: true, error_type: null, error_message: "", runtime: "", memory: 0, passed: 1, total: 1, failing_case: null } };
+    await dispatch({ kind: "reader_event", event: submit }, tab);
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+    await dispatch({ kind: "reader_event", event: { type: "reader_notice", payload: { message: notice } } }, tab);
+    pushSession("idle"); await dispatch({ kind: "get_mode" });
+    pushSession("watching"); await dispatch({ kind: "get_mode" });
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+  });
   it("relays reactions only for delivered events while watching", async () => {
     await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" });
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
@@ -86,6 +108,19 @@ describe("worker reader delivery", () => {
     expect(await dispatch({ kind: "get_settings_state" })).toEqual(settings);
     expect(await dispatch({ kind: "settings_set", key: "name", value: "Ada" })).toEqual({ sent: true });
     expect(socket.sent.at(-1)).toMatchObject({ type: "settings_set", payload: { key: "name", value: "Ada" } });
+  });
+  it("rejects blank name updates while allowing first-run Skip", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "settings_state", ts: "now", name: null, theme: "match" }) });
+    const before = socket.sent.length;
+    expect(await dispatch({ kind: "settings_set", key: "name", value: "   " })).toEqual({ error: "Invalid setting." });
+    expect(socket.sent).toHaveLength(before);
+    expect(await dispatch({ kind: "skip_name" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "settings_set", payload: { key: "name", value: "" } });
+    socket.onmessage?.({ data: JSON.stringify({ type: "settings_state", ts: "now", name: "Ada", theme: "match" }) });
+    const after = socket.sent.length;
+    expect(await dispatch({ kind: "skip_name" })).toEqual({ error: "Invalid setting." });
+    expect(socket.sent).toHaveLength(after);
   });
   it("takes reader mode from session_state and delivers the full state to the panel", async () => {
     await start(); socket.readyState = 1;

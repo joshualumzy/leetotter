@@ -94,7 +94,7 @@ describe("panel actions", () => {
     input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(sendMessage).toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "Ada" });
     click("skip-name");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "skip_name" });
     click("header-otter");
     expect(document.getElementById("settings-card")).toBeTruthy();
     click("close-settings");
@@ -112,15 +112,19 @@ describe("panel actions", () => {
     expect(document.getElementById("first-run")).toBeTruthy();
     expect(document.getElementById("start-session")).toBeNull();
   });
-  it("saves a cleared settings name only on Save or Enter and labels the Mac theme", () => {
+  it("rejects a blank settings name on Save or Enter and accepts a replacement", () => {
     click("header-otter");
     expect(document.querySelector("#settings-theme option[value=match]")?.textContent).toBe("Match my Mac");
     const input = document.getElementById("settings-name") as HTMLInputElement;
-    input.value = "";
+    input.value = "   ";
     input.dispatchEvent(new window.Event("change", { bubbles: true }));
     expect(sendMessage).not.toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
     click("save-settings-name");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
+    expect(document.getElementById("name-hint")?.textContent).toBe("Type a name, or press Skip.");
+    expect(document.getElementById("name-hint")?.hidden).toBe(false);
+    expect(sendMessage).not.toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(sendMessage).not.toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "" });
     input.value = " Ada ";
     input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(sendMessage).toHaveBeenCalledWith({ kind: "settings_set", key: "name", value: "Ada" });

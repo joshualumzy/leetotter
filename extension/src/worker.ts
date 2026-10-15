@@ -9,6 +9,7 @@ type Saved = { readerError: string; readerActivity: string; focusedWindow: numbe
 let state: ConnectionState = { kind: "offline" };
 let mode: Mode = "idle";
 let readerError = "";
+let notice = "";
 let readerActivity = "No reader events yet.";
 let imported = false;
 let importResult: { already_imported: boolean; matched: number; unmatched: string[] } | undefined;
@@ -18,6 +19,7 @@ let settingsState: SettingsState | undefined;
 let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
 const problemTabs = new Map<number, ProblemTab>();
 function panel(message: unknown): void { chrome.runtime.sendMessage(message).catch(() => {}); }
+function showReaderAlert(): void { panel({ kind: "reader_error", message: readerError || notice }); }
 let savedInOrder: Promise<void> = Promise.resolve();
 function save(): Promise<void> {
   const readerState: Saved = { readerError, readerActivity, focusedWindow, problemTabs: [...problemTabs] };
@@ -57,6 +59,7 @@ const connection = new CompanionConnection(
   message => {
     if (message.type === "settings_state") { settingsState = message; panel({ kind: "settings_state", settings: message }); return; }
     if (message.type === "session_state") {
+      if (notice && message.mode === "watching" && (sessionState?.state === "idle" || sessionState?.state === "ended")) { notice = ""; showReaderAlert(); }
       sessionState = message;
       void setMode(message.mode);
       panel({ kind: "session_state", state: message });
@@ -104,16 +107,20 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     await ready;
     if (message?.kind === "get_status") return state;
     if (message?.kind === "get_mode") return mode;
-    if (message?.kind === "get_reader_error") return readerError;
+    if (message?.kind === "get_reader_error") return readerError || notice;
     if (message?.kind === "get_reader_activity") return readerActivity;
     if (message?.kind === "get_import_state") return { imported, result: importResult };
     if (message?.kind === "get_session_state") return sessionState;
     if (message?.kind === "get_settings_state") return settingsState;
     if (message?.kind === "settings_get") return connection.send({ type: "settings_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    if (message?.kind === "skip_name") {
+      if (settingsState?.name !== null) return { error: "Invalid setting." };
+      return connection.send({ type: "settings_set", ts: new Date().toISOString(), payload: { key: "name", value: "" } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
     if (message?.kind === "settings_set") {
       const { key, value } = message;
       if (typeof value !== "string" || (key !== "name" && key !== "theme") ||
-          (key === "name" && value.trim().length > 40) ||
+          (key === "name" && (!value.trim() || value.trim().length > 40)) ||
           (key === "theme" && !["match", "light", "dark"].includes(value))) return { error: "Invalid setting." };
       return connection.send({ type: "settings_set", ts: new Date().toISOString(), payload: { key, value } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
@@ -147,15 +154,21 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.kind !== "reader_event") return undefined;
     const event = message.event, tab = sender.tab;
     if (tab?.id === undefined || !problemUrl(tab.url) || !event || typeof event.type !== "string") return { accepted: false, mode };
+    if (event.type === "reader_notice") {
+      if (mode === "idle" || typeof event.payload?.message !== "string" || !event.payload.message) return { accepted: false, mode };
+      notice = event.payload.message;
+      showReaderAlert();
+      return { accepted: true, mode };
+    }
     if (event.type === "reader_check") {
       if (mode === "idle") return { accepted: false, mode };
       try {
         const payload = validateReaderPayload("reader_check", event.payload);
         if (payload.ok === false) {
         readerError = String(payload.message || "Reader check failed");
-        panel({ kind: "reader_error", message: readerError });
+        showReaderAlert();
         } else {
-        readerError = ""; panel({ kind: "reader_error", message: "" });
+        readerError = ""; showReaderAlert();
         }
         const delivered = send("reader_check", payload);
         await save(); return { accepted: delivered, mode };
@@ -171,6 +184,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (event.type === "focus_changed") return { accepted: false, mode };
       const payload = validateReaderPayload(event.type as ReaderMessageType, event.payload);
       const delivered = send(event.type as ReaderMessageType, payload);
+      if (notice && (event.type === "run_result" || event.type === "submit_result")) { notice = ""; showReaderAlert(); }
       if (delivered && mode === "watching") {
         const reaction = reactionForReaderEvent(event.type as ReaderMessageType, payload);
         if (reaction) panel({ kind: "reader_reaction", reaction });
