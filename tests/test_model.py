@@ -148,7 +148,7 @@ def test_other_4xx_have_named_errors(tmp_path, monkeypatch, status, name):
 
 
 def test_two_consecutive_provider_failures_raise_unavailable(tmp_path, monkeypatch):
-    instance, _, path = model_client(tmp_path, monkeypatch, TimeoutError("slow"), ConnectionError("offline"))
+    instance, _, path = model_client(tmp_path, monkeypatch, TimeoutError("slow"), TimeoutError("slow again"))
     with pytest.raises(TimeoutError):
         instance.call_role("checker", message(), Reply)
     with pytest.raises(ModelUnavailable) as caught:
@@ -268,3 +268,32 @@ def test_missing_credentials_fail_before_provider_or_store(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match=missing):
         ModelClient(client=client, db_path=path)
     assert calls.requests == [] and not path.exists()
+
+
+def test_a_connection_reset_is_retried_once_and_only_a_second_failure_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr("companion.model.TRANSIENT_RETRY_DELAY", 0)
+    instance, calls, path = model_client(tmp_path, monkeypatch, ConnectionError("reset by peer"), '{"answer": "ok"}')
+    assert instance.call_role("checker", message(), Reply).answer == "ok"
+    assert len(calls.requests) == 2 and [row[-1] for row in rows(path)] == ["valid"]
+    instance, calls, path = model_client(tmp_path, monkeypatch, ConnectionError("reset"), ConnectionError("reset again"))
+    with pytest.raises(ConnectionError, match="reset again"):
+        instance.call_role("checker", message(), Reply)
+    assert len(calls.requests) == 2 and [row[-1] for row in rows(path)] == ["valid", "error"]  # the same database: one row per call that ended
+
+
+def test_a_5xx_is_retried_once_but_a_timeout_or_a_4xx_is_not(tmp_path, monkeypatch):
+    monkeypatch.setattr("companion.model.TRANSIENT_RETRY_DELAY", 0)
+    server = RuntimeError("API key authentication failed")
+    server.status_code = 503
+    instance, calls, _ = model_client(tmp_path, monkeypatch, server, '{"answer": "ok"}')
+    assert instance.call_role("checker", message(), Reply).answer == "ok" and len(calls.requests) == 2
+    instance, calls, _ = model_client(tmp_path, monkeypatch, TimeoutError("slow"), '{"answer": "ok"}')
+    with pytest.raises(TimeoutError):
+        instance.call_role("checker", message(), Reply)
+    assert len(calls.requests) == 1
+    client_error = RuntimeError("bad")
+    client_error.status_code = 400
+    instance, calls, _ = model_client(tmp_path, monkeypatch, client_error, '{"answer": "ok"}')
+    with pytest.raises(Exception):
+        instance.call_role("checker", message(), Reply)
+    assert len(calls.requests) == 1

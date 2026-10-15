@@ -1,5 +1,6 @@
 """Validated role calls through the configured OpenAI-compatible endpoint."""
 
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from companion.store import open_store
 
+logger = logging.getLogger(__name__)
+TRANSIENT_RETRY_DELAY = 1.5  # seconds before the one retry of a call that got no answer
 ROLES_PATH = Path(__file__).resolve().parent.parent / "roles.toml"
 BACKGROUND_ROLES = frozenset({"reference_writer", "checker"})
 ROLE_EFFECTS = (
@@ -229,48 +232,60 @@ class ModelClient:
             streamed = self.config.streaming.get(role, False)
             if streamed:
                 kwargs.update(stream=True, stream_options={"include_usage": True})
-            started = time.perf_counter()
-            try:
-                response = self.client.chat.completions.create(**kwargs)
-                if streamed:
-                    pieces, usage = [], None
-                    for chunk in response:
+            retried = False
+            while True:
+                started = time.perf_counter()
+                pieces = []
+                try:
+                    response = self.client.chat.completions.create(**kwargs)
+                    if streamed:
+                        usage = None
+                        for chunk in response:
+                            if on_response:
+                                on_response(chunk)
+                            usage = getattr(chunk, "usage", None) or usage
+                            for choice in getattr(chunk, "choices", ()):
+                                piece = getattr(choice.delta, "content", None)
+                                if not piece:
+                                    continue
+                                if not pieces and on_first_token:
+                                    on_first_token(round((time.perf_counter() - started) * 1000))
+                                pieces.append(piece)
+                                if on_delta:
+                                    on_delta(attempt, piece)
+                        content = "".join(pieces)
+                    else:
                         if on_response:
-                            on_response(chunk)
-                        usage = getattr(chunk, "usage", None) or usage
-                        for choice in getattr(chunk, "choices", ()):
-                            piece = getattr(choice.delta, "content", None)
-                            if not piece:
-                                continue
-                            if not pieces and on_first_token:
-                                on_first_token(round((time.perf_counter() - started) * 1000))
-                            pieces.append(piece)
-                            if on_delta:
-                                on_delta(attempt, piece)
-                    content = "".join(pieces)
-                else:
-                    if on_response:
-                        on_response(response)
-                    usage = response.usage
-                    content = response.choices[0].message.content or ""
-            except Exception as error:
-                latency_ms = round((time.perf_counter() - started) * 1000)
-                status = _status(error)
-                eligible = isinstance(error, (TimeoutError, ConnectionError, APITimeoutError, APIConnectionError)) or (status is not None and status >= 500) or _model_not_found(error, model)
-                with self._lock:
-                    if eligible:
-                        self._failures[model] = self._failures.get(model, 0) + 1
-                    unavailable = _model_not_found(error, model) or (eligible and self._failures[model] >= 2)
-                self._record(role, model, latency_ms, None, "unavailable" if unavailable else "error")
-                if unavailable:
-                    raise self._unavailable(model) from error
-                if status == 429:
-                    raise ProviderRateLimitError("Provider rate limit (HTTP 429)") from error
-                if status in (401, 403):
-                    raise ProviderAuthenticationError(f"Provider authentication failed (HTTP {status})") from error
-                if status is not None and 400 <= status < 500:
-                    raise ProviderRequestError(f"Provider request failed (HTTP {status})") from error
-                raise
+                            on_response(response)
+                        usage = response.usage
+                        content = response.choices[0].message.content or ""
+                    break
+                except Exception as error:
+                    latency_ms = round((time.perf_counter() - started) * 1000)
+                    status = _status(error)
+                    # One quick retry when the request never got an answer (connection reset, a 5xx): nothing was sent twice
+                    # and no word was streamed. Only the second failure counts and is reported.
+                    if (not retried and not (streamed and pieces) and not isinstance(error, (TimeoutError, APITimeoutError))
+                            and (isinstance(error, (ConnectionError, APIConnectionError)) or (status is not None and status >= 500))):
+                        retried = True
+                        logger.warning("%s call to %s failed (%s); retrying once", role, model, error)
+                        time.sleep(TRANSIENT_RETRY_DELAY)
+                        continue
+                    eligible = isinstance(error, (TimeoutError, ConnectionError, APITimeoutError, APIConnectionError)) or (status is not None and status >= 500) or _model_not_found(error, model)
+                    with self._lock:
+                        if eligible:
+                            self._failures[model] = self._failures.get(model, 0) + 1
+                        unavailable = _model_not_found(error, model) or (eligible and self._failures[model] >= 2)
+                    self._record(role, model, latency_ms, None, "unavailable" if unavailable else "error")
+                    if unavailable:
+                        raise self._unavailable(model) from error
+                    if status == 429:
+                        raise ProviderRateLimitError("Provider rate limit (HTTP 429)") from error
+                    if status in (401, 403):
+                        raise ProviderAuthenticationError(f"Provider authentication failed (HTTP {status})") from error
+                    if status is not None and 400 <= status < 500:
+                        raise ProviderRequestError(f"Provider request failed (HTTP {status})") from error
+                    raise
             latency_ms = round((time.perf_counter() - started) * 1000)
             with self._lock:
                 self._failures[model] = 0
