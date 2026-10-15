@@ -56,6 +56,7 @@ beforeEach(() => {
     tabs: {
       query: vi.fn(async () => [{ id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" }]),
       get: vi.fn(async (id: number) => ({ id, url: id === 7 ? "https://neetcode.io/problems/duplicate-integer/" : "https://example.com/" })),
+      update: vi.fn(async (id: number, change: chrome.tabs.UpdateProperties) => ({ id, url: change.url })),
       sendMessage: vi.fn(async (tab: number, message: any) => { sent.push({ tab, message }); return message.kind === "read_history" ? historyReply : undefined; }),
       onActivated: { addListener: (fn: Listener) => activated.push(fn) },
       onUpdated: { addListener: (fn: Listener) => updated.push(fn) },
@@ -250,6 +251,26 @@ describe("worker reader delivery", () => {
     expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 25, tabId: 7 })).toEqual({ error: "Open a problem on NeetCode to start a session." });
     expect(socket.sent.some(item => item.type === "session_start")).toBe(false);
     expect(await dispatch({ kind: "session_command", command: "resume", tabId: 7 })).toEqual({ sent: true });
+  });
+  it("binds the panel tab and opens the saved problem before resuming", async () => {
+    saved.readerState.sessionTabId = null;
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
+    vi.mocked(chrome.tabs.update).mockImplementation(async (id, change) => {
+      expect(await dispatch({ kind: "get_session_binding" })).toEqual({ tabId: 7 });
+      expect(socket.sent.some(item => item.type === "session_resume")).toBe(false);
+      return { id, url: change.url } as chrome.tabs.Tab;
+    });
+    expect(await dispatch({ kind: "session_command", command: "resume", tabId: 7, problem_slug: "two-sum" })).toEqual({ sent: true });
+    expect(chrome.tabs.update).toHaveBeenCalledWith(7, { url: "https://neetcode.io/problems/two-sum/" });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "session_resume" });
+  });
+  it("keeps a session paused and reports a rejected saved-problem navigation", async () => {
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
+    vi.mocked(chrome.tabs.update).mockRejectedValue(new Error("No tab with id: 7"));
+    expect(await dispatch({ kind: "session_command", command: "resume", tabId: 7, problem_slug: "two-sum" })).toEqual({ error: "Could not open the saved problem: No tab with id: 7" });
+    expect(socket.sent.some(item => item.type === "session_resume")).toBe(false);
   });
   it("binds a session to one tab, routes watch mode, and refuses another tab", async () => {
     await start(); socket.readyState = 1;

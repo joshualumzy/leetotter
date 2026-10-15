@@ -104,11 +104,48 @@ describe("panel actions", () => {
     expect(document.getElementById("session-body")?.textContent).toContain("Daily Temperatures, 23 min of 45");
     expect(document.getElementById("timer")?.classList.contains("stopped")).toBe(true);
     click("welcome-resume");
-    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7, problem_slug: "daily-temperatures" });
     click("end-and-start");
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "end" }));
     await vi.waitFor(() => expect(document.getElementById("start-session")).toBeTruthy());
     expect(document.getElementById("welcome-resume")).toBeNull();
+  });
+
+  it("offers the saved problem from the contents page and requests navigation on Resume", async () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    activeUrl = "https://neetcode.io/practice/";
+    updatedTab(7, { url: activeUrl });
+    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(true));
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "check", check_message: "Open a problem and I'll pick the timer back up.", budget_minutes: 45, active_seconds: 1394, problem: { slug: "daily-temperatures", title: "Daily Temperatures" } } });
+    expect(document.querySelector(".welcome-back")?.textContent).toContain("Daily Temperatures, 23 min of 45");
+    expect(document.getElementById("session-body")?.textContent).not.toContain("Open a problem and I'll pick the timer back up.");
+    click("welcome-resume");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7, problem_slug: "daily-temperatures" });
+    expect(tabUpdate).not.toHaveBeenCalled();
+  });
+
+  it("resumes directly when the panel tab is already on the saved problem", () => {
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "restart", budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    click("welcome-resume");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
+  });
+
+  it("recognizes the saved problem URL without a trailing slash", async () => {
+    notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+    activeUrl = "https://neetcode.io/problems/duplicate-integer";
+    updatedTab(7, { url: activeUrl });
+    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(false));
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "restart", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    click("welcome-resume");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
+  });
+
+  it("shows a failed saved-problem navigation in the alert row", async () => {
+    sendMessage.mockImplementation(async (message: any) => message.kind === "session_command" ? { error: "Could not open the saved problem." } : { sent: true });
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "restart", problem: { slug: "two-sum", title: "Two Sum" } } });
+    click("welcome-resume");
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toBe("Could not open the saved problem."));
+    expect(document.getElementById("welcome-resume")).toBeTruthy();
   });
 
   it("shows time without a problem on a restart pause", () => {

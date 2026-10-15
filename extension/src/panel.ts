@@ -144,6 +144,13 @@ async function refreshPanelTab(): Promise<void> {
   render();
 }
 function onProblemPage(): boolean { return /^https:\/\/neetcode\.io\/problems\/[^/]+/.test(panelTabUrl); }
+function onCurrentProblem(): boolean {
+  if (!session?.problem) return false;
+  try {
+    const url = new URL(panelTabUrl);
+    return url.origin === "https://neetcode.io" && [ `/problems/${session.problem.slug}`, `/problems/${session.problem.slug}/` ].includes(url.pathname);
+  } catch { return false; }
+}
 async function refreshBinding(id: number | null): Promise<void> {
   sessionTabId = id;
   boundTabExists = false;
@@ -262,7 +269,7 @@ function historyRow(): HTMLElement {
   return row;
 }
 function render(): void {
-  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists });
+  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage() });
   renderHeader(view);
   body!.replaceChildren();
   if (view.body === "another_tab") {
@@ -352,7 +359,7 @@ body.addEventListener("click", event => {
     await chrome.tabs.update(tab.id!, { active: true });
     if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
   }).catch(error => { actionError = String(error); render(); });
-  if (id === "welcome-resume") void send({ kind: "session_command", command: "resume", tabId: panelTabId });
+  if (id === "welcome-resume") void send({ kind: "session_command", command: "resume", tabId: panelTabId, ...(session?.problem && !onCurrentProblem() ? { problem_slug: session.problem.slug } : {}) });
   if (id === "end-and-start") void send({ kind: "session_command", command: "end" }).then(ok => {
     if (!ok || !session) return;
     startAfterEnd = true;

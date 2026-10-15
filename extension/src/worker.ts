@@ -197,6 +197,17 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       }
       const type = types[command as keyof typeof types];
       const payload = command === "start" ? { budget_minutes: message.budget_minutes } : command === "overrun_finish" ? { choice: "finish" } : command === "overrun_stop" ? { choice: "stop" } : undefined;
+      if (command === "resume" && message.problem_slug !== undefined) {
+        if (typeof message.problem_slug !== "string" || !/^[a-z0-9-]+$/.test(message.problem_slug)) return { error: "Invalid saved problem." };
+        await bindTab(message.tabId);
+        try {
+          await chrome.tabs.update(message.tabId, { url: `https://neetcode.io/problems/${message.problem_slug}/` });
+        } catch (error) {
+          return { error: `Could not open the saved problem: ${error instanceof Error ? error.message : String(error)}` };
+        }
+        orphanReported = false; disconnectResumeSent = false;
+        return connection.send({ type, ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      }
       if (!connection.send({ type, ts: new Date().toISOString(), ...(payload ? { payload } : {}) })) return { error: "Tutor service isn't connected." };
       if (command === "start" || command === "resume") { orphanReported = false; disconnectResumeSent = false; await bindTab(message.tabId); }
       if (command === "end") await bindTab(null);

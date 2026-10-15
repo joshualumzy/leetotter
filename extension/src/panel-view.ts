@@ -16,8 +16,8 @@ export type PanelView = {
   pauseText?: string;
 };
 
-export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string; sessionTabId?: number | null; panelTabId?: number | null; boundTabExists?: boolean }): PanelView {
-  const { transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists } = input;
+export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string; sessionTabId?: number | null; panelTabId?: number | null; boundTabExists?: boolean; panelOnProblemPage?: boolean }): PanelView {
+  const { transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage } = input;
   const title = session?.problem?.title || "Leetotter";
   if (session && ["active", "paused"].includes(session.state) && sessionTabId != null && panelTabId != null && boundTabExists && sessionTabId !== panelTabId) {
     return { title, statusTone: "paused", controls: [], body: "another_tab", remarkPool: "active", alerts: [] };
@@ -38,8 +38,9 @@ export function panelView(input: { transport: ConnectionState; session_state?: S
   if (session.state === "paused") {
     const reason = session.paused_reason || "button";
     const pageCheck = reason === "check" && session.check_message === "Open a problem and I'll pick the timer back up.";
-    if (["closed", "restart"].includes(reason) || (reason === "disconnect" && !boundTabExists)) {
-      return { ...common, statusTone: "paused", controls: ["end"], body: "welcome_back", remarkPool: `pause_${reason}` as RemarkPool };
+    const resumeFromPageCheck = Boolean(pageCheck && session.problem && panelOnProblemPage === false);
+    if (["closed", "restart"].includes(reason) || (reason === "disconnect" && !boundTabExists) || resumeFromPageCheck) {
+      return { ...common, statusTone: "paused", controls: ["end"], body: "welcome_back", remarkPool: resumeFromPageCheck ? "pause_restart" : `pause_${reason}` as RemarkPool };
     }
     const info = {
       button: ["Paused", "The timer's stopped and nothing is watched until you resume."],

@@ -33,6 +33,13 @@ describe("panel state", () => {
     expect(view(paused)).toMatchObject({ pauseTitle: "Paused", pauseText: paused.check_message, remarkPool: "pause_check_page" });
     expect(view({ ...paused, check_message: "Can't read the editor on this page" })).toMatchObject({ pauseTitle: "Paused for a reader check", pauseText: "Can't read the editor on this page", remarkPool: "pause_check" });
   });
+  it("offers the saved problem after the reader pauses on a non-problem page", () => {
+    const paused = { ...base, state: "paused", mode: "paused", paused_reason: "check", check_message: "Open a problem and I'll pick the timer back up.", problem: { slug: "two-sum", title: "Two Sum" } } as SessionState;
+    const input = { transport: { kind: "connected" } as const, session_state: paused, settings, readerError: "", sessionTabId: 7, panelTabId: 7, boundTabExists: true, panelOnProblemPage: false };
+    expect(panelView(input)).toMatchObject({ body: "welcome_back", controls: ["end"], remarkPool: "pause_restart" });
+    expect(panelView({ ...input, panelOnProblemPage: true })).toMatchObject({ body: "paused", pauseText: paused.check_message });
+    expect(panelView({ ...input, session_state: { ...paused, check_message: "Editor missing" } })).toMatchObject({ body: "paused", pauseText: "Editor missing" });
+  });
   it("welcomes back closed, restarted, and unbound disconnect pauses", () => {
     for (const reason of ["closed", "restart", "disconnect"] as const) {
       expect(panelView({ transport: { kind: "connected" }, session_state: { ...base, state: "paused", mode: "paused", paused_reason: reason }, settings, readerError: "", boundTabExists: false })).toMatchObject({ body: "welcome_back", controls: ["end"], remarkPool: `pause_${reason}` });
