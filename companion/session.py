@@ -372,9 +372,7 @@ class SessionCoordinator:
             return [self._tutor_error(now, None, "The Tutor is still answering. Wait for that reply, then ask again.")], None
         slug = self.problem["slug"]
         with open_store(self.db_path) as db:
-            rows = db.execute("SELECT type, payload FROM events WHERE session_id = ? AND id >= ? ORDER BY id",
-                              (self.session_id, self.attempt_start)).fetchall()
-            events = [(kind_, json.loads(payload)) for kind_, payload in rows]
+            events = [(kind_, payload) for _, kind_, payload in self._attempt_events(db)]
             if kind == "help":
                 request = TutorRequest("help", answered_presses(events) + 1, None)
                 turn_id = self._event(db, self.session_id, now.isoformat(), "help_request", {"slug": slug, "press_index": request.press_index})
@@ -398,6 +396,33 @@ class SessionCoordinator:
         turn = Turn(turn_id, self.session_id, slug, request, messages, reply_schema(request))
         return [{"type": "tutor_start", "ts": now.isoformat(), "turn_id": turn_id, "request": kind,
                  "press_index": request.press_index}], turn
+
+    def _attempt_events(self, db):
+        """(id, type, payload) of every event in the current problem's attempt, oldest first."""
+        rows = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id >= ? ORDER BY id",
+                          (self.session_id, self.attempt_start)).fetchall()
+        return [(event_id, kind, json.loads(payload)) for event_id, kind, payload in rows]
+
+    def chat_state(self) -> dict:
+        """The conversation on the current attempt, rebuilt from stored events: the same events the Tutor's
+        context uses. Empty outside an active or paused session on a problem. `streaming` is the turn in flight."""
+        now = self.clock()
+        turns = []
+        if self.state in ("active", "paused") and self.problem is not None:
+            with open_store(self.db_path) as db:
+                events = self._attempt_events(db)
+            for event_id, kind, payload in events:
+                if kind == "help_request":
+                    turns.append({"turn_id": event_id, "kind": "press", "press_index": payload["press_index"]})
+                elif kind == "chat_message":
+                    turns.append({"turn_id": event_id, "kind": "chat", "text": payload["text"]})
+                elif kind == "help_turn":
+                    turns.append({"turn_id": payload["turn_id"], "kind": "reply", "text": payload["reply_text"],
+                                  "gap": payload["gap"], "gap_note": payload["gap_note"], "help_kind": payload["help_kind"]})
+                elif kind == "help_failed":
+                    turns.append({"turn_id": payload["turn_id"], "kind": "failed", "reason": payload["reason"],
+                                  "message": payload["message"]})
+        return {"type": "chat_state", "ts": now.isoformat(), "turns": turns, "streaming": self.turn}
 
     def finish_turn(self, turn: Turn, reply, model: str) -> list[dict]:
         """Log a validated reply and send it; it is stored whatever the session's state is now."""

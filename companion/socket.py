@@ -26,8 +26,13 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 # replaces what was shown); tutor_done {reply_text, gap, gap_note, help_kind, follow_up_question}, the
 # validated reply, which replaces the streamed text; tutor_error {message}, the turn failed and anything
 # streamed for it is withdrawn. A refused request gets tutor_error with turn_id null, to the sender only.
+# chat_get (no payload) answers the sender only with chat_state {turns, streaming}: the current attempt's
+# conversation from the store, oldest first, empty outside an active or paused session on a problem; each turn is
+#   {turn_id, kind: "press", press_index} | {turn_id, kind: "chat", text}
+#   | {turn_id, kind: "reply", text, gap, gap_note, help_kind} | {turn_id, kind: "failed", reason, message}
+# and streaming is the id of the turn whose reply is still coming, or null.
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
 logger = logging.getLogger(__name__)
 _coordinator = None
@@ -137,7 +142,7 @@ def _validate(raw):
         payload = message.get("payload")
         if not isinstance(payload, dict) or payload.get("choice") not in ("finish", "stop"):
             raise ValueError("Invalid session_overrun payload")
-    if kind in ("tab_closed", "help_request") and "payload" in message:
+    if kind in ("tab_closed", "help_request", "chat_get") and "payload" in message:
         raise ValueError(f"Invalid {kind} payload")
     if kind == "chat_message":
         payload = message.get("payload")
@@ -165,7 +170,7 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
@@ -183,6 +188,8 @@ async def _handle(connection):
                 elif kind == "import_history":
                     result = import_history(message["payload"]["urls"])
                     await connection.send(json.dumps({"type": "import_result", "ts": _timestamp(), "result": result}))
+                elif kind == "chat_get":
+                    await connection.send(json.dumps(_coordinator.chat_state()))
                 elif kind in TUTOR_TYPES:
                     text = message["payload"]["text"].strip() if kind == "chat_message" else None
                     outgoing, turn = _coordinator.begin_turn("chat" if kind == "chat_message" else "help", text)
