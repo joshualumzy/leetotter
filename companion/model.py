@@ -17,9 +17,6 @@ from companion.store import open_store
 
 ROLES_PATH = Path(__file__).resolve().parent.parent / "roles.toml"
 BACKGROUND_ROLES = frozenset({"reference_writer", "checker"})
-# Roles that answer with the provider's thinking turned off: the Observer is polled every few seconds and the
-# Tutor is waited on, and thinking took the Tutor from about 1.5 s to about 9 s for a short reply.
-THINKING_OFF_ROLES = frozenset({"observer", "tutor"})
 ROLE_EFFECTS = (
     ("observer", "approach nudges"), ("tutor", "tutoring"),
     ("reflector", "session reviews"), ("planner", "suggestions"),
@@ -227,7 +224,7 @@ class ModelClient:
                     "name": schema_class.__name__.lower(), "strict": True, "schema": schema_class.model_json_schema()}}
             elif response_mode == "json_object":
                 kwargs["response_format"] = {"type": "json_object"}
-            if role in THINKING_OFF_ROLES and thinking_off:
+            if role == "observer" and thinking_off:
                 kwargs["extra_body"] = self.config.observer_thinking_extra_body
             streamed = self.config.streaming.get(role, False)
             if streamed:

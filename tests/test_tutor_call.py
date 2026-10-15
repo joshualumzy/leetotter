@@ -51,8 +51,6 @@ def test_reply_text_streams_by_attempt_and_the_validated_reply_is_returned(tmp_p
     assert "".join(t for _, t in seen) == GOOD["reply_text"]
     # Strict schema mode strips line breaks from the reply, so the Tutor asks for a plain JSON object.
     assert completions.requests[0]["response_format"] == {"type": "json_object"}
-    # Thinking is off for the Tutor: it cut a short reply from about 9 s to about 1.5 s.
-    assert completions.requests[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_an_invalid_first_attempt_is_retried_and_the_retry_streams_as_attempt_1(tmp_path, monkeypatch):
