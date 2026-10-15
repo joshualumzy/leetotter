@@ -222,6 +222,24 @@ describe("panel actions", () => {
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
   });
 
+  it.each(["question", "solution/", "submissions?tab=1", "discuss#top"])("resumes directly when the panel tab is on the saved problem\'s %s tab", async tab => {
+    activeUrl = `https://neetcode.io/problems/duplicate-integer/${tab}`;
+    updatedTab(7, { url: activeUrl });
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "restart", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    await vi.waitFor(() => expect(document.getElementById("welcome-resume")).toBeTruthy());
+    click("welcome-resume");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7 });
+  });
+
+  it("enables the composer for an active session whatever the panel tab shows", async () => {
+    activeUrl = "https://neetcode.io/practice/";
+    updatedTab(7, { url: activeUrl });
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    await vi.waitFor(() => expect(document.getElementById("help-request")).toBeTruthy());
+    expect((document.getElementById("help-request") as HTMLButtonElement).disabled).toBe(false);
+    expect((document.getElementById("chat-input") as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
   it("recognizes the saved problem URL without a trailing slash", async () => {
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
     activeUrl = "https://neetcode.io/problems/duplicate-integer";

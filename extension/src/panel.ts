@@ -159,7 +159,7 @@ function onCurrentProblem(): boolean {
   if (!session?.problem) return false;
   try {
     const url = new URL(panelTabUrl);
-    return url.origin === "https://neetcode.io" && [ `/problems/${session.problem.slug}`, `/problems/${session.problem.slug}/` ].includes(url.pathname);
+    return url.origin === "https://neetcode.io" && url.pathname.startsWith("/problems/") && url.pathname.split("/")[2] === session.problem.slug;
   } catch { return false; }
 }
 async function refreshBinding(id: number | null): Promise<void> {
@@ -346,7 +346,7 @@ function updateComposer(): void {
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   const arrow = document.getElementById("chat-send") as HTMLButtonElement | null;
   if (!help || !input || !arrow) return;
-  const availability = composerAvailability(session?.state, Boolean(session?.problem && onCurrentProblem()), chat.streaming !== null || pacers.size > 0);
+  const availability = composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0);
   help.disabled = input.disabled = !availability.enabled;
   arrow.disabled = !availability.enabled || !draft.trim();
   document.getElementById("composer-reason")!.textContent = availability.reason;

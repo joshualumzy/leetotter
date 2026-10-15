@@ -62,6 +62,8 @@ export function lineDiff(before: string, after: string) {
 
 export type ReaderEvent = { type: string; payload: RecordValue };
 type CodeRead = { text: string; source: "editor" | "stored" };
+// A page load or single-page navigation takes a moment, so a failed check is reported only after it has lasted about three 1-second polls.
+const CHECK_GRACE_MS = 3000;
 const codeLines = ".my-code-editor > .monaco-editor .view-lines .view-line";
 export class NeetCodeReader {
   private mode: WatchMode = "idle";
@@ -80,6 +82,8 @@ export class NeetCodeReader {
   private titleOf?: { slug: string; title: string };
   private resultFailure = false;
   private offProblemReported = false;
+  private failingSince?: number;
+  private failureReported = false;
   private cleanup: (() => void)[] = [];
   constructor(private emit: (event: ReaderEvent) => void, private page: Window = window) {}
 
@@ -145,7 +149,7 @@ export class NeetCodeReader {
       if (mode === "idle") { this.pending.clear(); this.openedSlug = ""; this.offProblemReported = false; this.statements.clear(); }
     }
     if (mode === "watching") {
-      if (was !== "watching") this.resultFailure = false;
+      if (was !== "watching") { this.resultFailure = false; this.checkPassed(); }
       this.open(true);
       this.snapshotTimer = setInterval(() => this.snapshot(), 60_000);
     }
@@ -209,6 +213,7 @@ export class NeetCodeReader {
       const { title, code } = this.check();
       this.titleOf = { slug, title };
       this.ready = true;
+      this.checkPassed();
       if (this.diffTimer) { clearTimeout(this.diffTimer); this.diffTimer = undefined; }
       this.previous = code.text;
       this.codeSource = code.source;
@@ -217,7 +222,7 @@ export class NeetCodeReader {
       this.send("code_snapshot", { code: code.text });
     } catch (error) {
       this.ready = false;
-      this.fail((error as Error).message);
+      this.checkFailed((error as Error).message);
     }
   }
   private sourceChanged(read: CodeRead): boolean {
@@ -242,14 +247,14 @@ export class NeetCodeReader {
   codeWrite(): void {
     if (!this.slug || this.mode !== "watching") return;
     let read: CodeRead;
-    try { read = this.code(); } catch (error) { this.ready = false; this.fail((error as Error).message); return; }
+    try { read = this.code(); } catch (error) { this.ready = false; this.checkFailed((error as Error).message); return; }
     if (this.sourceChanged(read) || read.text === this.previous || this.diffTimer) return;
     const wait = Math.max(0, 3000 - (Date.now() - this.lastDiff));
     this.diffTimer = setTimeout(() => {
       this.diffTimer = undefined;
       if (this.mode !== "watching") return;
       let latest: CodeRead;
-      try { latest = this.code(); } catch (error) { this.ready = false; this.fail((error as Error).message); return; }
+      try { latest = this.code(); } catch (error) { this.ready = false; this.checkFailed((error as Error).message); return; }
       if (this.sourceChanged(latest) || latest.text === this.previous) return;
       this.send("code_changed", { diff: lineDiff(this.previous, latest.text) });
       this.previous = latest.text;
@@ -265,7 +270,14 @@ export class NeetCodeReader {
       this.previous = code.text;
       this.send("code_snapshot", { code: code.text });
     }
-    catch (error) { this.ready = false; this.fail((error as Error).message); }
+    catch (error) { this.ready = false; this.checkFailed((error as Error).message); }
+  }
+  private checkPassed(): void { this.failingSince = undefined; this.failureReported = false; }
+  private checkFailed(message: string): void {
+    this.failingSince ??= Date.now();
+    if (Date.now() - this.failingSince < CHECK_GRACE_MS || this.failureReported) return;
+    this.failureReported = true;
+    this.fail(message);
   }
   private fail(message: string): void { if (this.mode !== "idle") this.emit({ type: "reader_check", payload: { ok: false, message } }); }
   private send(type: string, payload: RecordValue): void {

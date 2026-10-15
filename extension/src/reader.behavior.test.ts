@@ -66,7 +66,8 @@ describe("page reader", () => {
   it("cannot find a code editor when the page has only diff editor pieces", () => {
     page.document.body.innerHTML = `<h1>Contains Duplicate</h1><div class="my-code-editor">${diffEditors()}</div>`;
     reader.install(); reader.setMode("watching");
-    expect(events.at(-1)?.payload.message).toBe("Can't find the editor on this page");
+    vi.advanceTimersByTime(3000);
+    expect(events.find(e => e.payload.ok === false)?.payload.message).toBe("Can't find the editor on this page");
   });
   it("rejects a broken stored value even when Monaco lines are readable", () => {
     page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="my-code-editor"><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px">starter</div></div></div></div>';
@@ -81,6 +82,7 @@ describe("page reader", () => {
     ]) {
       page.localStorage.setItem("duplicate-integer_python_tabs", value);
       reader.setMode("watching");
+      vi.advanceTimersByTime(3000);
       expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: `Can't read the editor on this page (${reason})` } });
       reader.setMode("idle");
     }
@@ -89,6 +91,7 @@ describe("page reader", () => {
   it("rejects an absent key when no Monaco line text is available", () => {
     page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="my-code-editor"><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div></div>';
     reader.install(); reader.setMode("watching");
+    vi.advanceTimersByTime(3000);
     expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: "Can't read the editor on this page (no code found in the editor)" } });
   });
   it("snapshots each source switch and diffs only within the new source", () => {
@@ -190,6 +193,7 @@ describe("page reader", () => {
   it("recovers from a failed editor check with a snapshot and no duplicate open", () => {
     ready(); reader.install(); reader.setMode("watching");
     page.localStorage.setItem("duplicate-integer_python_tabs", "[]");
+    vi.advanceTimersByTime(3000);
     expect(events.at(-1)?.payload.ok).toBe(false);
     reader.setMode("paused");
     ready(); reader.setMode("watching");
@@ -335,24 +339,67 @@ describe("page reader", () => {
     page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "changed" }]));
     // The write schedules a diff; the stored tabs disappear before its timer fires.
     page.localStorage.removeItem("duplicate-integer_python_tabs");
-    vi.advanceTimersByTime(1);
+    vi.advanceTimersByTime(4000);
     expect(String(events.at(-1)?.payload.message)).toMatch(/^Can't read the editor on this page \(/);
   });
   it("names each failing self-check, including two tabs and a missing hook", () => {
-    reader.setMode("watching");
-    expect(events.at(-1)?.payload.message).toBe("Can't identify the problem title on this page");
+    const failure = () => { reader.setMode("idle"); events.length = 0; reader.setMode("watching"); vi.advanceTimersByTime(3000); reader.open(); return events.find(e => e.payload.ok === false)?.payload.message; };
+    expect(failure()).toBe("Can't identify the problem title on this page");
     page.document.body.innerHTML = "<h1>Contains Duplicate</h1>";
-    reader.open();
-    expect(events.at(-1)?.payload.message).toBe("Can't find the editor on this page");
+    expect(failure()).toBe("Can't find the editor on this page");
     page.document.body.innerHTML += '<div class="my-code-editor"><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div></div>';
-    reader.open();
-    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page (no code found in the editor)");
+    expect(failure()).toBe("Can't read the editor on this page (no code found in the editor)");
     page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "one" }, { code: "two" }]));
-    reader.open();
-    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page (stored code has 2 editor tabs, expected 1)");
+    expect(failure()).toBe("Can't read the editor on this page (stored code has 2 editor tabs, expected 1)");
     ready();
-    reader.open();
-    expect(String(events.at(-1)?.payload.message)).toContain("Can't see run results on this page (");
+    expect(String(failure())).toContain("Can't see run results on this page (");
+  });
+
+  describe("check grace", () => {
+    const failures = () => events.filter(e => e.type === "reader_check" && e.payload.ok === false);
+    it("does not report a title that is missing or stale for two polls", () => {
+      ready(); reader.install(); reader.setMode("watching");
+      page.history.pushState({}, "", "/problems/two-sum/");
+      page.localStorage.setItem("two-sum_python_tabs", JSON.stringify([{ code: "next" }]));
+      vi.advanceTimersByTime(2000);
+      page.document.querySelector("h1")!.textContent = "";
+      vi.advanceTimersByTime(1000);
+      page.document.querySelector("h1")!.textContent = "Two Sum";
+      vi.advanceTimersByTime(3000);
+      expect(failures()).toEqual([]);
+      expect(events.filter(e => e.type === "problem_opened").at(-1)?.payload).toMatchObject({ slug: "two-sum", title: "Two Sum" });
+    });
+    it("reports a check that stays broken once, with its message, and lifts when it recovers", () => {
+      ready(); reader.install(); reader.setMode("watching");
+      page.history.pushState({}, "", "/problems/two-sum/");
+      page.localStorage.setItem("two-sum_python_tabs", JSON.stringify([{ code: "next" }]));
+      vi.advanceTimersByTime(2000);
+      expect(failures()).toEqual([]);
+      vi.advanceTimersByTime(10_000);
+      expect(failures()).toEqual([{ type: "reader_check", payload: { ok: false, message: "Can't identify the problem title on this page" } }]);
+      page.document.querySelector("h1")!.textContent = "Two Sum";
+      vi.advanceTimersByTime(1000);
+      expect(events.filter(e => e.type === "reader_check").at(-1)).toEqual({ type: "reader_check", payload: { ok: true } });
+    });
+    it("does not report a code read that fails briefly", () => {
+      ready(); reader.install(); reader.setMode("watching");
+      page.localStorage.setItem("duplicate-integer_python_tabs", "[]");
+      vi.advanceTimersByTime(2000);
+      page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "back" }]));
+      vi.advanceTimersByTime(5000);
+      expect(failures()).toEqual([]);
+    });
+    it("gives a resumed period the same grace", () => {
+      reader.install(); reader.setMode("watching");
+      vi.advanceTimersByTime(10_000);
+      expect(failures()).toHaveLength(1);
+      reader.setMode("paused");
+      reader.setMode("watching");
+      vi.advanceTimersByTime(2000);
+      expect(failures()).toHaveLength(1);
+      vi.advanceTimersByTime(1000);
+      expect(failures()).toHaveLength(2);
+    });
   });
 
   it("gates events by mode and sends a line diff at most once per three seconds", () => {
