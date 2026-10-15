@@ -74,6 +74,25 @@ def test_model_unavailable_stops_and_names_model_and_effect(tmp_path, capsys):
     assert "two" not in calls and "three" not in calls
 
 
+def test_one_provider_timeout_fails_that_problem_and_the_batch_continues(tmp_path):
+    from openai import APITimeoutError
+    import httpx
+
+    calls = []
+
+    def write(slug, title, models, *, db_path):
+        calls.append(slug)
+        if slug == "one":
+            raise APITimeoutError(httpx.Request("POST", "https://example.test"))
+        return SimpleNamespace(status="checked")
+
+    report = run_batch(PROBLEMS, db_path=tmp_path / "db", report_path=tmp_path / "report.md",
+                       write=write, models=object())
+    assert calls == ["one", "two", "three"]
+    assert report.failed == 1 and report.stopped is None
+    assert "timeout" in report.failure_reasons["one"]
+
+
 def test_missing_setup_names_what_is_missing(tmp_path):
     def write(slug, title, models, *, db_path):
         raise RuntimeError("NUS_SOCLAAS_BASE_URL is required")

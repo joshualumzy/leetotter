@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from openai import APIConnectionError, APITimeoutError
+
 from companion.catalog import load_catalog
 from companion.model import ModelClient, ModelUnavailable
 from companion.reference import write_and_check
@@ -86,6 +88,12 @@ def run_batch(problems, *, db_path=None, report_path=REPORT_PATH, limit=None, sl
                     report.failure_reasons[key] = f"{error.model}: reference writing/checking paused"
                     report.stopped = f"{error.model} ({error}); batch paused at {key}"
                     status = "failed (model unavailable)"
+                except (TimeoutError, ConnectionError, APITimeoutError, APIConnectionError):
+                    # One slow or dropped call is not worth stopping a multi-hour run. The model client already
+                    # raises ModelUnavailable when the same model fails twice in a row, which does pause the batch.
+                    report.failed += 1
+                    report.failure_reasons[key] = "provider timeout or connection error; it is retried on the next run"
+                    status = "failed (provider timeout or connection error)"
                 except ValueError as error:
                     if not str(error).startswith("reference_writer reply invalid after retry:"):
                         report.failed += 1
