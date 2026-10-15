@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from websockets.asyncio.server import serve
+from websockets.exceptions import ConnectionClosed
 from companion.catalog import normalize_link
 from companion.history import import_history, import_status
 from companion.session import SessionCoordinator
@@ -159,7 +160,10 @@ async def _broadcast(outgoing, sender, broadcast=True):
             message = {**message, "ts": _timestamp()}
         targets = tuple(_clients) if broadcast and message["type"] == "session_state" else (sender,)
         for target in targets:
-            await target.send(json.dumps(message))
+            try:
+                await target.send(json.dumps(message))
+            except ConnectionClosed:
+                logger.warning("Connection closed before %s could be delivered", message["type"])
 
 
 async def _ticker():

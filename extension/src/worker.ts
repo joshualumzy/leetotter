@@ -47,6 +47,7 @@ const connection = new CompanionConnection(
     if (next.kind === "connected") {
       connection.send({ type: "get_import_status", ts: new Date().toISOString() });
       connection.send({ type: "session_get_state", ts: new Date().toISOString() });
+      resyncFocus();
     }
     if (next.kind === "error" && importPending) { importPending = false; panel({ kind: "import_error", message: next.message }); }
   },
@@ -83,8 +84,14 @@ function sendFocus(id: number): void {
   if (key === tab.lastFocus) return;
   if (send("focus_changed", payload)) tab.lastFocus = key;
 }
+// A focus change that could not be delivered, or happened while the session was not watching, is sent again.
+function resyncFocus(): void {
+  for (const [id, tab] of problemTabs) { tab.lastFocus = undefined; sendFocus(id); }
+}
 async function setMode(next: Mode): Promise<void> {
+  const changed = next !== mode;
   mode = next; await save();
+  if (changed) resyncFocus();
   const tabs = await chrome.tabs.query({ url: "https://neetcode.io/problems/*" });
   await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode }).catch(() => {})));
 }

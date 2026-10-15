@@ -155,6 +155,21 @@ describe("worker reader delivery", () => {
     expect(socket.sent).toHaveLength(before);
   });
 
+  it("sends a focus change that was dropped while disconnected once it reconnects", async () => {
+    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
+    socket.readyState = 1;
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, tab);
+    socket.readyState = 0;
+    focused.at(-1)?.(-1);
+    await vi.waitFor(() => expect(chrome.storage.session.set).toHaveBeenCalled());
+    const before = socket.sent.length;
+    socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
+    await vi.waitFor(() => expect(socket.sent.slice(before).map(item => item.type)).toContain("focus_changed"));
+    expect(socket.sent.at(-1).payload).toEqual({ tab_active: true, window_focused: false });
+  });
+
   it("reports focus once per switch and only after a problem opens", async () => {
     await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
     socket.readyState = 1;

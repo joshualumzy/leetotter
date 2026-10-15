@@ -18,6 +18,7 @@ export class CompanionConnection {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private delay = 250;
   private active = false;
+  private errored = false;
 
   constructor(
     private readonly url: string,
@@ -63,11 +64,18 @@ export class CompanionConnection {
     socket.onmessage = (event) => {
       try {
         const message = parseMessage(event.data);
+        if (this.errored && message.type !== "error" && message.type !== "status") {
+          // A rejected command is not a broken connection: the next healthy message clears it.
+          this.errored = false;
+          this.onState({ kind: "connected" });
+        }
         if (message.type === "status") {
+          this.errored = false;
           this.delay = 250;
           this.onState({ kind: "connected" });
         } else if (message.type === "error") {
           console.error("Companion error:", message.message);
+          this.errored = true;
           this.onState({ kind: "error", message: message.message });
         } else if (message.type === "import_status" || message.type === "import_result" || message.type === "session_state") {
           this.onMessage?.(message);

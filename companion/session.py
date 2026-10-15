@@ -107,7 +107,7 @@ class SessionCoordinator:
             return [self._state(now)]
         with open_store(self.db_path) as db:
             if kind == "session_start":
-                self.__init_state(now, payload["budget_minutes"])
+                self._reset(now, payload["budget_minutes"])
                 row = db.execute("INSERT INTO sessions (started_at, budget_minutes) VALUES (?, ?)",
                                  (now.isoformat(), self.budget_minutes))
                 self.session_id = row.lastrowid
@@ -144,12 +144,12 @@ class SessionCoordinator:
                 elif kind == "submit_result" and payload["accepted"] and self.problem and payload["slug"] == self.problem["slug"]:
                     if self.state == "paused":
                         self.pending_accept = True
-                    else:
+                    elif not self.accepted:
                         self.accepted = True
                         self._event(db, self.session_id, now.isoformat(), "accept_counted", {"slug": payload["slug"]})
         return [self._state(now)]
 
-    def __init_state(self, now, budget):
+    def _reset(self, now, budget):
         self.state = "active"
         self.budget_minutes = budget
         self.elapsed = 0.0

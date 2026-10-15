@@ -24,6 +24,18 @@ describe("companion connection", () => {
     expect(connection.send({ type: "code_snapshot" })).toBe(true);
     connection.stop();
   });
+  it("returns to connected after a rejected command once the companion sends a healthy message", () => {
+    const socket = new FakeSocket();
+    const states: string[] = [];
+    const connection = new CompanionConnection("ws://127.0.0.1:8765", () => socket, (state) => states.push(state.kind), () => {});
+    connection.start();
+    socket.onmessage?.({ data: '{"type":"status","ts":"2026-10-15T00:00:00Z","state":"connected"}' });
+    socket.onmessage?.({ data: '{"type":"error","ts":"2026-10-15T00:00:01Z","message":"session_pause requires an active session"}' });
+    expect(states.at(-1)).toBe("error");
+    socket.onmessage?.({ data: '{"type":"import_status","ts":"2026-10-15T00:00:02Z","imported":false}' });
+    expect(states.at(-1)).toBe("connected");
+    connection.stop();
+  });
   it("reconnects after the companion starts or restarts", () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
