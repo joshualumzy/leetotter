@@ -219,6 +219,7 @@ class ModelClient:
             raise ValueError(f"{model} is not configured for {role}")
         timeout = self.config.timeouts[f"planner_{planner_phase}" if role == "planner" else role]
         request_messages = list(messages)
+        retried = False  # one transient retry per call, however many validation attempts there are
         for attempt in range(2):
             self.limiter.acquire(background=role in BACKGROUND_ROLES)
             kwargs = {"model": model, "messages": request_messages, "timeout": timeout}
@@ -232,7 +233,6 @@ class ModelClient:
             streamed = self.config.streaming.get(role, False)
             if streamed:
                 kwargs.update(stream=True, stream_options={"include_usage": True})
-            retried = False
             while True:
                 started = time.perf_counter()
                 pieces = []
@@ -270,6 +270,7 @@ class ModelClient:
                         retried = True
                         logger.warning("%s call to %s failed (%s); retrying once", role, model, error)
                         time.sleep(TRANSIENT_RETRY_DELAY)
+                        self.limiter.acquire(background=role in BACKGROUND_ROLES)
                         continue
                     eligible = isinstance(error, (TimeoutError, ConnectionError, APITimeoutError, APIConnectionError)) or (status is not None and status >= 500) or _model_not_found(error, model)
                     with self._lock:

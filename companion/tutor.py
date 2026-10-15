@@ -182,7 +182,7 @@ Rules:
 - Never state the time or space complexity of their approach or any other, unless they ask after solving it: their own complexity analysis is measured.
 - Refer to their code concretely (a line, a variable name) so they can see you followed it. It may be mid-edit. You can't run it; the run results show what NeetCode returned. If it's only NeetCode's starter code (the empty function signature), they haven't started writing yet.
 - If the problem statement isn't available, don't invent details: work from the title, the test cases in the run results and the reference, and ask them when a detail matters and you're unsure.
-- Keep replies short for a narrow panel: usually one to four sentences, and any code only as long as it must be. You may use `inline code` and fenced code blocks (with real line breaks and indentation) for code, short paragraphs separated by blank lines, and simple `- ` lists; no headings, tables, images or links.
+- Keep replies short for a narrow panel: usually one to four sentences, and any code only as long as it must be. You may use `inline code` and fenced code blocks (each line of code on its own line, indented as in Python) for code, short paragraphs separated by blank lines, and simple `- ` lists; no headings, tables, images or links.
 
 Your reply is JSON with these fields:
 - gap: one of the gaps above.
@@ -345,10 +345,12 @@ def _request(request: TutorRequest, events):
                 "solution, give it only if lighter help has already been tried or they've clearly decided to stop; otherwise give the next rung.")
     if request.press_index == 1:
         return ('## Now\nThe learner pressed "I need help" for the first time on this problem. ' + concrete +
-                " Give the smallest hint beyond what you've already given: just enough to get them unstuck, never the solution.")
+                " Give the smallest hint beyond what you've already given: just enough to get them unstuck, never the solution. "
+                "Label it with a real gap and a real help kind (never gap none, never help_kind none, never full_solution).")
     return (f'## Now\nThe learner pressed "I need help" again: press {request.press_index} on this problem. {concrete} '
             "Go exactly one rung more concrete than your last help, at once; give the full solution only when the ladder has "
-            "genuinely reached it. Don't ask a diagnostic question before helping; you may end with one only if it moves them forward.")
+            "genuinely reached it. Don't ask a diagnostic question before helping; you may end with one only if it moves them forward. "
+            "A press always gets real help, so never label it gap none or help_kind none.")
 
 
 def build_messages(problem: dict, events: list, *, reference: StoredReference | None, prior_solve: bool,

@@ -113,8 +113,42 @@ describe("panel actions", () => {
   it("offers a Reload tab button when the page reader is missing", async () => {
     await bindPanelTab();
     notify({ kind: "reader_error", message: "Leetotter can't see this NeetCode page. Reload the tab." });
+    activeTab = 8; activated({ tabId: 8, windowId: 3 });   // looking at another tab: the session's tab (7) is the one to reload
+    await new Promise(resolve => setTimeout(resolve, 0));
     click("reload-tab");
-    expect(chrome.tabs.reload).toHaveBeenCalledWith(expect.any(Number));
+    expect(chrome.tabs.reload).toHaveBeenCalledWith(7);
+  });
+  it("refuses a second send in the moment before the companion confirms the first, and keeps the draft", async () => {
+    await bindPanelTab();
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    const input = document.getElementById("chat-input") as HTMLTextAreaElement;
+    input.value = "A";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    click("chat-send");   // sent; no tutor_start yet
+    sendMessage.mockClear();
+    input.value = "B";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    click("chat-send");
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(input.value).toBe("B");
+    expect(document.querySelectorAll(".chat-you")).toHaveLength(1);
+  });
+  it("keeps the waiting indicator while a withdrawn first attempt is retried, and shows the longer-wait line after 10 s", () => {
+    vi.useFakeTimers();
+    try {
+      notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+      notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 6, request: "help", press_index: 1 } });
+      expect(document.querySelector(".chat-waiting")).not.toBeNull();
+      expect((document.querySelector(".wait-more") as HTMLElement).hidden).toBe(true);
+      vi.advanceTimersByTime(10_500);
+      expect((document.querySelector(".wait-more") as HTMLElement).hidden).toBe(false);
+      notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 6, attempt: 0, text: "Wrong " } });
+      vi.advanceTimersByTime(500);
+      notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 6, attempt: 1, text: "" } });
+      vi.advanceTimersByTime(500);
+      expect(document.querySelector(".chat-reply")?.textContent || "").toBe("");
+      expect(document.querySelector(".chat-waiting")).not.toBeNull();
+    } finally { vi.useRealTimers(); }
   });
   it("keeps a single composer, and the same text box, across the redraws the timer causes", () => {
     const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;

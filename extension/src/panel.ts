@@ -1,5 +1,5 @@
 import type { ConnectionState } from "./connection";
-import type { SessionState, SettingsState } from "./protocol";
+import { MISSING_READER_MESSAGE, type SessionState, type SettingsState } from "./protocol";
 import { panelView, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
 import { otter, touchForDate } from "./otter";
@@ -306,11 +306,28 @@ function fillBubble(node: HTMLElement, turn: ChatTurn, text: string): void {
   if (turn.kind === "reply") paintReply(node, text);
   else { node.textContent = text; painted.set(node, text); }
 }
-// Shown from the moment you ask until the first word arrives; the CSS adds the longer-wait line on its own after 10 s.
+// Shown from the moment you ask until the first word arrives (and again if the first attempt is withdrawn and retried);
+// the longer-wait line is added by a timer once it has been waiting 10 s, and the wait survives redraws.
+const WAIT_MORE_MS = 10_000;
 const waiting = element("div", "chat-line chat-waiting");
-waiting.setAttribute("role", "status");
-waiting.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="wait-text">Thinking it through</span><span class="wait-more">, still working on it</span>';
-function waitingNode(): HTMLElement { return waiting; }
+waiting.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="wait-text">Thinking it through</span><span class="wait-more" hidden>, still working on it</span>';
+let waitSince: number | null = null;
+let waitTimer = 0;
+// True from the moment you send (before the companion's tutor_start arrives) until a reply has started to show.
+function awaitingReply(): boolean {
+  const last = chat.turns.at(-1);
+  if (!last || chat.notice) return false;
+  if (last.kind === "press" || last.kind === "chat") return true;
+  return last.kind === "reply" && !last.text && chat.streaming === last.turn_id && !pacers.get(last.turn_id)?.pacer.visible;
+}
+function updateWaiting(): void {
+  window.clearTimeout(waitTimer);
+  if (!awaitingReply()) { waitSince = null; return; }
+  waitSince ??= Date.now();
+  const left = WAIT_MORE_MS - (Date.now() - waitSince);
+  (waiting.querySelector(".wait-more") as HTMLElement).hidden = left > 0;
+  if (left > 0) waitTimer = window.setTimeout(updateWaiting, left);
+}
 function nearBottom(): boolean { return body!.scrollHeight - body!.scrollTop - body!.clientHeight < 60; }
 function scrollToEnd(): void { body!.scrollTop = body!.scrollHeight; }
 function renderChat(): void {
@@ -328,8 +345,8 @@ function renderChat(): void {
     }
     return node;
   });
-  const last = chat.turns.at(-1);
-  if (last && (last.kind === "press" || last.kind === "chat") && !chat.notice) nodes.push(waitingNode());
+  if (awaitingReply()) nodes.push(waiting);
+  updateWaiting();
   if (chat.notice) nodes.push(element("div", "chat-notice", chat.notice));
   if (nodes.length !== stream.children.length || nodes.some((node, index) => stream.children[index] !== node)) stream.replaceChildren(...nodes);
   if (follow) scrollToEnd();
@@ -348,7 +365,7 @@ function renderComposer(view: PanelView): void {
   input.setAttribute("aria-label", "Message the Tutor"); input.value = draft;
   const arrow = button("chat-send", "➤", "chat-send"); arrow.setAttribute("aria-label", "Send message");
   box.append(input, arrow);
-  const reason = appendText(composer!, "div", "", "composer-reason"); reason.id = "composer-reason";
+  const reason = appendText(composer!, "div", "", "composer-reason"); reason.id = "composer-reason"; reason.setAttribute("role", "status");
   const note = appendText(composer!, "div", composerNote, "composer-note"); note.id = "composer-note";
   composer!.prepend(help, box);
   resizeComposer(input);
@@ -367,7 +384,7 @@ function updateComposer(): void {
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   const arrow = document.getElementById("chat-send") as HTMLButtonElement | null;
   if (!help || !input || !arrow) return;
-  const availability = composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0);
+  const availability = composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0 || awaitingReply());
   help.disabled = !availability.enabled;
   input.disabled = !availability.typing;
   arrow.disabled = !availability.enabled || !draft.trim();
@@ -448,7 +465,8 @@ function render(): void {
   // The conversation survives a redraw as the same elements, so scroll position, selection and code scrolling stay put.
   const keptStream = document.getElementById("chat-stream");
   const scrollTop = body!.scrollTop;
-  const followEnd = nearBottom();
+  // Settings open at the top of the panel: don't jump to the end of the conversation.
+  const followEnd = nearBottom() && !settingsOpen;
   body!.replaceChildren();
   if (view.body === "another_tab") {
     const card = element("section", "card");
@@ -468,7 +486,7 @@ function render(): void {
     const alert = appendText(body!, "div", message, "alert");
     alert.setAttribute("role", "alert");
     // After an extension reload the open NeetCode tab keeps no reader; one click reloads it.
-    if (message.endsWith("Reload the tab.") && panelTabId != null) alert.append(" ", button("reload-tab", "Reload tab", "btn"));
+    if (message === MISSING_READER_MESSAGE && sessionTabId != null) alert.append(" ", button("reload-tab", "Reload tab", "btn"));
   }
   if (!settingsOpen) {
     if (view.body === "first_run") body!.append(firstRun());
@@ -546,7 +564,7 @@ async function sendChat(): Promise<void> {
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   if (!input || input.disabled) return;
   // Typing is allowed while the Tutor answers, sending isn't: the draft stays and the reason shows under the box.
-  if (!composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0).enabled) { updateComposer(); return; }
+  if (!composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0 || awaitingReply()).enabled) { updateComposer(); return; }
   const result = messageToSend(input.value);
   composerNote = result.error;
   if (!result.text) { updateComposer(); return; }
@@ -579,7 +597,7 @@ composer.addEventListener("keydown", event => {
 body.addEventListener("click", event => {
   const id = (event.target as HTMLElement).closest("button")?.id;
   if (id === "close-settings") { settingsOpen = false; render(); }
-  if (id === "reload-tab" && panelTabId != null) void chrome.tabs.reload(panelTabId);
+  if (id === "reload-tab" && sessionTabId != null) void chrome.tabs.reload(sessionTabId);
   if (id === "save-first-name") saveName("first-name");
   if (id === "save-settings-name") saveName("settings-name");
   if (id === "skip-name") void send({ kind: "skip_name" });

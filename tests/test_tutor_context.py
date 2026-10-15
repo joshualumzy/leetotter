@@ -197,6 +197,6 @@ def test_the_prompt_guards_the_measured_skills_and_uses_only_invented_examples()
 
 def test_prompt_allows_light_markdown_but_no_headings_or_links():
     from companion.tutor import SYSTEM_PROMPT
-    assert "fenced code blocks (with real line breaks and indentation)" in SYSTEM_PROMPT
+    assert "fenced code blocks (each line of code on its own line, indented as in Python)" in SYSTEM_PROMPT
     assert "no headings, tables, images or links" in SYSTEM_PROMPT
     assert "Plain text;" not in SYSTEM_PROMPT

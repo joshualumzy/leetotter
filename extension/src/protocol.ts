@@ -33,6 +33,7 @@ export type StoredTurn =
   | { turn_id: number; kind: "failed"; reason: string; message: string };
 export type ChatState = { type: "chat_state"; ts: string; turns: StoredTurn[]; streaming: number | null };
 export type ReaderMessageType = "problem_opened" | "problem_statement" | "code_changed" | "code_snapshot" | "run_result" | "submit_result" | "focus_changed" | "reader_check";
+export const MISSING_READER_MESSAGE = "Leetotter can't see this NeetCode page. Reload the tab.";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
 const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_overrun", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", ...readerTypes]);

@@ -1,5 +1,5 @@
 import { CompanionConnection, type ConnectionState } from "./connection";
-import { readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type SessionState, type SettingsState } from "./protocol";
+import { MISSING_READER_MESSAGE, readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type SessionState, type SettingsState } from "./protocol";
 import { reactionForReaderEvent } from "./reader-reaction";
 
 declare const __LEETOTTER_PORT__: number;
@@ -23,7 +23,6 @@ let disconnectResumeSent = false;
 let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
 let boundFocus: BoundFocus | undefined;
 const failedModeTabs = new Set<number>();
-const missingReaderMessage = "Leetotter can't see this NeetCode page. Reload the tab.";
 function panel(message: unknown): void { chrome.runtime.sendMessage(message).catch(() => {}); }
 function showReaderAlert(): void { panel({ kind: "reader_error", message: readerError || notice }); }
 let savedInOrder: Promise<void> = Promise.resolve();
@@ -167,8 +166,8 @@ async function setMode(next: Mode): Promise<void> {
     } catch {
       if (mode !== "watching" || tab.id !== sessionTabId || !problemUrl(tab.url) || failedModeTabs.has(tab.id)) return;
       failedModeTabs.add(tab.id);
-      send("reader_check", { ok: false, message: missingReaderMessage });
-      readerError = missingReaderMessage;
+      send("reader_check", { ok: false, message: MISSING_READER_MESSAGE });
+      readerError = MISSING_READER_MESSAGE;
       showReaderAlert();
       await save();
     }

@@ -297,3 +297,28 @@ def test_a_5xx_is_retried_once_but_a_timeout_or_a_4xx_is_not(tmp_path, monkeypat
     with pytest.raises(Exception):
         instance.call_role("checker", message(), Reply)
     assert len(calls.requests) == 1
+
+
+def test_a_streamed_call_is_retried_when_nothing_had_streamed_and_only_the_retry_reaches_on_delta(tmp_path, monkeypatch):
+    monkeypatch.setattr("companion.model.TRANSIENT_RETRY_DELAY", 0)
+    instance, calls, path = model_client(tmp_path, monkeypatch, ConnectionError("reset"), '{"answer": "ok"}')
+    seen = []
+    assert instance.call_role("tutor", message(), Reply, on_delta=lambda attempt, piece: seen.append(piece)).answer == "ok"
+    assert len(calls.requests) == 2 and "".join(seen) == '{"answer": "ok"}'
+    assert [row[-1] for row in rows(path)] == ["valid"]
+    assert set(instance._failures.values()) == {0}   # a recovered call leaves no failure on the books
+
+
+def test_a_stream_that_fails_after_text_was_sent_is_not_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr("companion.model.TRANSIENT_RETRY_DELAY", 0)
+
+    def broken_stream():
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ans'))], usage=None)
+        raise ConnectionError("dropped mid-stream")
+
+    instance, calls, path = model_client(tmp_path, monkeypatch, broken_stream(), '{"answer": "ok"}')
+    seen = []
+    with pytest.raises(ConnectionError, match="dropped"):
+        instance.call_role("tutor", message(), Reply, on_delta=lambda attempt, piece: seen.append(piece))
+    assert len(calls.requests) == 1 and seen == ['{"ans']
+    assert [row[-1] for row in rows(path)] == ["error"]
