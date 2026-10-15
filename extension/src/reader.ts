@@ -62,6 +62,7 @@ export function lineDiff(before: string, after: string) {
 
 export type ReaderEvent = { type: string; payload: RecordValue };
 type CodeRead = { text: string; source: "editor" | "stored" };
+const codeLines = ".my-code-editor > .monaco-editor .view-lines .view-line";
 export class NeetCodeReader {
   private mode: WatchMode = "idle";
   private slug = "";
@@ -163,16 +164,18 @@ export class NeetCodeReader {
   private code(): CodeRead {
     const raw = this.page.localStorage.getItem(`${this.slug}_python_tabs`);
     if (raw === null) {
-      const lines = Array.from(this.page.document.querySelectorAll<HTMLElement>(".monaco-editor .view-lines .view-line"));
+      const lines = Array.from(this.page.document.querySelectorAll<HTMLElement>(codeLines));
       const text = lines
         .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top))
         .map(line => (line.textContent ?? "").replace(/\u00a0/g, " ").replace(/\n+$/, ""));
-      if (!text.some(line => line.length > 0)) throw new Error("Can't read the editor on this page");
+      if (!text.some(line => line.length > 0)) throw new Error("Can't read the editor on this page (no code found in the editor)");
       return { text: text.join("\n"), source: "editor" };
     }
     let tabs: unknown;
-    try { tabs = JSON.parse(raw); } catch { throw new Error("Can't read the editor on this page"); }
-    if (!Array.isArray(tabs) || tabs.length !== 1 || typeof tabs[0]?.code !== "string") throw new Error("Can't read the editor on this page");
+    try { tabs = JSON.parse(raw); } catch { throw new Error("Can't read the editor on this page (stored code isn't valid JSON)"); }
+    if (!Array.isArray(tabs)) throw new Error("Can't read the editor on this page (stored code isn't an editor tabs list)");
+    if (tabs.length !== 1) throw new Error(`Can't read the editor on this page (stored code has ${tabs.length} editor tabs, expected 1)`);
+    if (typeof tabs[0]?.code !== "string" || !tabs[0].code.trim()) throw new Error("Can't read the editor on this page (stored code has no text)");
     return { text: tabs[0].code, source: "stored" };
   }
   private check(): { title: string; code: CodeRead } {
@@ -181,7 +184,7 @@ export class NeetCodeReader {
     if (!title) throw new Error("Can't identify the problem title on this page");
     // NeetCode titles differ from their slugs, so staleness is the previous problem's title still showing.
     if (this.titleOf && this.titleOf.slug !== this.slug && this.titleOf.title === title) throw new Error("Can't identify the problem title on this page");
-    if (!this.page.document.querySelector(".monaco-editor")) throw new Error("Can't find the editor on this page");
+    if (!this.page.document.querySelector(codeLines)) throw new Error("Can't find the editor on this page");
     const code = this.code();
     if (!this.hooked) throw new Error("Can't see run results on this page (not installed)");
     return { title, code };

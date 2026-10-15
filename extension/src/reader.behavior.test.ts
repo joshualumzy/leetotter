@@ -23,8 +23,17 @@ beforeEach(() => {
 afterEach(() => { reader.dispose(); dom.window.close(); vi.useRealTimers(); });
 
 function ready() {
-  page.document.body.innerHTML = "<h1>Contains Duplicate</h1><div class='monaco-editor'></div>";
+  page.document.body.innerHTML = `<h1>Contains Duplicate</h1><div class="editor-shell"><div class="my-code-editor">
+    <div class="monaco-editor no-user-select mac vs-dark"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div>
+  </div></div>`;
   page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "one\ntwo" }]));
+}
+function diffEditors() {
+  return `<div class="monaco-diff-editor side-by-side">
+    <div class="editor original"><div class="monaco-editor original-in-monaco-diff-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div></div>
+    <div class="editor modified"><div class="monaco-editor modified-in-monaco-diff-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div></div>
+    <div class="monaco-editor gutter"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div>
+  </div>`;
 }
 function questionTab(statement: string) {
   const tab = page.document.createElement("div");
@@ -38,36 +47,52 @@ async function flushUntil(test: () => boolean) { await vi.waitFor(() => { expect
 
 describe("page reader", () => {
   it("reads untouched starter code from Monaco lines in visual order", () => {
-    page.document.body.innerHTML = `<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines">
-      <div class="view-line" style="top: 38px">\u00a0\u00a0def containsDuplicate(self, nums):</div>
-      <div class="view-line" style="top: 0px">class Solution:</div>
-      <div class="view-line" style="top: 57px">\u00a0\u00a0\u00a0\u00a0pass\n</div>
-      <div class="view-line" style="top: 19px">\u00a0\u00a0def __init__(self):</div>
-    </div></div>`;
+    page.history.pushState({}, "", "/problems/implement-prefix-tree/");
+    const code = [
+      "class PrefixTree:", "    def __init__(self):", "        self.root = {}", "", "    def insert(self, word):",
+      "        node = self.root", "        for char in word:", "            node = node.setdefault(char, {})",
+      "        node['#'] = True", "", "    def search(self, word):", "        return False", "",
+      "    def startsWith(self, prefix):",
+    ];
+    const lines = [2, 0, 3, 1, ...Array.from({ length: 10 }, (_, i) => i + 4)]
+      .map(i => `<div class="view-line" style="top: ${i * 24}px">${code[i]}</div>`).join("");
+    page.document.body.innerHTML = `<h1>Implement Prefix Tree</h1><div class="editor-shell"><div class="my-code-editor"><div class="monaco-editor no-user-select mac vs-dark"><div class="view-lines">${lines}</div></div>${diffEditors()}</div></div>`;
     reader.install(); reader.setMode("watching");
     expect(events.find(e => e.type === "reader_check")?.payload).toEqual({ ok: true });
     expect(events.find(e => e.type === "code_snapshot")?.payload.code).toBe(
-      "class Solution:\n  def __init__(self):\n  def containsDuplicate(self, nums):\n    pass",
+      "class PrefixTree:\n    def __init__(self):\n        self.root = {}\n\n    def insert(self, word):\n        node = self.root\n        for char in word:\n            node = node.setdefault(char, {})\n        node['#'] = True\n\n    def search(self, word):\n        return False\n\n    def startsWith(self, prefix):",
     );
   });
+  it("cannot find a code editor when the page has only diff editor pieces", () => {
+    page.document.body.innerHTML = `<h1>Contains Duplicate</h1><div class="my-code-editor">${diffEditors()}</div>`;
+    reader.install(); reader.setMode("watching");
+    expect(events.at(-1)?.payload.message).toBe("Can't find the editor on this page");
+  });
   it("rejects a broken stored value even when Monaco lines are readable", () => {
-    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px">starter</div></div></div>';
+    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="my-code-editor"><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px">starter</div></div></div></div>';
     reader.install();
-    for (const value of ["invalid json", "[]", '[{"code":123}]']) {
+    for (const [value, reason] of [
+      ["invalid json", "stored code isn't valid JSON"],
+      ["{}", "stored code isn't an editor tabs list"],
+      ["[]", "stored code has 0 editor tabs, expected 1"],
+      ['[{"code":"one"},{"code":"two"}]', "stored code has 2 editor tabs, expected 1"],
+      ['[{"code":123}]', "stored code has no text"],
+      ['[{"code":""}]', "stored code has no text"],
+    ]) {
       page.localStorage.setItem("duplicate-integer_python_tabs", value);
       reader.setMode("watching");
-      expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: "Can't read the editor on this page" } });
+      expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: `Can't read the editor on this page (${reason})` } });
       reader.setMode("idle");
     }
     expect(events.some(e => e.type === "code_snapshot")).toBe(false);
   });
   it("rejects an absent key when no Monaco line text is available", () => {
-    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div>';
+    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="my-code-editor"><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div></div>';
     reader.install(); reader.setMode("watching");
-    expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: "Can't read the editor on this page" } });
+    expect(events.at(-1)).toEqual({ type: "reader_check", payload: { ok: false, message: "Can't read the editor on this page (no code found in the editor)" } });
   });
   it("snapshots each source switch and diffs only within the new source", () => {
-    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px">starter</div></div></div>';
+    page.document.body.innerHTML = '<h1>Contains Duplicate</h1><div class="my-code-editor"><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px">starter</div></div></div></div>';
     reader.install(); reader.setMode("watching");
     page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "stored" }]));
     expect(events.filter(e => e.type === "code_snapshot").map(e => e.payload.code)).toEqual(["starter", "stored"]);
@@ -311,7 +336,7 @@ describe("page reader", () => {
     // The write schedules a diff; the stored tabs disappear before its timer fires.
     page.localStorage.removeItem("duplicate-integer_python_tabs");
     vi.advanceTimersByTime(1);
-    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page");
+    expect(String(events.at(-1)?.payload.message)).toMatch(/^Can't read the editor on this page \(/);
   });
   it("names each failing self-check, including two tabs and a missing hook", () => {
     reader.setMode("watching");
@@ -319,12 +344,12 @@ describe("page reader", () => {
     page.document.body.innerHTML = "<h1>Contains Duplicate</h1>";
     reader.open();
     expect(events.at(-1)?.payload.message).toBe("Can't find the editor on this page");
-    page.document.body.innerHTML += "<div class='monaco-editor'></div>";
+    page.document.body.innerHTML += '<div class="my-code-editor"><div class="monaco-editor"><div class="view-lines"><div class="view-line" style="top: 0px"></div></div></div></div>';
     reader.open();
-    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page");
+    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page (no code found in the editor)");
     page.localStorage.setItem("duplicate-integer_python_tabs", JSON.stringify([{ code: "one" }, { code: "two" }]));
     reader.open();
-    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page");
+    expect(events.at(-1)?.payload.message).toBe("Can't read the editor on this page (stored code has 2 editor tabs, expected 1)");
     ready();
     reader.open();
     expect(String(events.at(-1)?.payload.message)).toContain("Can't see run results on this page (");
