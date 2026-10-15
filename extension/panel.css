@@ -251,6 +251,118 @@ button {
   gap:10px
 }
 
+.chat-stream {
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  min-height:min-content;
+}
+
+.chat-line {
+  max-width:88%;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+
+.chat-you,.chat-reply {
+  padding:9px 12px;
+  border-radius:14px;
+}
+
+.chat-you {
+  align-self:flex-end;
+  background:var(--acc);
+  color:#fff;
+  border-bottom-right-radius:4px;
+}
+
+.chat-reply {
+  align-self:flex-start;
+  background:var(--soft);
+  border-bottom-left-radius:4px;
+}
+
+.chat-press,.chat-notice {
+  align-self:center;
+  color:var(--mute);
+  font-size:12px;
+}
+
+.chat-error {
+  align-self:flex-start;
+  color:#b42318;
+  font-size:12px;
+}
+
+.panel[data-theme="dark"] .chat-error { color:#ffb4b4; }
+
+.stream-word { animation:word-in .28s ease-out both; }
+@keyframes word-in { from { opacity:0; } to { opacity:1; } }
+
+.composer {
+  border-top:1px solid var(--line);
+  padding:10px 12px 12px;
+  background:var(--bg);
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+}
+
+.composer[hidden] { display:none; }
+
+.help-request {
+  align-self:flex-start;
+  border:1px solid var(--line);
+  border-radius:99px;
+  background:var(--card);
+  color:var(--ink);
+  padding:6px 12px;
+  font-weight:600;
+}
+
+.composer-box {
+  display:flex;
+  align-items:flex-end;
+  gap:4px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--card);
+  padding:6px;
+}
+
+.chat-input {
+  flex:1;
+  min-width:0;
+  border:0;
+  outline:0;
+  resize:none;
+  background:transparent;
+  color:var(--ink);
+  font:inherit;
+  line-height:20px;
+  padding:4px;
+  overflow-y:auto;
+}
+
+.chat-input::placeholder { color:var(--mute); }
+
+.chat-send {
+  border:0;
+  border-radius:8px;
+  background:var(--acc);
+  color:#fff;
+  width:30px;
+  height:30px;
+}
+
+.composer button:disabled { opacity:.45; cursor:not-allowed; }
+.composer-reason,.composer-note { color:var(--mute); font-size:12px; }
+.composer-reason:empty,.composer-note:empty { display:none; }
+
+@media(prefers-reduced-motion:reduce) {
+  .stream-word { animation:none; }
+}
+
 .card {
   border:1px solid var(--line);
   border-radius:14px;

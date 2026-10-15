@@ -73,6 +73,29 @@ describe("companion connection", () => {
     connection.stop();
   });
 
+  it("delivers Tutor events and rejects malformed chat snapshots", () => {
+    const socket = new FakeSocket();
+    const received: string[] = [];
+    const states: string[] = [];
+    const connection = new CompanionConnection(
+      "ws://127.0.0.1:8765", () => socket,
+      state => states.push(state.kind),
+      message => received.push(message.type),
+    );
+    connection.start();
+    for (const event of [
+      { type: "tutor_start", turn_id: 3, request: "help", press_index: 1 },
+      { type: "tutor_chunk", turn_id: 3, attempt: 1, text: "Try " },
+      { type: "tutor_done", turn_id: 3, reply_text: "Try a set", gap: "pattern_not_recognised", gap_note: null, help_kind: "question", follow_up_question: null },
+      { type: "tutor_error", turn_id: null, message: "Paused" },
+      { type: "chat_state", turns: [], streaming: null },
+    ]) socket.onmessage?.({ data: JSON.stringify({ ...event, ts: "now" }) });
+    expect(received).toEqual(["tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state"]);
+    socket.onmessage?.({ data: JSON.stringify({ type: "chat_state", ts: "now", turns: [{ kind: "reply" }], streaming: null }) });
+    expect(states.at(-1)).toBe("error");
+    connection.stop();
+  });
+
   it("sends an application ping every 20 seconds while connected", () => {
     vi.useFakeTimers();
     const socket = new FakeSocket();

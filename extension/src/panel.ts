@@ -4,6 +4,10 @@ import { panelView, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
 import { otter, touchForDate } from "./otter";
 import type { ReaderReaction } from "./reader-reaction";
+import { applyChat, emptyChat, type ChatTurn } from "./chat-state";
+import { StreamPacer } from "./stream-pacer";
+import { composerAvailability, enterAction, messageToSend } from "./composer-rules";
+import type { ChatState, TutorMessage } from "./protocol";
 
 const root = document.getElementById("panel");
 const body = document.getElementById("session-body");
@@ -15,7 +19,8 @@ const timer = document.getElementById("timer");
 const elapsed = document.getElementById("elapsed");
 const budget = document.getElementById("budget");
 const controls = document.getElementById("controls");
-if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !elapsed || !budget || !controls) throw new Error("Panel elements are missing");
+const composer = document.getElementById("composer");
+if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !elapsed || !budget || !controls || !composer) throw new Error("Panel elements are missing");
 
 let transport: ConnectionState = { kind: "offline" };
 let session: SessionState | undefined;
@@ -44,6 +49,12 @@ let reactionTimeout: number | undefined;
 let perkTimeout: number | undefined;
 let lastTypingReaction = 0;
 let pointer: { x: number; y: number } | null = null;
+let chat = emptyChat();
+let chatSlug: string | null = null;
+let draft = "";
+let composerNote = "";
+const pacers = new Map<number, { attempt: number; pacer: StreamPacer }>();
+let paceTimer: number | undefined;
 const reactionCaptions = {
   typing: ["I'm here."],
   run_pass: ["Ooh, all green!", "Look at that."],
@@ -162,6 +173,10 @@ async function refreshBinding(id: number | null): Promise<void> {
 function newRemark(view: PanelView): void {
   if (transport.kind === "error") { remarkNode!.textContent = `Tutor service error: ${transport.message}`; return; }
   if (nameAcknowledgement) { remarkNode!.textContent = nameAcknowledgement; return; }
+  if (chat.streaming !== null && !chat.turns.some(turn => turn.turn_id === chat.streaming && turn.kind === "reply" && turn.text)) {
+    remarkNode!.textContent = remark("thinking", { name: settings?.name || null, minutesLeft: null, now: new Date() });
+    return;
+  }
   const key = `${view.remarkPool}:${session?.state || "idle"}:${session?.paused_reason || ""}:${session?.overrun_prompt || false}:${session?.problem?.slug || ""}`;
   if (key !== remarkKey) {
     const minutesLeft = session?.budget_minutes == null ? null : Math.ceil((session.budget_minutes * 60 - currentSeconds()) / 60);
@@ -268,9 +283,132 @@ function historyRow(): HTMLElement {
   row.append(importButton); appendText(row, "p", importResult).id = "import-result";
   return row;
 }
+function chatNode(turn: ChatTurn): HTMLElement {
+  const className = { press: "chat-press", chat: "chat-you", reply: "chat-reply", failed: "chat-error" }[turn.kind];
+  const node = element("div", `chat-line ${className}`);
+  node.dataset.key = `${turn.turn_id}:${turn.kind}`;
+  if (turn.kind === "press") node.textContent = "You asked for a hint";
+  else if (turn.kind === "failed") { node.textContent = turn.message || "The Tutor couldn't answer."; node.setAttribute("role", "alert"); }
+  else node.textContent = turn.kind === "reply" && pacers.has(turn.turn_id) ? pacers.get(turn.turn_id)!.pacer.visible : turn.text || "";
+  return node;
+}
+function nearBottom(): boolean { return body!.scrollHeight - body!.scrollTop - body!.clientHeight < 60; }
+function scrollToEnd(): void { body!.scrollTop = body!.scrollHeight; }
+function renderChat(): void {
+  const stream = document.getElementById("chat-stream");
+  if (!stream) return;
+  const follow = nearBottom();
+  const existing = new Map([...stream.querySelectorAll<HTMLElement>("[data-key]")].map(node => [node.dataset.key, node]));
+  const nodes = chat.turns.map(turn => {
+    const key = `${turn.turn_id}:${turn.kind}`;
+    const node = existing.get(key) || chatNode(turn);
+    if (turn.kind === "reply" && pacers.has(turn.turn_id)) {
+      // The pacer owns visible text until it has played the whole answer.
+    } else if (turn.kind === "reply" || turn.kind === "chat" || turn.kind === "failed") {
+      node.textContent = turn.kind === "failed" ? turn.message || "" : turn.text || "";
+    }
+    return node;
+  });
+  if (chat.notice) nodes.push(element("div", "chat-notice", chat.notice));
+  if (nodes.length !== stream.children.length || nodes.some((node, index) => stream.children[index] !== node)) stream.replaceChildren(...nodes);
+  if (follow) scrollToEnd();
+  updateComposer();
+}
+function renderComposer(view: PanelView): void {
+  const visible = ["active", "paused", "overrun"].includes(view.body);
+  composer!.hidden = !visible || settingsOpen;
+  if (composer!.hidden) { composer!.replaceChildren(); return; }
+  const help = button("help-request", "I need help", "help-request");
+  const box = element("div", "composer-box");
+  const input = element("textarea", "chat-input") as HTMLTextAreaElement;
+  input.id = "chat-input"; input.placeholder = "Message the Tutor…"; input.rows = 2;
+  input.setAttribute("aria-label", "Message the Tutor"); input.value = draft;
+  const arrow = button("chat-send", "➤", "chat-send"); arrow.setAttribute("aria-label", "Send message");
+  box.append(input, arrow);
+  const reason = appendText(composer!, "div", "", "composer-reason"); reason.id = "composer-reason";
+  const note = appendText(composer!, "div", composerNote, "composer-note"); note.id = "composer-note";
+  composer!.prepend(help, box);
+  resizeComposer(input);
+  updateComposer();
+}
+function resizeComposer(input: HTMLTextAreaElement): void {
+  input.style.height = "auto";
+  const style = window.getComputedStyle(input);
+  const lineHeight = Number.parseFloat(style.lineHeight) || 20;
+  const limit = Math.max(lineHeight * 2, root!.clientHeight * .4);
+  input.style.height = `${Math.min(Math.max(input.scrollHeight, lineHeight * 2 + 18), limit)}px`;
+  input.scrollTop = input.scrollHeight;
+}
+function updateComposer(): void {
+  const help = document.getElementById("help-request") as HTMLButtonElement | null;
+  const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+  const arrow = document.getElementById("chat-send") as HTMLButtonElement | null;
+  if (!help || !input || !arrow) return;
+  const availability = composerAvailability(session?.state, Boolean(session?.problem && onCurrentProblem()), chat.streaming !== null || pacers.size > 0);
+  help.disabled = input.disabled = !availability.enabled;
+  arrow.disabled = !availability.enabled || !draft.trim();
+  document.getElementById("composer-reason")!.textContent = availability.reason;
+  document.getElementById("composer-note")!.textContent = composerNote;
+}
+function pace(): void {
+  window.clearTimeout(paceTimer);
+  let pending = false;
+  const follow = nearBottom();
+  for (const [id, entry] of pacers) {
+    const frame = entry.pacer.tick(Date.now());
+    const node = document.querySelector<HTMLElement>(`#chat-stream [data-key="${id}:reply"]`);
+    if (node) {
+      const addedText = frame.added.join("");
+      if (!frame.finished) {
+        const prefix = frame.text.slice(0, frame.text.length - addedText.length);
+        if (node.textContent !== prefix) node.textContent = prefix;
+      }
+      for (const word of frame.added) appendText(node, "span", word, "stream-word");
+      if (frame.finished && node.textContent !== frame.text) {
+        const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        window.setTimeout(() => {
+          if (node.isConnected) node.textContent = frame.text;
+        }, reduced ? 0 : 280);
+      }
+    }
+    if (frame.finished) pacers.delete(id);
+    else if (!frame.waiting) pending = true;
+  }
+  if (follow) scrollToEnd();
+  updateComposer();
+  if (pending) paceTimer = window.setTimeout(pace, 30);
+}
+function receiveTutor(message: TutorMessage): void {
+  if (message.type === "tutor_chunk") {
+    const current = pacers.get(message.turn_id);
+    if (!current) {
+      const pacer = new StreamPacer(); pacer.push(message.text);
+      pacers.set(message.turn_id, { attempt: message.attempt, pacer });
+    } else if (message.attempt > current.attempt) {
+      current.pacer.replace(message.text);
+      current.attempt = message.attempt;
+      const old = document.querySelector<HTMLElement>(`#chat-stream [data-key="${message.turn_id}:reply"]`);
+      if (old) old.textContent = "";
+    } else if (message.attempt === current.attempt) current.pacer.push(message.text);
+  }
+  if (message.type === "tutor_done") {
+    let entry = pacers.get(message.turn_id);
+    if (!entry) { const pacer = new StreamPacer(); pacer.push(message.reply_text); entry = { attempt: 1, pacer }; pacers.set(message.turn_id, entry); }
+    entry.pacer.finish(message.reply_text);
+  }
+  if (message.type === "tutor_error" && message.turn_id !== null) pacers.delete(message.turn_id);
+  chat = applyChat(chat, message);
+  if (!document.getElementById("chat-stream") && chat.turns.length) render();
+  else if (document.getElementById("chat-stream") && !chat.turns.length) render();
+  else renderChat();
+  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage() });
+  newRemark(view);
+  if (pacers.size) pace();
+}
 function render(): void {
   const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage() });
   renderHeader(view);
+  renderComposer(view);
   body!.replaceChildren();
   if (view.body === "another_tab") {
     const card = element("section", "card");
@@ -291,11 +429,15 @@ function render(): void {
     if (view.body === "first_run") body!.append(firstRun());
     if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0, session?.budget_minutes || 0).elapsed}`, "quiet");
     if (["start", "ended"].includes(view.body)) body!.append(startCard());
-    if (view.body === "active") {
+    if (view.body === "active" && !chat.turns.length) {
       const node = element("figure", "active-otter");
       node.innerHTML = otter(session?.accepted ? "shell" : "float");
-      appendText(node, "figcaption", session?.accepted ? "Accepted! Keep polishing, or move on." : currentRemark);
+      appendText(node, "figcaption", session?.accepted ? "Accepted! Keep polishing, or move on." : "I'm here to help whenever you need me.");
       body!.append(node);
+    }
+    if (["active", "paused", "overrun"].includes(view.body) && chat.turns.length) {
+      const stream = element("section", "chat-stream"); stream.id = "chat-stream";
+      body!.append(stream);
     }
     if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
     if (view.body === "welcome_back") {
@@ -313,6 +455,7 @@ function render(): void {
     }
   }
   body!.append(historyRow());
+  renderChat();
   decorateOtters();
 }
 async function send(message: object): Promise<boolean> {
@@ -322,6 +465,19 @@ async function send(message: object): Promise<boolean> {
     else if (actionError) { actionError = ""; render(); }
     return true;
   } catch (error) { actionError = error instanceof Error ? error.message : String(error); render(); return false; }
+}
+function requestChatState(): void {
+  void chrome.runtime.sendMessage({ kind: "chat_get" }).then(result => {
+    if (result?.error && transport.kind === "connected") {
+      actionError = String(result.error);
+      render();
+    }
+  }).catch(error => {
+    if (transport.kind === "connected") {
+      actionError = error instanceof Error ? error.message : String(error);
+      render();
+    }
+  });
 }
 function saveName(id: string): void {
   const input = document.getElementById(id) as HTMLInputElement | null;
@@ -337,6 +493,38 @@ function saveName(id: string): void {
   void send({ kind: "settings_set", key: "name", value }).then(ok => { if (!ok && pendingName === request) pendingName = null; });
 }
 headerOtter.addEventListener("click", () => { settingsOpen = !settingsOpen; render(); });
+async function sendChat(): Promise<void> {
+  const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+  if (!input || input.disabled) return;
+  const result = messageToSend(input.value);
+  composerNote = result.error;
+  if (!result.text) { updateComposer(); return; }
+  const text = result.text;
+  chat = applyChat(chat, { type: "local_chat", text });
+  draft = ""; input.value = ""; resizeComposer(input);
+  if (!document.getElementById("chat-stream")) render(); else renderChat();
+  if (!await send({ kind: "chat_message", text })) requestChatState();
+}
+composer.addEventListener("click", event => {
+  const id = (event.target as HTMLElement).closest("button")?.id;
+  if (id === "help-request") {
+    chat = applyChat(chat, { type: "local_help" });
+    if (!document.getElementById("chat-stream")) render(); else renderChat();
+    void send({ kind: "help_request" }).then(ok => { if (!ok) requestChatState(); });
+  }
+  if (id === "chat-send") void sendChat();
+});
+composer.addEventListener("input", event => {
+  const input = event.target as HTMLTextAreaElement;
+  if (input.id !== "chat-input") return;
+  draft = input.value; composerNote = "";
+  resizeComposer(input); updateComposer();
+});
+composer.addEventListener("keydown", event => {
+  if ((event.target as HTMLElement).id !== "chat-input") return;
+  if (event.isComposing) return;
+  if (enterAction(event.key, event.shiftKey) === "send") { event.preventDefault(); void sendChat(); }
+});
 body.addEventListener("click", event => {
   const id = (event.target as HTMLElement).closest("button")?.id;
   if (id === "close-settings") { settingsOpen = false; render(); }
@@ -413,6 +601,8 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "session_state") {
     session = message.state;
+    const slug = session?.problem?.slug || null;
+    if (slug !== chatSlug) { chatSlug = slug; chat = emptyChat(); pacers.clear(); if (slug) requestChatState(); }
     if (startAfterEnd && session?.state === "ended") session = { ...session, state: "idle", mode: "idle" };
     if (session?.state === "active") startAfterEnd = false;
     if (session?.mode !== "watching") clearReaction();
@@ -420,6 +610,14 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "session_binding") void refreshBinding(message.tabId);
   if (message?.kind === "reader_reaction") playReaction(message.reaction);
+  if (message?.kind === "chat_state") {
+    chat = applyChat(chat, message.message as ChatState);
+    for (const id of pacers.keys()) {
+      if (id !== chat.streaming && !chat.turns.some(turn => turn.kind === "reply" && turn.turn_id === id)) pacers.delete(id);
+    }
+    if (Boolean(document.getElementById("chat-stream")) !== Boolean(chat.turns.length)) render(); else renderChat();
+  }
+  if (message?.kind === "tutor") receiveTutor(message.message as TutorMessage);
   if (message?.kind === "settings_state") {
     settings = message.settings;
     if (pendingName && settings?.name === pendingName.value) {
@@ -442,6 +640,7 @@ render();
 chrome.tabs.onActivated.addListener(() => { void refreshPanelTab(); });
 chrome.tabs.onUpdated.addListener((id, change) => { if (id === panelTabId && change.url) void refreshPanelTab(); });
 void refreshPanelTab();
+requestChatState();
 void Promise.all([
   chrome.runtime.sendMessage({ kind: "get_status" }),
   chrome.runtime.sendMessage({ kind: "get_session_state" }),

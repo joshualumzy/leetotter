@@ -43,6 +43,73 @@ beforeEach(async () => {
 });
 
 describe("panel actions", () => {
+  it("shows chat, sends Enter, keeps Shift+Enter, and disables input while answering", async () => {
+    const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    expect(document.getElementById("help-request")).toBeTruthy();
+    const input = document.getElementById("chat-input") as HTMLTextAreaElement;
+    input.value = "What next?";
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    expect(sendMessage).not.toHaveBeenCalledWith({ kind: "chat_message", text: "What next?" });
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "chat_message", text: "What next?" });
+    notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 2, request: "chat", press_index: null } });
+    expect((document.getElementById("help-request") as HTMLButtonElement).disabled).toBe(true);
+    expect(document.getElementById("composer-reason")?.textContent).toMatch(/still answering/i);
+  });
+  it("shows snapshot bubbles and a short refusal notice", () => {
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } });
+    notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", streaming: null, turns: [
+      { turn_id: 1, kind: "press", press_index: 1 },
+      { turn_id: 1, kind: "reply", text: "Try a set", gap: "pattern_not_recognised", gap_note: null, help_kind: "question" },
+    ] } });
+    expect(document.querySelector(".chat-press")?.textContent).toBe("You asked for a hint");
+    expect(document.querySelector(".chat-reply")?.textContent).toBe("Try a set");
+    notify({ kind: "tutor", message: { type: "tutor_error", ts: "now", turn_id: null, message: "Wait a moment" } });
+    expect(document.querySelector(".chat-notice")?.textContent).toBe("Wait a moment");
+  });
+  it("keeps the composer visible with a reason while paused and rejects over-limit dictation", () => {
+    const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    const input = document.getElementById("chat-input") as HTMLTextAreaElement;
+    input.value = "x".repeat(4001);
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    click("chat-send");
+    expect(document.getElementById("composer-note")?.textContent).toMatch(/4000/);
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "chat_message" }));
+    notify({ kind: "session_state", state: { ...active, state: "paused", mode: "paused", running: false, paused_reason: "button" } });
+    expect((document.getElementById("help-request") as HTMLButtonElement).disabled).toBe(true);
+    expect(document.getElementById("composer-reason")?.textContent).toMatch(/paused/i);
+    expect(document.getElementById("chat-input")).toBeTruthy();
+  });
+  it("paces incoming words and keeps a reply visible when the session pauses", () => {
+    vi.useFakeTimers();
+    const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 7, request: "help", press_index: 1 } });
+    notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 7, attempt: 1, text: "Try a set " } });
+    expect(document.querySelector(".chat-reply")?.textContent).toBe("");
+    vi.advanceTimersByTime(90);
+    expect(document.querySelector(".chat-reply")?.textContent).toBe("Try ");
+    notify({ kind: "session_state", state: { ...active, state: "paused", mode: "paused", paused_reason: "button" } });
+    expect(document.querySelector(".chat-reply")?.textContent).toBe("Try ");
+    notify({ kind: "tutor", message: { type: "tutor_done", ts: "now", turn_id: 7, reply_text: "Try a set", gap: "pattern_not_recognised", gap_note: null, help_kind: "question", follow_up_question: null } });
+    vi.advanceTimersByTime(500);
+    expect(document.querySelector(".chat-reply")?.textContent).toBe("Try a set");
+    vi.useRealTimers();
+  });
+  it("clears the old problem's chat while requesting the new problem's snapshot", () => {
+    const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", turns: [
+      { turn_id: 1, kind: "chat", text: "Old question" },
+    ], streaming: null } });
+    expect(document.querySelector(".chat-you")?.textContent).toBe("Old question");
+    sendMessage.mockClear();
+    notify({ kind: "session_state", state: { ...active, problem: { slug: "two-sum", title: "Two Sum" } } });
+    expect(document.querySelector(".chat-you")).toBeNull();
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "chat_get" });
+  });
   it("disables Start off a problem and refreshes after navigation", async () => {
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
     activeUrl = "https://neetcode.io/practice/";
@@ -286,7 +353,7 @@ describe("panel actions", () => {
   it("shows an accepted remark and caption while preserving the time-up card", () => {
     const active = { ...session, state: "active", mode: "watching", running: true, budget_minutes: 45, problem: { slug: "two-sum", title: "Two Sum" } } as SessionState;
     notify({ kind: "session_state", state: active });
-    expect(document.querySelector(".active-otter figcaption")?.textContent).toBe(document.getElementById("remark")?.textContent);
+    expect(document.querySelector(".active-otter figcaption")?.textContent).toMatch(/here to help/i);
     notify({ kind: "session_state", state: { ...active, accepted: true } });
     expect(document.getElementById("status-dot")?.classList.contains("good")).toBe(true);
     expect(document.getElementById("remark")?.textContent).toMatch(/Accepted|Cracked|Shell/);

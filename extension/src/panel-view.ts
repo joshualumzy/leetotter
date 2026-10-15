@@ -3,7 +3,7 @@ import type { SessionState, SettingsState } from "./protocol";
 
 export type Control = "pause" | "resume" | "end";
 export type Body = "offline" | "first_run" | "start" | "active" | "paused" | "welcome_back" | "another_tab" | "overrun" | "ended";
-export type RemarkPool = "offline" | "start" | "active" | "accepted" |
+export type RemarkPool = "offline" | "start" | "active" | "thinking" | "accepted" |
   "pause_button" | "pause_focus" | "pause_check" | "pause_check_page" | "pause_disconnect" | "pause_closed" | "pause_restart" | "overrun" | "ended" | "name_first" | "name_settings";
 export type PanelView = {
   title: string;

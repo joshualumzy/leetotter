@@ -108,6 +108,36 @@ describe("side panel availability", () => {
   });
 });
 
+describe("Tutor relay", () => {
+  it("requests chat on connection and forwards Tutor events and snapshots", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
+    expect(socket.sent).toContainEqual(expect.objectContaining({ type: "chat_get" }));
+    const chunk = { type: "tutor_chunk", ts: "now", turn_id: 4, attempt: 1, text: "Try " };
+    const snapshot = { type: "chat_state", ts: "now", turns: [], streaming: null };
+    socket.onmessage?.({ data: JSON.stringify(chunk) });
+    socket.onmessage?.({ data: JSON.stringify(snapshot) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "tutor", message: chunk });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "chat_state", message: snapshot });
+    const sentBeforeStart = socket.sent.length;
+    socket.onmessage?.({ data: JSON.stringify({ type: "tutor_start", ts: "now", turn_id: 5, request: "chat", press_index: null }) });
+    expect(socket.sent).toHaveLength(sentBeforeStart + 1);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "chat_get" });
+  });
+  it("sends panel commands and refuses them plainly when disconnected", async () => {
+    await start();
+    for (const command of [{ kind: "help_request" }, { kind: "chat_message", text: "Why?" }, { kind: "chat_get" }]) {
+      expect(await dispatch(command)).toEqual({ error: "Tutor service isn't connected." });
+    }
+    socket.readyState = 1;
+    expect(await dispatch({ kind: "help_request" })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "chat_message", text: "Why?" })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "chat_get" })).toEqual({ sent: true });
+    expect(socket.sent.slice(-3)).toMatchObject([{ type: "help_request" }, { type: "chat_message", payload: { text: "Why?" } }, { type: "chat_get" }]);
+    expect(await dispatch({ kind: "chat_message", text: " " })).toEqual({ error: expect.any(String) });
+  });
+});
+
 describe("worker reader delivery", () => {
   it("forwards a validated problem statement without a panel reaction", async () => {
     await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" });

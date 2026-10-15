@@ -83,11 +83,18 @@ const connection = new CompanionConnection(
       connection.send({ type: "get_import_status", ts: new Date().toISOString() });
       connection.send({ type: "session_get_state", ts: new Date().toISOString() });
       connection.send({ type: "settings_get", ts: new Date().toISOString() });
+      connection.send({ type: "chat_get", ts: new Date().toISOString() });
       resyncFocus();
     }
     if (next.kind === "error" && importPending) { importPending = false; panel({ kind: "import_error", message: next.message }); }
   },
   message => {
+    if (message.type === "chat_state") { panel({ kind: "chat_state", message }); return; }
+    if (message.type.startsWith("tutor_")) {
+      panel({ kind: "tutor", message });
+      if (message.type === "tutor_start") connection.send({ type: "chat_get", ts: new Date().toISOString() });
+      return;
+    }
     if (message.type === "settings_state") { settingsState = message; panel({ kind: "settings_state", settings: message }); return; }
     if (message.type === "session_state") {
       if (notice && message.mode === "watching" && (sessionState?.state === "idle" || sessionState?.state === "ended")) { notice = ""; showReaderAlert(); }
@@ -171,6 +178,11 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.kind === "get_session_state") return sessionState;
     if (message?.kind === "get_session_binding") return { tabId: sessionTabId };
     if (message?.kind === "get_settings_state") return settingsState;
+    if (["help_request", "chat_message", "chat_get"].includes(message?.kind)) {
+      if (message.kind === "chat_message" && (typeof message.text !== "string" || !message.text.trim() || [...message.text.trim()].length > 4000)) return { error: "Message must be 1 to 4000 characters." };
+      const outgoing = { type: message.kind, ts: new Date().toISOString(), ...(message.kind === "chat_message" ? { payload: { text: message.text.trim() } } : {}) };
+      return connection.send(outgoing) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
     if (message?.kind === "settings_get") return connection.send({ type: "settings_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     if (message?.kind === "skip_name") {
       if (settingsState?.name !== null) return { error: "Invalid setting." };
