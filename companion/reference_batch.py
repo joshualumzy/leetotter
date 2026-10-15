@@ -95,16 +95,17 @@ def run_batch(problems, *, db_path=None, report_path=REPORT_PATH, limit=None, sl
                     report.failure_reasons[key] = "provider timeout or connection error; it is retried on the next run"
                     status = "failed (provider timeout or connection error)"
                 except ValueError as error:
-                    if not str(error).startswith("reference_writer reply invalid after retry:"):
+                    role = next((name for name in ("reference_writer", "checker") if str(error).startswith(f"{name} reply invalid after retry:")), None)
+                    if role is None:
                         report.failed += 1
-                        report.failure_reasons[key] = "Unexpected ValueError; batch paused"
-                        report.stopped = f"Unexpected ValueError at {key}; batch paused"
+                        report.failure_reasons[key] = f"Unexpected ValueError: {str(error)[:300]}; batch paused"
+                        report.stopped = f"Unexpected ValueError at {key}: {str(error)[:300]}; batch paused"
                         status = "failed (unexpected error)"
                     else:
                         report.failed += 1
                         consecutive_failures += 1
-                        report.failure_reasons[key] = "reference_writer reply invalid after retry"
-                        status = "failed (invalid writer reply)"
+                        report.failure_reasons[key] = f"{role} reply invalid after retry"
+                        status = f"failed (invalid {role} reply)"
                         if consecutive_failures >= 5:
                             report.stopped = "Five consecutive invalid writer replies; batch paused"
                 except Exception as error:

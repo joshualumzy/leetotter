@@ -93,6 +93,31 @@ def test_one_provider_timeout_fails_that_problem_and_the_batch_continues(tmp_pat
     assert "timeout" in report.failure_reasons["one"]
 
 
+def test_an_invalid_checker_reply_fails_that_problem_and_the_batch_continues(tmp_path):
+    calls = []
+
+    def write(slug, title, models, *, db_path):
+        calls.append(slug)
+        if slug == "one":
+            raise ValueError("checker reply invalid after retry: 1 validation error")
+        return SimpleNamespace(status="checked")
+
+    report = run_batch(PROBLEMS, db_path=tmp_path / "db", report_path=tmp_path / "report.md",
+                       write=write, models=object())
+    assert calls == ["one", "two", "three"]
+    assert report.failed == 1 and report.stopped is None
+    assert "checker reply invalid" in report.failure_reasons["one"]
+
+
+def test_an_unexpected_value_error_names_itself_in_the_report(tmp_path):
+    def write(slug, title, models, *, db_path):
+        raise ValueError("reference missing the approaches field")
+
+    report = run_batch(PROBLEMS, db_path=tmp_path / "db", report_path=tmp_path / "report.md",
+                       write=write, models=object())
+    assert "reference missing the approaches field" in report.stopped
+
+
 def test_missing_setup_names_what_is_missing(tmp_path):
     def write(slug, title, models, *, db_path):
         raise RuntimeError("NUS_SOCLAAS_BASE_URL is required")
