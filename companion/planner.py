@@ -15,6 +15,7 @@ from companion.store import open_store
 
 logger = logging.getLogger(__name__)
 PLANNER_WAIT = 30
+SHORTLIST_PER_CATEGORY = 3
 
 SYSTEM_PROMPT = """You are Leetotter's Planner. Suggest exactly one eligible problem, by title only. Keep your reason internal: never name the suggested problem's category, pattern, or approach before the learner solves it, unless they asked for that category or pattern themselves. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, allowed list, current card, chat, and active steer. Sample categories while evidence is thin, starting with imported history; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Read steering words in context, including the current card and active steer; do not use a phrase table. Decide whether they ask for the next problem, set or extend one steer, clear it, or say something unrelated. A steer has catalog focus ids, direction and a session or until-cleared horizon; take the shorter session reading if ambiguous. Say in one plain line what you understood without revealing an unasked pattern. If an ask or steer cannot be met within eligibility, say so plainly once and offer the nearest eligible alternative. Return structured JSON only."""
 
@@ -205,13 +206,27 @@ def _focused(candidates, focuses):
     return filtered or candidates
 
 
+def _rank_key(c, summary):
+    return (summary[c["category"]]["solve"].recall if summary[c["category"]]["solve"] else -1,
+            3 if c["done"] else 0 if c["retry"] else 2 if not c["neetcode150"] else 1,
+            c["title"])
+
+
 def code_ranked(candidates, summary, steer=None):
     if not candidates:
         raise ValueError("No eligible problems to suggest")
     pool = _focused(candidates, steer["focus"]) if steer else candidates
-    return min(pool, key=lambda c: (summary[c["category"]]["solve"].recall if summary[c["category"]]["solve"] else -1,
-                                    3 if c["done"] else 0 if c["retry"] else 2 if not c["neetcode150"] else 1,
-                                    c["title"]))
+    return min(pool, key=lambda c: _rank_key(c, summary))
+
+
+def shortlist(candidates, summary, steer=None):
+    pool = sorted(_focused(candidates, steer["focus"]) if steer else candidates, key=lambda c: _rank_key(c, summary))
+    kept = {}
+    for c in pool:
+        group = kept.setdefault(c["category"], [])
+        if len(group) < SHORTLIST_PER_CATEGORY or not c["neetcode150"] and all(k["neetcode150"] for k in group):
+            group.append(c)
+    return [c for group in kept.values() for c in group]
 
 
 def active_steer(db, *, session_id):
@@ -299,7 +314,8 @@ class Planner:
                                "recent": v["recent"], "recent_dated": v["recent_dated"],
                                "done": v["done"], "imported": v["imported"]}
                     for category, v in summary.items()}
-        content = {"today": now.date().isoformat(), "allowed": allowed, "learner_summary": rendered,
+        offered = allowed if trigger == "chat" else shortlist(allowed, summary, steer) if allowed else []
+        content = {"today": now.date().isoformat(), "allowed": offered, "learner_summary": rendered,
                    "session_problems": session_problems, "imported_history": imported, "hypotheses": hypotheses,
                    "preferences": preferences, "unfinished": unfinished,
                    "card": self.card, "chat": self._chat, "steer": steer, "message": text}

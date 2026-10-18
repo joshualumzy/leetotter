@@ -46,7 +46,7 @@ import logging
 import pytest
 
 from companion.grading import grade_pending
-from companion.planner import PLANNER_WAIT, Planner, allowed_next, ask_planner
+from companion.planner import PLANNER_WAIT, SHORTLIST_PER_CATEGORY, Planner, allowed_next, ask_planner
 from companion.store import open_store
 from companion.tutor import SYSTEM_PROMPT
 from tests.test_grading import MEDIUM, FakeGraders, Run, put_reference
@@ -144,7 +144,9 @@ def test_leaving_a_problem_starts_the_planner_at_once_without_waiting_for_the_gr
     with open_store(path) as db:
         assert slugs == {c["slug"] for c in allowed_next(db, session_id=coord.session_id, now=clock())}
     sent = context(request)
-    assert {candidate["slug"] for candidate in sent["allowed"]} == slugs
+    offered = {candidate["slug"] for candidate in sent["allowed"]}
+    assert offered < slugs
+    assert max(sum(c["category"] == cat for c in sent["allowed"]) for cat in {c["category"] for c in sent["allowed"]}) <= SHORTLIST_PER_CATEGORY + 1
     so_far = sent["session_problems"]
     assert [problem["slug"] for problem in so_far][:1] == [CLIMBING]
     assert {"title", "difficulty", "active_seconds", "help", "outcome"} <= set(so_far[0])
