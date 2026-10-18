@@ -1,6 +1,6 @@
 # Delegating tickets
 
-How tickets are built (the coordinator is a Sonnet session; judgement-heavy tickets are built by Opus, small ones by Sonnet sub-agents).
+How tickets are built (the coordinator is a Sonnet session; Codex builds; tests-first and reviews are Sonnet sub-agents).
 
 ## Codex builds
 
@@ -30,7 +30,7 @@ codex exec -c 'notify=[]' -c 'plugins."unified-computer-use@openai-bundled".enab
 
 ## Reviews
 
-- One reviewer by default, with the ticket's acceptance criteria as its checklist (correctness and failure modes, not style). Two (correctness; ticket and spec) only for data-loss or exact-rule tickets. Small fixes are made directly with a test; send Codex a fix round only when more than a few files change. Fixes go back to Codex in one round when more than a few files change; small fixes are made directly.
+- Reviewers by the cost of a miss: two (correctness and failure modes; ticket and spec, with the acceptance criteria as checklist) for data-loss or exact-rule tickets; one for plumbing; none for UI. Briefs name the commits and the SPEC sections by heading. Small fixes are made directly with a test; send Codex a fix round only when more than a few files change. Fixes go back to Codex in one round when more than a few files change; small fixes are made directly.
 - Plumbing and UI tickets: the coordinator reads the code and relies on the tests.
 - Tickets whose behaviour is an exact rule in the spec (#39, #43, #44, #46, #47, #48, #50): a different model writes the tests for the rules only (eligibility, retry, grading), not wiring or socket tests, which the builder writes; the builder must make them pass and may not change them.
 
