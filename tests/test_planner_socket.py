@@ -74,14 +74,14 @@ def test_panel_open_sends_title_only_and_go_opens_it(tmp_path, monkeypatch):
 
 def test_leaving_an_accepted_problem_starts_planner_before_grading(tmp_path, monkeypatch):
     async def scenario():
-        setup(tmp_path, monkeypatch, ["house-robber"])
+        setup(tmp_path, monkeypatch, ["coin-change", "house-robber"])
         connection = Connection([msg("session_start"),
                                  opened("climbing-stairs", "Climbing Stairs"),
                                  submit("climbing-stairs", True), msg("session_done")])
         await socket._handle(connection)
         assert socket._coordinator.problem is None
-        suggestions = [m for m in connection.sent if m["type"] == "suggestion"]
-        assert len(suggestions) == 1 and suggestions[0]["slug"] == "house-robber"
+        suggestions = [m["slug"] for m in connection.sent if m["type"] == "suggestion"]
+        assert suggestions == ["coin-change", "house-robber"]   # the Start's, then the one asked on leaving the problem
     asyncio.run(scenario())
 
 

@@ -314,6 +314,13 @@ class Planner:
             return None
         return self._request("start", None)
 
+    def resume(self, session_id):
+        """An active session with no problem open, no card and no request out (the companion restarted, or a
+        request was lost) asks again, so the panel never waits on nothing."""
+        if self.card or self._waiting:
+            return None
+        return self._request("start", session_id)
+
     def problem_left(self, session_id):
         self.card = None
         self._chat = []
@@ -369,16 +376,21 @@ class Planner:
         self._card_session_id = None
 
     def session_started(self, session_id):
-        if self.card is None or self._card_session_id is not None:
-            self.session_ended()
-        else:
+        """Adopts the start card the panel already showed. With no card, a request still out from the panel opening
+        is dropped (it knows nothing of this session's steer) and a new one for this session is returned, so a
+        Start never waits on nothing."""
+        adopt = self.card is not None and self._card_session_id is None
+        if adopt:
             self._waiting = None
             self._chat = []
             self._card_session_id = session_id
+        else:
+            self.session_ended()
         with open_store(self.db_path) as db:
             latest = db.execute("SELECT id, kind, text, session_id FROM notes WHERE kind IN ('steer', 'steer_clear') ORDER BY id DESC LIMIT 1").fetchone()
             if latest and latest[1] == "steer" and latest[3] is None and json.loads(latest[2])["horizon"] == "session":
                 db.execute("UPDATE notes SET session_id = ? WHERE id = ?", (session_id, latest[0]))
+        return None if adopt else self._request("start", session_id)
 
     def _show(self, request, candidate, source, message):
         with open_store(self.db_path) as db:

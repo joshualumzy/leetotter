@@ -236,6 +236,8 @@ async def _handle(connection):
                         await connection.send(json.dumps(recap_state(store_path(), ready[0])))
                     if _planner is not None:
                         request = _planner.panel_opened(_coordinator.state)
+                        if request is None and _coordinator.state == "active" and _coordinator.problem is None:
+                            request = _planner.resume(_coordinator.session_id)
                         if request:
                             _schedule_planner(request)
                         elif _planner.card and _coordinator.state != "paused":
@@ -243,6 +245,8 @@ async def _handle(connection):
                 elif kind == "planner_get":
                     if _planner is not None:
                         request = _planner.panel_opened(_coordinator.state)
+                        if request is None and _coordinator.state == "active" and _coordinator.problem is None:
+                            request = _planner.resume(_coordinator.session_id)
                         if request:
                             _schedule_planner(request)
                         elif _planner.card and _coordinator.state != "paused":
@@ -339,7 +343,9 @@ async def _handle(connection):
                                 task.add_done_callback(_turns.discard)
                         if _planner is not None:
                             if kind == "session_start":
-                                _planner.session_started(_coordinator.session_id)
+                                request = _planner.session_started(_coordinator.session_id)
+                                if request:
+                                    _schedule_planner(request)
                             elif kind in ("session_done", "session_skip"):
                                 _schedule_planner(_planner.problem_left(_coordinator.session_id))
                                 _schedule_grading("next_problem")

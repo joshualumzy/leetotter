@@ -21,7 +21,7 @@ def test_off_plan_open_discards_card_and_planner_chat_is_rejected(tmp_path, monk
     asyncio.run(scenario())
 
 
-def test_session_start_discards_waiting_start_request(tmp_path, monkeypatch):
+def test_session_start_replaces_waiting_start_request(tmp_path, monkeypatch):
     async def scenario():
         setup(tmp_path, monkeypatch, [])
         pending = socket._planner.panel_opened("idle")

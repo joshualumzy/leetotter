@@ -126,3 +126,47 @@ def test_planner_context_includes_prior_unfinished_and_dated_recent_results(tmp_
     assert any(row["slug"] == HOUSE_ROBBER for row in sent["unfinished"])
     assert {"grade": "good", "at": (NOW - timedelta(days=2)).isoformat()} in sent[
         "learner_summary"]["1-D Dynamic Programming"]["recent_dated"]["Easy"]
+
+
+def test_start_pressed_while_the_panel_start_request_is_out_replaces_it_with_one_for_the_session(tmp_path):
+    coordinator, clock, path = make(tmp_path)
+    planner = Planner(path, clock)
+    old = planner.panel_opened("idle")
+    coordinator.handle(start_msg())
+    new = planner.session_started(coordinator.session_id)
+    assert new is not None and new.session_id == coordinator.session_id
+    assert planner.answer(old, ask_planner(RecordedPlanner(reply(CLIMBING)), old)) == []
+    shown = planner.answer(new, ask_planner(RecordedPlanner(reply(HOUSE_ROBBER)), new))
+    assert [card["type"] for card in shown] == ["suggestion"] and shown[0]["slug"] == HOUSE_ROBBER
+
+
+def test_the_request_made_at_start_falls_back_after_the_wait(tmp_path):
+    coordinator, clock, path = make(tmp_path)
+    planner = Planner(path, clock)
+    planner.panel_opened("idle")
+    coordinator.handle(start_msg())
+    planner.session_started(coordinator.session_id)
+    clock.advance(31)
+    out = planner.tick()
+    assert [card["type"] for card in out] == ["suggestion"] and out[0]["source"] == "fallback"
+
+
+def test_start_with_nothing_out_and_no_card_asks_the_planner(tmp_path):
+    coordinator, clock, path = make(tmp_path)
+    planner = Planner(path, clock)
+    coordinator.handle(start_msg())
+    request = planner.session_started(coordinator.session_id)
+    assert request is not None and request.trigger == "start" and request.session_id == coordinator.session_id
+    shown = planner.answer(request, ask_planner(RecordedPlanner(reply(CLIMBING)), request))
+    assert shown[0]["slug"] == CLIMBING
+
+
+def test_resume_asks_again_only_when_no_card_and_no_request_is_out(tmp_path):
+    coordinator, clock, path = make(tmp_path)
+    coordinator.handle(start_msg())
+    planner = Planner(path, clock)
+    request = planner.resume(coordinator.session_id)
+    assert request is not None and request.trigger == "start" and request.session_id == coordinator.session_id
+    assert planner.resume(coordinator.session_id) is None            # one is out
+    planner.answer(request, ask_planner(RecordedPlanner(reply(CLIMBING)), request))
+    assert planner.resume(coordinator.session_id) is None            # a card is shown

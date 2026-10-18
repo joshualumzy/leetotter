@@ -9,6 +9,7 @@ import pytest
 from websockets.asyncio.client import connect
 
 from companion.model import ModelClient
+from companion.planner import SYSTEM_PROMPT as PLANNER_PROMPT
 from companion.socket import ALLOWED_ORIGIN, serve_companion
 from tests.test_session import of_type
 
@@ -28,6 +29,8 @@ class Provider:
         self.replies = list(replies)
 
     def create(self, **kwargs):
+        if kwargs["messages"][0]["content"] == PLANNER_PROMPT:   # starting a session asks the Planner; these tests script the Tutor only
+            raise RuntimeError("Planner not scripted here")
         reply = self.replies.pop(0)
         if isinstance(reply, tuple):
             gate, reply = reply
