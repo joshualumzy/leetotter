@@ -43,6 +43,7 @@ let nameAcknowledgement = "";
 let acknowledgementTimer: number | undefined;
 let suggestion: Suggestion | undefined;
 let recap: RecapState | undefined;
+let recapDismissedFor: number | null = null;
 let recapNoted: string = "";
 let referenceState: ReferenceState | undefined;
 let referenceNotice = "";
@@ -485,8 +486,9 @@ function renderChat(): void {
   updateComposer();
 }
 function renderComposer(view: PanelView): void {
-  const plannerMode = Boolean(suggestion) && ["start", "ended", "active"].includes(view.body);
-  const visible = ["active", "paused", "debrief"].includes(view.body) || plannerMode;
+  // Until the session has a problem, the Planner is the only one to talk to.
+  const plannerMode = view.body === "active" && !session?.problem;
+  const visible = plannerMode || ["active", "paused", "debrief"].includes(view.body);
   composer!.hidden = !visible || settingsOpen;
   composerMode = composer!.hidden ? "hidden" : plannerMode ? "planner" : "tutor";
   if (composer!.hidden) { composer!.replaceChildren(); return; }
@@ -645,11 +647,12 @@ function render(): void {
     if (view.body === "first_run") body!.append(firstRun());
     if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0).elapsed}`, "quiet");
     if (["start", "ended"].includes(view.body)) {
-      body!.append(startCard());
-      const recapNode = recapCard();
+      // A waiting recap comes before the Start card; a suggestion stays stored until the session starts.
+      const recapNode = recap && recap.session_id !== recapDismissedFor ? recapCard() : null;
       if (recapNode) body!.append(recapNode);
+      body!.append(startCard());
     }
-    if (["start", "ended", "active"].includes(view.body)) {
+    if (view.body === "active" && !session?.problem) {
       const suggestionNode = suggestionCard();
       if (suggestionNode) body!.append(suggestionNode);
     }
@@ -790,6 +793,7 @@ body.addEventListener("click", event => {
     if (recapDraft.trim() && recap.status === "ready") {
       void send({ kind: "recap_feedback", session_id: recap.session_id, text: recapDraft.trim() }).then(ok => { if (ok) recapDraft = ""; });
     } else {
+      recapDismissedFor = recap.session_id;
       recap = undefined; recapNoted = ""; recapDraft = ""; render();
     }
   }

@@ -593,8 +593,10 @@ describe("panel actions", () => {
       notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
       notify({ kind: "session_state", state: session });
     };
+    const startSession = () => notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true } });
     it("shows a suggestion by title only, with its cap, steer and what the Planner understood", () => {
       showStart();
+      startSession();
       notify({ kind: "suggestion", message: suggestion });
       const card = document.querySelector(".suggestion-card")!;
       expect(card.textContent).toContain("House Robber");
@@ -606,8 +608,58 @@ describe("panel actions", () => {
       expect(document.getElementById("planner-swap")).toBeTruthy();
       expect(document.getElementById("planner-clear")).toBeTruthy();
     });
+    it("shows only Start while idle, holding a suggestion until the session starts", () => {
+      showStart();
+      notify({ kind: "suggestion", message: suggestion });
+      expect(document.getElementById("start-session")).toBeTruthy();
+      expect(document.querySelector(".suggestion-card")).toBeNull();
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
+      notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true } });
+      expect(document.getElementById("start-session")).toBeNull();
+      expect(document.querySelector(".suggestion-card")?.textContent).toContain("House Robber");
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
+      expect((document.getElementById("chat-input") as HTMLTextAreaElement).placeholder).toBe("Tell the Planner what to focus on…");
+    });
+    it.each([
+      ["preparing", [], undefined],
+      ["ready", ["Dropped: visited marking."], undefined],
+      ["failed", [], "Session review is missing: offline"],
+    ] as const)("shows a %s recap above the Start card and nothing else", (status, bullets, message) => {
+      showStart();
+      notify({ kind: "suggestion", message: suggestion });
+      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status, bullets: [...bullets], ...(message ? { message } : {}) } });
+      const cards = [...document.getElementById("session-body")!.children].filter(child => child.classList.contains("card"));
+      expect(cards[0]?.classList.contains("recap-card")).toBe(true);
+      expect(cards[1]?.querySelector("#start-session")).toBeTruthy();
+      expect(document.querySelector(".suggestion-card")).toBeNull();
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
+    });
+    it("keeps a closed recap closed for that session, but shows the next session's recap", () => {
+      showStart();
+      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
+      click("recap-close");
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
+      expect(document.querySelector(".recap-card")).toBeNull();
+      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
+      expect(document.querySelector(".recap-card")).toBeNull();
+      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 13, status: "ready", bullets: ["Kept: two pointers."] } });
+      expect(document.querySelector(".recap-card")?.textContent).toContain("Kept: two pointers.");
+    });
+    it("shows the Tutor composer and no suggestion card while a problem is open", () => {
+      showStart();
+      notify({ kind: "suggestion", message: suggestion });
+      notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, problem: { slug: "two-sum", title: "Two Sum" } } });
+      expect(document.getElementById("start-session")).toBeNull();
+      expect(document.querySelector(".suggestion-card")).toBeNull();
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
+      expect((document.getElementById("chat-input") as HTMLTextAreaElement).placeholder).toBe("Message the Tutor…");
+      notify({ kind: "suggestion", message: suggestion });
+      expect(document.querySelector(".suggestion-card")).toBeNull();
+      expect((document.getElementById("chat-input") as HTMLTextAreaElement).placeholder).toBe("Message the Tutor…");
+    });
     it("sends Go, Swap, Clear and planner chat from the suggestion card", () => {
       showStart();
+      startSession();
       notify({ kind: "suggestion", message: suggestion });
       click("planner-swap");
       expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_swap" });
