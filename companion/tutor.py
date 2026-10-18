@@ -268,10 +268,10 @@ def _reference(stored: StoredReference | None):
     for a in ref.approaches:
         trick = "; a one-off trick" if a.trick else ""
         lines.append(f"- {a.id}: {a.name}. {a.idea}. Time {a.time}, space {a.space}; interviewers expect it {a.interview_expected}{trick}.")
-    if stored.status == "checked":
-        lines.append("Status: checked.")
+    if stored.uncertain:
+        lines.append(f"Status: {stored.status}: these labels are uncertain, so don't lean on them: {', '.join(stored.uncertain)}.")
     else:
-        lines.append(f"Status: {stored.status}: these labels are uncertain, so don't lean on them: {', '.join(stored.uncertain) or 'unspecified'}.")
+        lines.append(f"Status: {stored.status}.")
     lines.append("Follow the learner's approach even when it isn't one listed here.")
     return "\n".join(lines)
 

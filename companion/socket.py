@@ -15,6 +15,7 @@ from companion.history import import_history, import_status
 from companion.model import ModelClient
 from companion.planner import Planner, ask_planner
 from companion.reference import write_and_check
+from companion.reference_review import apply_verdict, flag_tutor_message, review_state
 from companion.reflector import pending_sessions, recap_state, reflect_feedback, reflect_session, submit_feedback
 from companion.session import SessionCoordinator
 from companion.store import open_store, store_path
@@ -39,6 +40,8 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
 PLANNER_TYPES = frozenset({"planner_go", "planner_swap", "planner_clear", "planner_chat"})
 MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recap_feedback", "recap_noted", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
+REFERENCE_TYPES = frozenset({"reference_get", "reference_flag", "reference_apply"})
+MESSAGE_TYPES |= REFERENCE_TYPES | {"reference_state", "reference_flagged", "reference_verdict"}
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
 logger = logging.getLogger(__name__)
 _coordinator = None
@@ -172,6 +175,19 @@ def _validate(raw):
         text = payload.get("text") if isinstance(payload, dict) else None
         if not isinstance(text, str) or not text.strip() or len(text.strip()) > CHAT_LIMIT:
             raise ValueError(f"Invalid chat_message payload: text must be 1 to {CHAT_LIMIT} characters")
+    if kind == "reference_get" and "payload" in message:
+        raise ValueError("Invalid reference_get payload")
+    if kind == "reference_flag":
+        payload = message.get("payload")
+        if (not isinstance(payload, dict) or type(payload.get("message_id")) is not int or
+                payload["message_id"] <= 0 or not isinstance(payload.get("line", ""), str) or
+                "\n" in payload.get("line", "") or len(payload.get("line", "")) > 500):
+            raise ValueError("Invalid reference_flag payload")
+    if kind == "reference_apply":
+        payload = message.get("payload")
+        if (not isinstance(payload, dict) or not _nonempty(payload.get("slug")) or
+                not _nonempty(payload.get("reply"))):
+            raise ValueError("Invalid reference_apply payload")
     if kind == "planner_chat":
         payload = message.get("payload")
         text = payload.get("text") if isinstance(payload, dict) else None
@@ -206,7 +222,7 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
@@ -262,6 +278,27 @@ async def _handle(connection):
                     await connection.send(json.dumps({"type": "import_result", "ts": _timestamp(), "result": result}))
                 elif kind == "chat_get":
                     await connection.send(json.dumps(_coordinator.chat_state()))
+                elif kind == "reference_get":
+                    await connection.send(json.dumps({"type": "reference_state", "ts": _timestamp(), **review_state(store_path())}))
+                elif kind == "reference_flag":
+                    note_id = flag_tutor_message(store_path(), message["payload"]["message_id"],
+                                                 message["payload"].get("line", ""))
+                    await connection.send(json.dumps({"type": "reference_flagged", "ts": _timestamp(),
+                                                      "message_id": message["payload"]["message_id"], "note_id": note_id}))
+                    await _broadcast([{"type": "reference_state", "ts": _timestamp(), **review_state(store_path())}], None)
+                elif kind == "reference_apply":
+                    slug = message["payload"]["slug"]
+                    try:
+                        result = apply_verdict(store_path(), slug, message["payload"]["reply"])
+                    except ValueError as error:
+                        result = {"accepted": False, "reason": str(error), "graded": []}
+                    else:
+                        outcome = await _run_grading("initial", only_slug=slug)
+                        if outcome is not None:
+                            result["graded"] = outcome.graded
+                        await _broadcast([{"type": "reference_state", "ts": _timestamp(), **review_state(store_path())}], None)
+                    await connection.send(json.dumps({"type": "reference_verdict", "ts": _timestamp(),
+                                                      "slug": slug, **result}))
                 elif kind == "recap_get":
                     await connection.send(json.dumps(recap_state(store_path(), message["payload"]["session_id"])))
                 elif kind == "recap_feedback":
@@ -463,6 +500,7 @@ async def _run_reference(problem, statement):
         if result.status == "checked":
             checked = True
             await _run_grading("initial")
+        await _broadcast([{"type": "reference_state", "ts": _timestamp(), **review_state(store_path())}], None)
         if _coordinator is not None and _coordinator.problem and _coordinator.problem["slug"] == slug:
             await _broadcast([_coordinator._state(_coordinator.clock())], None)
     except Exception as error:
@@ -512,7 +550,7 @@ async def _run_feedback(session_id, note_id):
                                "message": f"Feedback review failed; your note was saved: {error}"}], None)
 
 
-async def _run_grading(trigger="initial"):
+async def _run_grading(trigger="initial", only_slug=None):
     async with _grading_lock:
         def work():
             class GraderClient:
@@ -523,7 +561,7 @@ async def _run_grading(trigger="initial"):
                 def call_role(self, *args, **kwargs):
                     return _get_models().call_role(*args, **kwargs)
 
-            return grade_pending(GraderClient(), db_path=store_path(), trigger=trigger)
+            return grade_pending(GraderClient(), db_path=store_path(), trigger=trigger, only_slug=only_slug)
 
         try:
             outcome = await asyncio.to_thread(work)
@@ -532,6 +570,7 @@ async def _run_grading(trigger="initial"):
                     for attempt_id in outcome.failed:
                         message = outcome.failures.get(attempt_id, "Grading is delayed; an attempt remains ungraded.")
                         await client.send(json.dumps({"type": "error", "ts": _timestamp(), "message": message}))
+            return outcome
         except Exception as error:
             logger.exception("Pending grading failed")
             for client in tuple(_clients):

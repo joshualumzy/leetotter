@@ -83,7 +83,7 @@ class CheckReply(BaseModel):
 @dataclass(frozen=True)
 class StoredReference:
     reference: Reference
-    status: Literal["checked", "needs_review"]
+    status: Literal["checked", "needs_review", "resolved_by_you"]
     uncertain: list[str]  # "approach_id.label" for each label the Checker still disputes
 
 
@@ -142,7 +142,7 @@ def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str 
     `needs_review` one is replaced only by a result that is now `checked`."""
     with open_store(db_path) as db:
         existing = load_reference(db, slug)
-    if existing and existing.status == "checked":
+    if existing and existing.status in ("checked", "resolved_by_you"):
         return existing
 
     catalog_problem = load_catalog().by_slug(slug) if statement is not None else None
@@ -177,8 +177,19 @@ def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str 
 
     if existing and result.status != "checked":
         return existing
-    content = json.dumps({**reference.model_dump(), "uncertain": uncertain})
     with open_store(db_path) as db:
+        current = db.execute('SELECT status FROM "references" WHERE problem_key = ?', (slug,)).fetchone()
+        if current and current[0] == "resolved_by_you":
+            return load_reference(db, slug)
+        open_flag = db.execute("SELECT 1 FROM events f WHERE f.type = 'reference_flagged' "
+                               "AND json_extract(f.payload, '$.slug') = ? "
+                               "AND f.id > COALESCE((SELECT MAX(r.id) FROM events r WHERE r.type = 'reference_resolved' "
+                               "AND json_extract(r.payload, '$.slug') = ?), 0) LIMIT 1", (slug, slug)).fetchone()
+        if open_flag:
+            result = StoredReference(reference, "needs_review", uncertain)
+        if current and current[0] == "needs_review" and open_flag:
+            return load_reference(db, slug)
+        content = json.dumps({**reference.model_dump(), "uncertain": uncertain})
         db.execute('INSERT INTO "references" (problem_key, content, status) VALUES (?, ?, ?) '
                    "ON CONFLICT(problem_key) DO UPDATE SET content = excluded.content, status = excluded.status",
                    (slug, content, result.status))

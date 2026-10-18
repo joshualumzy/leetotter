@@ -71,7 +71,7 @@ def run_batch(problems, *, db_path=None, report_path=REPORT_PATH, limit=None, sl
                 report.review_reasons[key] = ", ".join(existing[1]) or "Checker disagreement"
             if slug is not None and key != slug:
                 status = "skipped (not selected)"
-            elif existing and existing[0] == "checked":
+            elif existing and existing[0] in ("checked", "resolved_by_you"):
                 status = "skipped (checked)"
             elif existing and existing[0] == "needs_review" and not retry_needs_review:
                 status = "skipped (needs_review; use --retry-needs-review)"
@@ -138,7 +138,7 @@ def run_batch(problems, *, db_path=None, report_path=REPORT_PATH, limit=None, sl
             print(f"{index} of {total} {key}: interrupted", flush=True)
         report.skipped += total - index + (1 if index else 0)
     finally:
-        report.checked = sum(status == "checked" for status in final_status.values())
+        report.checked = sum(status in ("checked", "resolved_by_you") for status in final_status.values())
         report.needs_review = sum(status == "needs_review" for status in final_status.values())
         rendered = _render(report, total)
         report_path = Path(report_path)

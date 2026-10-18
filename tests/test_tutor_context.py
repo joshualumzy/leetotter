@@ -73,6 +73,12 @@ def test_reference_is_helper_knowledge_with_its_status_and_uncertain_labels():
     assert "Arrays & Hashing" not in out and "hash-set" not in out
 
 
+def test_seems_wrong_flag_does_not_make_any_tutor_label_uncertain():
+    out = build(reference=StoredReference(REFERENCE.reference, "needs_review", []))
+    assert "needs_review" in out
+    assert "uncertain" not in out and "unspecified" not in out
+
+
 def test_missing_reference_is_said_plainly():
     out = build(reference=None)
     assert "no reference" in out.lower() and "Hash set" not in out
