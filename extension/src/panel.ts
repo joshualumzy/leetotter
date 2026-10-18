@@ -1,6 +1,6 @@
 import type { ConnectionState } from "./connection";
-import { MISSING_READER_MESSAGE, type SessionState, type SettingsState } from "./protocol";
-import { panelView, timerText, type PanelView } from "./panel-view";
+import { MISSING_READER_MESSAGE, type RecapNoted, type RecapState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
+import { capLine, panelView, timerCapText, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
 import { otter, touchForDate } from "./otter";
 import type { ReaderReaction } from "./reader-reaction";
@@ -18,10 +18,10 @@ const dot = document.getElementById("status-dot");
 const remarkNode = document.getElementById("remark");
 const timer = document.getElementById("timer");
 const elapsed = document.getElementById("elapsed");
-const budget = document.getElementById("budget");
+const capNode = document.getElementById("cap");
 const controls = document.getElementById("controls");
 const composer = document.getElementById("composer");
-if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !elapsed || !budget || !controls || !composer) throw new Error("Panel elements are missing");
+if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !elapsed || !capNode || !controls || !composer) throw new Error("Panel elements are missing");
 
 let transport: ConnectionState = { kind: "offline" };
 let session: SessionState | undefined;
@@ -42,8 +42,15 @@ let remarkKey = "";
 let pendingName: { value: string; pool: "name_first" | "name_settings" } | null = null;
 let nameAcknowledgement = "";
 let acknowledgementTimer: number | undefined;
-let selectedBudget = 45;
-let customBudget = "";
+let suggestion: Suggestion | undefined;
+let recap: RecapState | undefined;
+let recapNoted: string = "";
+let referenceState: ReferenceState | undefined;
+let referenceNotice = "";
+let recapDraft = "";
+let flagTurn: number | null = null;
+let flagDraft = "";
+const referenceDrafts = new Map<string, string>();
 let reactionCaption: string | null = null;
 let reactionClass = "";
 let reactionTimeout: number | undefined;
@@ -54,6 +61,7 @@ let chat = emptyChat();
 let chatSlug: string | null = null;
 let draft = "";
 let composerNote = "";
+let composerMode: "hidden" | "tutor" | "planner" = "hidden";
 const FADE_MS = 280;
 type Birth = { from: number; at: number };
 const pacers = new Map<number, { attempt: number; pacer: StreamPacer; births: Birth[] }>();
@@ -67,14 +75,6 @@ const reactionCaptions = {
   submit_pass: ["Ooh, all green!", "A shell for that one!"],
   submit_fail: ["Oof. Close, though.", "Hmm, not quite yet."],
 } satisfies Record<ReaderReaction, string[]>;
-
-function budgetValue(): number | null {
-  if (customBudget !== "") {
-    const value = Number(customBudget);
-    return /^\d+$/.test(customBudget) && Number.isInteger(value) && value >= 1 && value <= 1440 ? value : null;
-  }
-  return selectedBudget || null;
-}
 
 function positionEyes(): void {
   const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -145,13 +145,18 @@ function appendText(parent: HTMLElement, tag: string, text: string, className = 
 function currentSeconds(): number {
   return Math.max(0, (session?.active_seconds || 0) + (session?.running ? Math.floor((Date.now() - receivedAt) / 1000) : 0));
 }
+function currentCapSeconds(): number | null {
+  if (!session || session.cap_seconds_left === null) return null;
+  return Math.max(0, session.cap_seconds_left - (session.running ? Math.floor((Date.now() - receivedAt) / 1000) : 0));
+}
 function updateTimer(): void {
-  if (!session || session.state === "ended" || session.budget_minutes === null || transport.kind === "offline") { timer!.hidden = true; return; }
+  if (!session || ["idle", "ended"].includes(session.state) || transport.kind === "offline") { timer!.hidden = true; return; }
   timer!.hidden = false;
-  const shown = timerText(currentSeconds(), session.budget_minutes);
-  elapsed!.textContent = shown.elapsed;
-  budget!.textContent = `of ${shown.budget}`;
-  timer!.className = `timer${session.running ? "" : " stopped"}${shown.over ? " over" : ""}`;
+  elapsed!.textContent = timerText(currentSeconds()).elapsed;
+  const cap = session.problem ? timerCapText(session.cap_minutes, currentCapSeconds()) : "";
+  capNode!.textContent = cap;
+  capNode!.hidden = !cap;
+  timer!.className = `timer${session.running ? "" : " stopped"}${session.cap_seconds_left === 0 ? " over" : ""}`;
 }
 async function refreshPanelTab(): Promise<void> {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -182,9 +187,10 @@ function newRemark(view: PanelView): void {
     remarkNode!.textContent = remark("thinking", { name: settings?.name || null, minutesLeft: null, now: new Date() });
     return;
   }
-  const key = `${view.remarkPool}:${session?.state || "idle"}:${session?.paused_reason || ""}:${session?.overrun_prompt || false}:${session?.problem?.slug || ""}`;
+  const key = `${view.remarkPool}:${session?.state || "idle"}:${session?.paused_reason || ""}:${session?.mode || ""}:${session?.time_up ? "up" : ""}:${session?.problem?.slug || ""}:${suggestion?.slug || ""}`;
   if (key !== remarkKey) {
-    const minutesLeft = session?.budget_minutes == null ? null : Math.ceil((session.budget_minutes * 60 - currentSeconds()) / 60);
+    const left = currentCapSeconds();
+    const minutesLeft = left === null ? null : Math.ceil(left / 60);
     currentRemark = remark(view.remarkPool, { name: settings?.name || null, minutesLeft, now: new Date() });
     remarkKey = key;
   }
@@ -211,32 +217,89 @@ function renderHeader(view: PanelView): void {
 function startCard(): HTMLElement {
   const card = element("section", "card");
   appendText(card, "h4", "New session");
-  appendText(card, "p", "How long have you got? It's a soft budget; you can always finish the problem you're on.");
-  const choices = element("div", "budget-choices");
-  choices.setAttribute("role", "group");
-  choices.setAttribute("aria-label", "Session length");
-  for (const minutes of [30, 45, 60, 90]) {
-    const chip = button(`budget-${minutes}`, `${minutes} min`, "budget-chip");
-    chip.setAttribute("aria-pressed", String(selectedBudget === minutes));
-    choices.append(chip);
-  }
-  const custom = element("input", "field budget-custom") as HTMLInputElement;
-  custom.id = "budget-minutes";
-  custom.type = "number";
-  custom.min = "1";
-  custom.max = "1440";
-  custom.step = "1";
-  custom.placeholder = "minutes";
-  custom.setAttribute("aria-label", "Or type minutes");
-  custom.value = customBudget;
-  const label = element("label", "budget-other", "or type minutes");
-  label.append(custom);
-  choices.append(label);
+  appendText(card, "p", "The Planner will suggest one problem. Go with it, swap it, or steer it when its card appears.");
   const start = button("start-session", "Start", "btn primary");
-  start.disabled = budgetValue() === null || !onProblemPage();
-  card.append(choices, start);
+  start.disabled = !onProblemPage();
+  card.append(start);
   if (!onProblemPage()) appendText(card, "p", "Open a problem on NeetCode to start.", "quiet");
   return card;
+}
+function suggestionCard(): HTMLElement | null {
+  if (!suggestion) return null;
+  const card = element("section", "card suggestion-card");
+  appendText(card, "h4", suggestion.title);
+  const cap = capLine(suggestion.difficulty, suggestion.cap_minutes);
+  if (cap) appendText(card, "p", cap, "cap-line");
+  if (suggestion.message) appendText(card, "p", suggestion.message, "planner-message");
+  if (suggestion.steer) {
+    const steer = element("div", "steer-line");
+    appendText(steer, "span", `Steering: ${suggestion.steer}`);
+    steer.append(button("planner-clear", "Clear", "link"));
+    card.append(steer);
+  }
+  const row = element("div", "row");
+  row.append(button("planner-go", "Go", "btn primary"), button("planner-swap", "Swap", "btn"));
+  card.append(row);
+  return card;
+}
+function recapCard(): HTMLElement | null {
+  if (!recap) return null;
+  const card = element("section", "card recap-card");
+  if (recap.status === "preparing") {
+    const otterNode = element("figure", "recap-otter"); otterNode.innerHTML = otter("doze");
+    card.append(otterNode);
+    appendText(card, "h4", "Preparing notes");
+    appendText(card, "p", "The otter is writing up this session. It will appear here when it's ready.");
+    card.append(button("recap-refresh", "Check again", "link"));
+    return card;
+  }
+  if (recap.status === "failed") {
+    card.setAttribute("role", "alert");
+    appendText(card, "h4", "Session review is missing");
+    appendText(card, "p", recap.message || "The recap could not be written; it will be retried next time.");
+    card.append(button("recap-close", "Close", "link"));
+    return card;
+  }
+  appendText(card, "h4", recap.status === "feedback_failed" ? "Recap" : "Session recap");
+  if (recap.status === "feedback_failed") {
+    const alert = appendText(card, "p", recap.message || "The feedback review failed; your note was saved.", "recap-alert");
+    alert.setAttribute("role", "alert");
+  }
+  if (recap.bullets.length) {
+    appendText(card, "p", "What changed:", "quiet");
+    const list = element("ul", "recap-bullets");
+    for (const bullet of recap.bullets) appendText(list, "li", bullet);
+    card.append(list);
+  } else {
+    appendText(card, "p", "A smooth session; nothing to note.");
+  }
+  if (recapNoted) {
+    appendText(card, "p", recapNoted, "recap-noted");
+  } else if (recap.bullets.length && recap.status !== "feedback_failed") {
+    const input = element("input", "field recap-feedback") as HTMLInputElement;
+    input.id = "recap-feedback"; input.placeholder = "Anything off or missing?"; input.value = recapDraft; input.maxLength = 500;
+    input.setAttribute("aria-label", "Anything off or missing?");
+    card.append(input);
+  }
+  card.append(button("recap-close", "Close", "link"));
+  return card;
+}
+function timeUpCard(): HTMLElement {
+  const card = element("section", "card time-up-card");
+  appendText(card, "h4", "Time's up");
+  appendText(card, "p", "This problem has reached its active-time cap.");
+  const row = element("div", "row");
+  if (session?.time_up?.can_extend) row.append(button("time-up-extend", "Extend 10 minutes", "btn primary"));
+  row.append(button("time-up-debrief", "Debrief", session?.time_up?.can_extend ? "btn" : "btn primary"));
+  row.append(button("time-up-skip", "Skip", "link"));
+  card.append(row);
+  return card;
+}
+function debriefActions(): HTMLElement {
+  const row = element("div", "card debrief-actions");
+  appendText(row, "span", "Debriefing this problem.", "quiet");
+  row.append(button("debrief-done", "Done", "btn primary"), button("debrief-skip", "Skip", "link"));
+  return row;
 }
 function firstRun(): HTMLElement {
   const block = element("section", "block"); block.id = "first-run";
@@ -275,6 +338,32 @@ function settingsCard(): HTMLElement {
   }
   select.value = settings?.theme || "match"; themeLabel.append(select); card.append(themeLabel);
   appendText(card, "p", "Your name stays on this Mac and is only used for the otter's remarks.", "fine");
+  if (referenceNotice) {
+    const note = appendText(card, "p", referenceNotice, "reference-notice");
+    note.id = "reference-notice";
+  }
+  if (referenceState && referenceState.count > 0) {
+    const review = element("section", "reference-review");
+    appendText(review, "h4", `References needing review (${referenceState.count})`);
+    appendText(review, "p", "Copy a prompt to a separate AI, then paste its verdict here.", "fine");
+    for (const item of referenceState.references) {
+      const details = element("details", "reference-item");
+      appendText(details, "summary", item.title);
+      if (!item.prompt) {
+        appendText(details, "p", item.reason || "The reference isn't ready yet.", "quiet");
+      } else {
+        const actions = element("div", "row");
+        actions.append(button(`copy-reference-${item.slug}`, "Copy prompt", "btn"));
+        details.append(actions);
+        const input = element("textarea", "field reference-verdict") as HTMLTextAreaElement;
+        input.id = `verdict-${item.slug}`; input.rows = 3; input.placeholder = "Paste the verdict JSON";
+        input.value = referenceDrafts.get(item.slug) || "";
+        details.append(input, button(`reference-apply-${item.slug}`, "Apply", "btn primary"));
+      }
+      review.append(details);
+    }
+    card.append(review);
+  }
   return card;
 }
 function block(pose: "doze" | "confused", heading: string, explanation: string): HTMLElement {
@@ -288,6 +377,15 @@ function historyRow(): HTMLElement {
   row.append(importButton); appendText(row, "p", importResult).id = "import-result";
   return row;
 }
+function updateFlagFooter(node: HTMLElement, turn_id: number): void {
+  const footer = node.querySelector<HTMLElement>(".chat-flag");
+  if (!footer) return;
+  const open = flagTurn === turn_id;
+  const row = footer.querySelector<HTMLElement>(".flag-row");
+  if (row) row.hidden = !open;
+  const input = footer.querySelector<HTMLInputElement>(".flag-line");
+  if (input && input.value !== flagDraft) input.value = flagDraft;
+}
 function chatNode(turn: ChatTurn): HTMLElement {
   const className = { press: "chat-press", chat: "chat-you", reply: "chat-reply", failed: "chat-error" }[turn.kind];
   const node = element("div", `chat-line ${className}`);
@@ -295,10 +393,25 @@ function chatNode(turn: ChatTurn): HTMLElement {
   if (turn.kind === "press") node.textContent = "You asked for a hint";
   else if (turn.kind === "failed") { node.textContent = turn.message || "The Tutor couldn't answer."; node.setAttribute("role", "alert"); }
   else fillBubble(node, turn, turn.kind === "reply" && pacers.has(turn.turn_id) ? pacers.get(turn.turn_id)!.pacer.visible : turn.text || "");
+  if (turn.kind === "reply") {
+    const footer = element("div", "chat-flag");
+    footer.append(button(`seems-wrong-${turn.turn_id}`, "Seems wrong", "link"));
+    const row = element("div", "flag-row");
+    const input = element("input", "field flag-line") as HTMLInputElement;
+    input.placeholder = "What looks off? (optional)"; input.maxLength = 500;
+    input.setAttribute("aria-label", "What looks off?");
+    row.append(input, button(`flag-send-${turn.turn_id}`, "Send", "btn"));
+    row.hidden = true;
+    footer.append(row);
+    node.append(footer);
+    updateFlagFooter(node, turn.turn_id);
+  }
   return node;
 }
 function paintReply(node: HTMLElement, text: string, freshFrom?: number): void {
+  const footer = node.querySelector<HTMLElement>(".chat-flag");
   node.replaceChildren(renderMarkdown(text, freshFrom));
+  if (footer) node.append(footer);
   painted.set(node, text);
 }
 function fillBubble(node: HTMLElement, turn: ChatTurn, text: string): void {
@@ -343,6 +456,7 @@ function renderChat(): void {
     } else if (turn.kind === "reply" || turn.kind === "chat" || turn.kind === "failed") {
       fillBubble(node, turn, turn.kind === "failed" ? turn.message || "" : turn.text || "");
     }
+    if (turn.kind === "reply") updateFlagFooter(node, turn.turn_id);
     return node;
   });
   if (awaitingReply()) nodes.push(waiting);
@@ -353,15 +467,17 @@ function renderChat(): void {
   updateComposer();
 }
 function renderComposer(view: PanelView): void {
-  const visible = ["active", "paused", "overrun"].includes(view.body);
+  const plannerMode = Boolean(suggestion) && ["start", "ended", "active"].includes(view.body);
+  const visible = ["active", "paused", "debrief"].includes(view.body) || plannerMode;
   composer!.hidden = !visible || settingsOpen;
+  composerMode = composer!.hidden ? "hidden" : plannerMode ? "planner" : "tutor";
   if (composer!.hidden) { composer!.replaceChildren(); return; }
   // Built once while visible: the panel redraws every second for the timer, and rebuilding would drop the typing focus.
   if (composer!.childElementCount) { updateComposer(); return; }
   const help = button("help-request", "I need help", "help-request");
   const box = element("div", "composer-box");
   const input = element("textarea", "chat-input") as HTMLTextAreaElement;
-  input.id = "chat-input"; input.placeholder = "Message the Tutor…"; input.rows = 2;
+  input.id = "chat-input"; input.rows = 2;
   input.setAttribute("aria-label", "Message the Tutor"); input.value = draft;
   const arrow = button("chat-send", "➤", "chat-send"); arrow.setAttribute("aria-label", "Send message");
   box.append(input, arrow);
@@ -384,12 +500,26 @@ function updateComposer(): void {
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   const arrow = document.getElementById("chat-send") as HTMLButtonElement | null;
   if (!help || !input || !arrow) return;
-  const availability = composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0 || awaitingReply());
+  const streaming = chat.streaming !== null || pacers.size > 0 || awaitingReply();
+  const plannerMode = composerMode === "planner";
+  if (plannerMode) {
+    help.hidden = true;
+    help.disabled = true;
+    input.disabled = streaming;
+    arrow.disabled = streaming || !draft.trim();
+    input.placeholder = "Tell the Planner what to focus on…";
+    document.getElementById("composer-reason")!.textContent = streaming ? "The Planner is thinking…" : "";
+    document.getElementById("composer-note")!.textContent = draft.trim() ? "" : "Your words steer the next suggestion.";
+    return;
+  }
+  help.hidden = false;
+  const availability = composerAvailability(session?.state, Boolean(session?.problem), streaming);
   help.disabled = !availability.enabled;
   input.disabled = !availability.typing;
   arrow.disabled = !availability.enabled || !draft.trim();
+  input.placeholder = "Message the Tutor…";
   document.getElementById("composer-reason")!.textContent = availability.reason;
-  document.getElementById("composer-note")!.textContent = composerNote;
+  document.getElementById("composer-note")!.textContent = composerNote || (session?.state === "active" && session?.problem ? "The Tutor takes steering at the next suggestion." : "");
 }
 function reducedMotion(): boolean { return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches); }
 // Each fading word started at its own moment: backdate its animation so a repaint does not restart the fade.
@@ -488,34 +618,50 @@ function render(): void {
     // After an extension reload the open NeetCode tab keeps no reader; one click reloads it.
     if (message === MISSING_READER_MESSAGE && sessionTabId != null) alert.append(" ", button("reload-tab", "Reload tab", "btn"));
   }
+  const referenceMessage = session?.reference_message || (session?.reference_status === "not_checked_yet" ? "Reference not checked yet" : "");
+  if (!settingsOpen && referenceMessage && session?.problem && ["active", "paused", "time_up", "debrief"].includes(view.body)) {
+    appendText(body!, "p", referenceMessage, "reference-status");
+  }
+  if (!settingsOpen && referenceNotice) appendText(body!, "p", referenceNotice, "reference-notice");
   if (!settingsOpen) {
     if (view.body === "first_run") body!.append(firstRun());
-    if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0, session?.budget_minutes || 0).elapsed}`, "quiet");
-    if (["start", "ended"].includes(view.body)) body!.append(startCard());
+    if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0).elapsed}`, "quiet");
+    if (["start", "ended"].includes(view.body)) {
+      body!.append(startCard());
+      const recapNode = recapCard();
+      if (recapNode) body!.append(recapNode);
+    }
+    if (["start", "ended", "active"].includes(view.body)) {
+      const suggestionNode = suggestionCard();
+      if (suggestionNode) body!.append(suggestionNode);
+    }
     if (view.body === "active" && !chat.turns.length) {
       const node = element("figure", "active-otter");
       node.innerHTML = otter(session?.accepted ? "shell" : "float");
       appendText(node, "figcaption", session?.accepted ? "Accepted! Keep polishing, or move on." : "I'm here to help whenever you need me.");
       body!.append(node);
     }
-    if (["active", "paused", "overrun"].includes(view.body) && chat.turns.length) {
+    if (["active", "paused", "time_up", "debrief"].includes(view.body) && chat.turns.length) {
       const stream = keptStream || element("section", "chat-stream");
       stream.id = "chat-stream";
       body!.append(stream);
     }
     if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
+    if (view.body === "active" && session?.problem && !session.accepted) {
+      const actions = element("div", "problem-actions");
+      actions.append(button("skip-problem", "Skip this problem", "link"));
+      body!.append(actions);
+    }
+    if (view.body === "time_up") body!.append(timeUpCard());
+    if (view.body === "debrief") body!.append(debriefActions());
     if (view.body === "welcome_back") {
       const card = element("section", "card welcome-back");
       appendText(card, "h4", "Pick up where you left off?");
       const minutes = Math.floor((session?.active_seconds || 0) / 60);
-      const duration = `${minutes} min of ${session?.budget_minutes ?? 0}`;
+      const duration = `${minutes} min`;
       appendText(card, "p", session?.problem?.title ? `${session.problem.title}, ${duration}` : duration);
       card.append(button("welcome-resume", "Resume", "btn primary"), button("end-and-start", "End and start a new one", "link"));
       body!.append(card);
-    }
-    if (view.body === "overrun") {
-      const card = element("section", "card"); appendText(card, "h4", "Time's up. Finish this one or stop?");
-      const row = element("div", "row"); row.append(button("overrun-finish", "Finish this one", "btn primary"), button("overrun-stop", "Stop here")); card.append(row); body!.append(card);
     }
   }
   body!.append(historyRow());
@@ -564,7 +710,20 @@ async function sendChat(): Promise<void> {
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   if (!input || input.disabled) return;
   // Typing is allowed while the Tutor answers, sending isn't: the draft stays and the reason shows under the box.
-  if (!composerAvailability(session?.state, Boolean(session?.problem), chat.streaming !== null || pacers.size > 0 || awaitingReply()).enabled) { updateComposer(); return; }
+  const streaming = chat.streaming !== null || pacers.size > 0 || awaitingReply();
+  const plannerMode = composerMode === "planner";
+  if (plannerMode) {
+    if (streaming) { updateComposer(); return; }
+    const result = messageToSend(input.value);
+    composerNote = result.error;
+    if (!result.text) { updateComposer(); return; }
+    draft = ""; input.value = ""; resizeComposer(input);
+    const ok = await send({ kind: "planner_chat", text: result.text });
+    if (!ok) composerNote = "The Planner didn't get that.";
+    updateComposer();
+    return;
+  }
+  if (!composerAvailability(session?.state, Boolean(session?.problem), streaming).enabled) { updateComposer(); return; }
   const result = messageToSend(input.value);
   composerNote = result.error;
   if (!result.text) { updateComposer(); return; }
@@ -601,17 +760,51 @@ body.addEventListener("click", event => {
   if (id === "save-first-name") saveName("first-name");
   if (id === "save-settings-name") saveName("settings-name");
   if (id === "skip-name") void send({ kind: "skip_name" });
-  if (id?.startsWith("budget-")) {
-    selectedBudget = Number(id.slice("budget-".length));
-    customBudget = "";
-    const custom = document.getElementById("budget-minutes") as HTMLInputElement;
-    custom.value = "";
-    (document.getElementById("start-session") as HTMLButtonElement).disabled = !onProblemPage();
-    for (const chip of body!.querySelectorAll<HTMLButtonElement>(".budget-chip")) chip.setAttribute("aria-pressed", String(chip.id === id));
+  if (id === "start-session" && onProblemPage()) void send({ kind: "session_command", command: "start", tabId: panelTabId });
+  if (id === "planner-go") void send({ kind: "planner_go", tabId: panelTabId });
+  if (id === "planner-swap") void send({ kind: "planner_swap" });
+  if (id === "planner-clear") void send({ kind: "planner_clear" });
+  if (id === "time-up-extend") void send({ kind: "session_command", command: "time_up_extend" });
+  if (id === "time-up-debrief") void send({ kind: "session_command", command: "time_up_debrief" });
+  if (id === "time-up-skip" || id === "debrief-skip" || id === "skip-problem") void send({ kind: "session_command", command: "skip" });
+  if (id === "debrief-done") void send({ kind: "session_command", command: "done" });
+  if (id === "recap-refresh" && recap) void send({ kind: "recap_get", session_id: recap.session_id });
+  if (id === "recap-close" && recap) {
+    if (recapDraft.trim() && recap.status === "ready") {
+      void send({ kind: "recap_feedback", session_id: recap.session_id, text: recapDraft.trim() }).then(ok => { if (ok) recapDraft = ""; });
+    } else {
+      recap = undefined; recapNoted = ""; recapDraft = ""; render();
+    }
   }
-  if (id === "start-session") {
-    const value = budgetValue();
-    if (value !== null && onProblemPage()) void send({ kind: "session_command", command: "start", budget_minutes: value, tabId: panelTabId });
+  if (id?.startsWith("copy-reference-")) {
+    const item = referenceState?.references.find(reference => reference.slug === id.slice("copy-reference-".length));
+    if (item?.prompt) {
+      const copied = navigator.clipboard?.writeText(item.prompt);
+      if (!copied) { referenceNotice = "Copy isn't available here."; render(); }
+      else void copied.then(() => { referenceNotice = "Prompt copied."; render(); }).catch(error => { referenceNotice = `Could not copy: ${String(error)}`; render(); });
+    }
+  }
+  if (id?.startsWith("reference-apply-")) {
+    const slug = id.slice("reference-apply-".length);
+    const reply = (referenceDrafts.get(slug) || "").trim();
+    if (reply) void send({ kind: "reference_apply", slug, reply }).then(ok => { if (ok) referenceNotice = "Checking the verdict…"; render(); });
+  }
+  if (id?.startsWith("seems-wrong-")) {
+    const turnId = Number(id.slice("seems-wrong-".length));
+    flagTurn = flagTurn === turnId ? null : turnId;
+    flagDraft = "";
+    renderChat();
+  }
+  if (id?.startsWith("flag-send-")) {
+    const turnId = Number(id.slice("flag-send-".length));
+    const footer = (event.target as HTMLElement).closest(".chat-flag");
+    const line = (footer?.querySelector<HTMLInputElement>(".flag-line")?.value || "").split("\n")[0].trim().slice(0, 500);
+    void send({ kind: "reference_flag", message_id: turnId, line }).then(ok => {
+      if (!ok) return;
+      flagTurn = null; flagDraft = "";
+      referenceNotice = "Thanks — flagged for review.";
+      render();
+    });
   }
   if (id === "go-to-session-tab" && sessionTabId !== null) void chrome.tabs.get(sessionTabId).then(async tab => {
     await chrome.tabs.update(tab.id!, { active: true });
@@ -625,7 +818,7 @@ body.addEventListener("click", event => {
     sessionTabId = null; boundTabExists = false;
     render();
   });
-  const command = { "pause-session": "pause", "resume-session": "resume", "end-session": "end", "overrun-finish": "overrun_finish", "overrun-stop": "overrun_stop" }[id || ""];
+  const command = { "pause-session": "pause", "resume-session": "resume", "end-session": "end" }[id || ""];
   if (command) void send({ kind: "session_command", command, ...(command === "resume" ? { tabId: panelTabId } : {}) });
   if (id === "import-history") {
     const importButton = document.getElementById("import-history") as HTMLButtonElement;
@@ -639,11 +832,9 @@ body.addEventListener("input", event => {
     (document.getElementById("save-settings-name") as HTMLButtonElement).disabled = !target.value.trim() || target.value.trim() === (settings?.name || "");
     return;
   }
-  if (target.id !== "budget-minutes") return;
-  customBudget = target.value;
-  selectedBudget = 0;
-  for (const chip of body!.querySelectorAll<HTMLButtonElement>(".budget-chip")) chip.setAttribute("aria-pressed", "false");
-  (document.getElementById("start-session") as HTMLButtonElement).disabled = budgetValue() === null || !onProblemPage();
+  if (target.classList.contains("flag-line")) { flagDraft = target.value; return; }
+  if (target.id === "recap-feedback") { recapDraft = target.value; return; }
+  if (target.id.startsWith("verdict-")) referenceDrafts.set(target.id.slice("verdict-".length), target.value);
 });
 root.addEventListener("pointermove", event => {
   pointer = { x: event.clientX, y: event.clientY };
@@ -671,6 +862,7 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "session_state") {
     session = message.state;
+    if (session?.state === "ended" || (session?.state === "active" && session.problem)) suggestion = undefined;
     const slug = session?.problem?.slug || null;
     if (slug !== chatSlug) { chatSlug = slug; chat = emptyChat(); pacers.clear(); if (slug) requestChatState(); }
     if (startAfterEnd && session?.state === "ended") session = { ...session, state: "idle", mode: "idle" };
@@ -698,6 +890,19 @@ chrome.runtime.onMessage.addListener(message => {
     }
     render();
   }
+  if (message?.kind === "suggestion") { suggestion = message.message || undefined; render(); }
+  if (message?.kind === "planner_open") { suggestion = undefined; render(); }
+  if (message?.kind === "recap_state") {
+    const next = message.message as RecapState;
+    if (recap?.session_id !== next.session_id) recapNoted = "";
+    recap = next;
+    render();
+  }
+  if (message?.kind === "recap_noted") { const noted = message.message as RecapNoted; recapNoted = noted.message; recapDraft = ""; render(); }
+  if (message?.kind === "reference_state") { referenceState = message.state as ReferenceState; render(); }
+  if (message?.kind === "reference_flagged") { referenceNotice = "Thanks — flagged for review."; render(); }
+  if (message?.kind === "reference_verdict") { referenceNotice = message.message.accepted ? `Reference updated: ${message.message.reason}` : `Verdict refused: ${message.message.reason}`; render(); }
+  if (message?.kind === "error") { actionError = message.message; render(); }
   if (message?.kind === "reader_error") { readerError = message.message || ""; render(); }
   if (message?.kind === "import_state") {
     imported = message.imported;
@@ -718,8 +923,14 @@ void Promise.all([
   chrome.runtime.sendMessage({ kind: "get_reader_error" }),
   chrome.runtime.sendMessage({ kind: "get_import_state" }),
   chrome.runtime.sendMessage({ kind: "get_session_binding" }),
-]).then(([status, currentSession, currentSettings, error, importState, binding]) => {
+  chrome.runtime.sendMessage({ kind: "get_suggestion" }),
+  chrome.runtime.sendMessage({ kind: "get_recap_state" }),
+  chrome.runtime.sendMessage({ kind: "get_reference_state" }),
+]).then(([status, currentSession, currentSettings, error, importState, binding, currentSuggestion, currentRecap, currentReference]) => {
   transport = status; session = currentSession; settings = currentSettings; readerError = error || "";
+  suggestion = currentSuggestion || undefined;
+  recap = currentRecap || undefined;
+  referenceState = currentReference || undefined;
   imported = importState?.imported || false; if (importState?.result) importResult = importState.result.already_imported ? "NeetCode history was already imported." : `Imported ${importState.result.matched} solved problems.`;
   receivedAt = Date.now(); void refreshBinding(binding?.tabId ?? null);
 }).catch(error => { transport = { kind: "error", message: String(error) }; render(); });

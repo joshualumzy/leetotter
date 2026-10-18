@@ -33,7 +33,7 @@ async function dispatch(message: any, tab?: any): Promise<any> {
 }
 async function flush() { await vi.waitFor(() => { expect(messages.length).toBeGreaterThan(0); }); }
 function pushSession(mode: "idle" | "watching" | "paused") {
-  socket.onmessage?.({ data: JSON.stringify({ type: "session_state", ts: "now", state: mode === "watching" ? "active" : mode, mode, paused_reason: mode === "paused" ? "button" : null, check_message: null, budget_minutes: mode === "idle" ? null : 25, active_seconds: 0, running: mode === "watching", overrun_prompt: false, problem: null, accepted: false }) });
+  socket.onmessage?.({ data: JSON.stringify({ type: "session_state", ts: "now", state: mode === "watching" ? "active" : mode, mode, paused_reason: mode === "paused" ? "button" : null, check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 0, running: mode === "watching", problem: null, accepted: false }) });
 }
 // Watching a session reports where its tab is straight away; tests about other messages start after that.
 async function settleFocus() {
@@ -220,7 +220,7 @@ describe("worker reader delivery", () => {
   it("takes reader mode from session_state and delivers the full state to the panel", async () => {
     await start(); socket.readyState = 1;
     const session = { type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null,
-      check_message: null, budget_minutes: 25, active_seconds: 0, running: true, overrun_prompt: false, problem: null, accepted: false };
+      check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 0, running: true, problem: null, accepted: false };
     socket.onmessage?.({ data: JSON.stringify(session) });
     await vi.waitFor(() => expect(sent).toContainEqual({ tab: 7, message: { kind: "watch_mode", mode: "watching" } }));
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "session_state", state: session });
@@ -281,14 +281,16 @@ describe("worker reader delivery", () => {
 
   it("forwards a reader check and panel session commands", async () => {
     await start(); socket.readyState = 1;
-    socket.onmessage?.({ data: JSON.stringify({ type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null, check_message: null, budget_minutes: 25, active_seconds: 0, running: true, overrun_prompt: false, problem: null, accepted: false }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null, check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 0, running: true, problem: null, accepted: false }) });
     await dispatch({ kind: "get_mode" }); await settleFocus();
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
     expect((await dispatch({ kind: "reader_event", event: { type: "reader_check", payload: { ok: false, message: "Editor missing" } } }, tab)).accepted).toBe(true);
     expect(socket.sent.at(-1)).toMatchObject({ type: "reader_check", payload: { ok: false, message: "Editor missing" } });
-    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 25, tabId: 7 })).toEqual({ sent: true });
-    expect(socket.sent.at(-1)).toMatchObject({ type: "session_start", payload: { budget_minutes: 25 } });
-    for (const [command, type, payload] of [["pause", "session_pause", undefined], ["resume", "session_resume", undefined], ["end", "session_end", undefined], ["overrun_finish", "session_overrun", { choice: "finish" }], ["overrun_stop", "session_overrun", { choice: "stop" }]] as const) {
+    expect(await dispatch({ kind: "session_command", command: "start", tabId: 7 })).toEqual({ sent: true });
+    const started = socket.sent.filter(item => item.type === "session_start").at(-1);
+    expect(started).toMatchObject({ type: "session_start" });
+    expect(started).not.toHaveProperty("payload");
+    for (const [command, type, payload] of [["pause", "session_pause", undefined], ["resume", "session_resume", undefined], ["end", "session_end", undefined], ["time_up_extend", "session_time_up", { choice: "extend" }], ["time_up_debrief", "session_time_up", { choice: "debrief" }], ["done", "session_done", undefined], ["skip", "session_skip", undefined]] as const) {
       expect(await dispatch({ kind: "session_command", command, ...(command === "resume" ? { tabId: 7 } : {}) })).toEqual({ sent: true });
       expect(socket.sent.at(-1)).toMatchObject({ type, ...(payload ? { payload } : {}) });
     }
@@ -296,7 +298,7 @@ describe("worker reader delivery", () => {
   it("only starts on the requested tab's current problem URL, while resume accepts another NeetCode page", async () => {
     await start(); socket.readyState = 1;
     vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
-    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 25, tabId: 7 })).toEqual({ error: "Open a problem on NeetCode to start a session." });
+    expect(await dispatch({ kind: "session_command", command: "start", tabId: 7 })).toEqual({ error: "Open a problem on NeetCode to start a session." });
     expect(socket.sent.some(item => item.type === "session_start")).toBe(false);
     expect(await dispatch({ kind: "session_command", command: "resume", tabId: 7 })).toEqual({ sent: true });
   });
@@ -326,7 +328,7 @@ describe("worker reader delivery", () => {
       { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/two-sum/" },
       { id: 8, windowId: 3, active: false, url: "https://neetcode.io/problems/two-sum/" },
     ] as chrome.tabs.Tab[]);
-    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 45, tabId: 7 })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "session_command", command: "start", tabId: 7 })).toEqual({ sent: true });
     pushSession("watching");
     await vi.waitFor(() => expect(sent).toContainEqual({ tab: 8, message: { kind: "watch_mode", mode: "idle" } }));
     expect(await dispatch({ kind: "get_session_binding" })).toEqual({ tabId: 7 });
@@ -350,14 +352,14 @@ describe("worker reader delivery", () => {
 
   it("resumes a disconnect pause once when its bound tab survives", async () => {
     await start(); socket.readyState = 1;
-    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "disconnect", check_message: null, budget_minutes: 45, active_seconds: 60, running: false, overrun_prompt: false, problem: null, accepted: false };
+    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "disconnect", check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 60, running: false, problem: null, accepted: false };
     socket.onmessage?.({ data: JSON.stringify(paused) });
     socket.onmessage?.({ data: JSON.stringify(paused) });
     await vi.waitFor(() => expect(socket.sent.filter(item => item.type === "session_resume")).toHaveLength(1));
   });
   it("keeps the binding after a worker restart", async () => {
     await start(); socket.readyState = 1;
-    expect(await dispatch({ kind: "session_command", command: "start", budget_minutes: 45, tabId: 7 })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "session_command", command: "start", tabId: 7 })).toEqual({ sent: true });
     await start();
     expect(await dispatch({ kind: "get_session_binding" })).toEqual({ tabId: 7 });
   });
@@ -366,7 +368,7 @@ describe("worker reader delivery", () => {
     await start(); socket.readyState = 1;
     pushSession("watching"); pushSession("watching");
     await vi.waitFor(() => expect(socket.sent.filter(item => item.type === "tab_closed")).toHaveLength(1));
-    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "disconnect", check_message: null, budget_minutes: 45, active_seconds: 60, running: false, overrun_prompt: false, problem: null, accepted: false };
+    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "disconnect", check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 60, running: false, problem: null, accepted: false };
     socket.onmessage?.({ data: JSON.stringify(paused) });
     await dispatch({ kind: "get_mode" });
     expect(socket.sent.filter(item => item.type === "session_resume")).toHaveLength(0);
@@ -475,7 +477,7 @@ describe("worker reader delivery", () => {
   });
 
   describe("a focus pause while the session tab navigates to another problem", () => {
-    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "focus", check_message: null, budget_minutes: 25, active_seconds: 0, running: false, overrun_prompt: false, problem: null, accepted: false };
+    const paused = { type: "session_state", ts: "now", state: "paused", mode: "paused", paused_reason: "focus", check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 0, running: false, problem: null, accepted: false };
     async function leaveAndReturn() {
       socket.readyState = 1;
       socket.onmessage?.({ data: JSON.stringify(paused) });
@@ -506,7 +508,7 @@ describe("worker reader delivery", () => {
     await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
     socket.readyState = 1;
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
-    await dispatch({ kind: "session_command", command: "start", budget_minutes: 25, tabId: 7 });
+    await dispatch({ kind: "session_command", command: "start", tabId: 7 });
     await dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Duplicate Integer" } } }, tab);
     const before = socket.sent.length;
     updated.at(-1)?.(7, { url: "https://neetcode.io/problems/two-integer-sum/" }, { id: 7, url: "https://neetcode.io/problems/two-integer-sum/" });
@@ -515,4 +517,54 @@ describe("worker reader delivery", () => {
     updated.at(-1)?.(7, { url: "https://example.com/" }, { id: 7, url: "https://example.com/" });
     await vi.waitFor(() => expect(socket.sent.map(item => item.type)).toContain("tab_closed"));
   });
+describe("Planner, recap, cap and reference relay", () => {
+  it("asks for a suggestion and the reference review on connection", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
+    expect(socket.sent.map(item => item.type)).toEqual(expect.arrayContaining(["planner_get", "reference_get"]));
+  });
+  it("forwards the suggestion and recap states, including the companion's ts-less recap", async () => {
+    await start(); socket.readyState = 1;
+    const suggestion = { type: "suggestion", ts: "now", slug: "house-robber", title: "House Robber", difficulty: "Medium", cap_minutes: 35, steer: null, message: null, source: "fallback" };
+    socket.onmessage?.({ data: JSON.stringify(suggestion) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "suggestion", message: suggestion });
+    expect(await dispatch({ kind: "get_suggestion" })).toEqual(suggestion);
+    const recap = { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] };
+    socket.onmessage?.({ data: JSON.stringify(recap) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "recap_state", message: recap });
+    expect(await dispatch({ kind: "get_recap_state" })).toEqual(recap);
+    const noted = { type: "recap_noted", session_id: 12, note_id: 9, message: "Noted." };
+    socket.onmessage?.({ data: JSON.stringify(noted) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "recap_noted", message: noted });
+  });
+  it("navigates the session tab when a suggestion is opened and clears the card", async () => {
+    await start(); socket.readyState = 1;
+    expect(await dispatch({ kind: "planner_go", tabId: 7 })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "planner_go" });
+    expect(socket.sent.at(-1)).not.toHaveProperty("payload");
+    socket.onmessage?.({ data: JSON.stringify({ type: "planner_open", ts: "now", slug: "house-robber", title: "House Robber" }) });
+    await vi.waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(7, { url: "https://neetcode.io/problems/house-robber/" }));
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "planner_open", message: { type: "planner_open", ts: "now", slug: "house-robber", title: "House Robber" } });
+  });
+  it("forwards Planner chat, recap feedback and reference actions", async () => {
+    await start(); socket.readyState = 1;
+    expect(await dispatch({ kind: "planner_chat", text: "more trees" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "planner_chat", payload: { text: "more trees" } });
+    expect(await dispatch({ kind: "recap_get", session_id: 12 })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "recap_get", payload: { session_id: 12 } });
+    expect(await dispatch({ kind: "recap_feedback", session_id: 12, text: "That drop was wrong" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "recap_feedback", payload: { session_id: 12, text: "That drop was wrong" } });
+    expect(await dispatch({ kind: "reference_flag", message_id: 4, line: "This misses duplicates" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reference_flag", payload: { message_id: 4, line: "This misses duplicates" } });
+    expect(await dispatch({ kind: "reference_apply", slug: "top-k-elements-in-list", reply: '{"verdict":"reference is fine"}' })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reference_apply", payload: { slug: "top-k-elements-in-list" } });
+    expect(await dispatch({ kind: "reference_flag", message_id: 4, line: "two\nlines" })).toEqual({ error: "Invalid flag." });
+  });
+  it("renders planner and reference errors loudly through the panel", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "error", ts: "now", message: "The Planner failed and no eligible problems are available to suggest." }) });
+    expect(await dispatch({ kind: "get_status" })).toEqual({ kind: "error", message: "The Planner failed and no eligible problems are available to suggest." });
+  });
+});
+
 });

@@ -39,8 +39,20 @@ describe("wire messages", () => {
     expect(() => parseMessage('{"type":"import_result","ts":"now","result":{"matched":"2"}}')).toThrow("Invalid import_result");
   });
   it("accepts the companion's closed and restart pause reasons", () => {
-    const state = { type: "session_state", ts: "now", state: "paused", mode: "paused", check_message: null, budget_minutes: 45, active_seconds: 1394, running: false, overrun_prompt: false, problem: null, accepted: false };
+    const state = { type: "session_state", ts: "now", state: "paused", mode: "paused", check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 1394, running: false, problem: null, accepted: false };
     for (const paused_reason of ["closed", "restart"]) expect(parseMessage(JSON.stringify({ ...state, paused_reason }))).toMatchObject({ paused_reason });
+  });
+  it("accepts a cap, time-up card and debrief mode", () => {
+    const state = { type: "session_state", ts: "now", state: "active", mode: "debrief", paused_reason: null, check_message: null, cap_minutes: 35, cap_seconds_left: 0, time_up: { can_extend: false }, active_seconds: 2100, running: true, problem: { slug: "daily-temperatures", title: "Daily Temperatures" }, accepted: false, reference_status: "not_checked_yet", reference_message: "Reference not checked yet" };
+    expect(parseMessage(JSON.stringify(state))).toMatchObject({ mode: "debrief", cap_seconds_left: 0, time_up: { can_extend: false }, reference_message: "Reference not checked yet" });
+    expect(() => parseMessage(JSON.stringify({ ...state, time_up: {} }))).toThrow("Invalid session_state payload");
+    expect(() => parseMessage(JSON.stringify({ ...state, mode: "overrun" }))).toThrow("Invalid session_state payload");
+  });
+  it("sends session_start with no budget and rejects the retired budget and overrun messages", () => {
+    expect(parseMessage('{"type":"session_start","ts":"now"}')).toMatchObject({ type: "session_start" });
+    expect(parseMessage('{"type":"session_start","ts":"now","payload":{}}')).toMatchObject({ type: "session_start" });
+    expect(() => parseMessage('{"type":"session_start","ts":"now","payload":{"budget_minutes":45}}')).toThrow("Invalid session_start payload");
+    expect(() => parseMessage('{"type":"session_overrun","ts":"now","payload":{"choice":"finish"}}')).toThrow("Unknown message type: session_overrun");
   });
   it("validates Tutor requests and replies", () => {
     const valid = [
@@ -63,5 +75,70 @@ describe("wire messages", () => {
       { type: "chat_state", turns: [{ turn_id: 1, kind: "reply", text: "x" }], streaming: null },
     ];
     for (const message of invalid) expect(() => parseMessage(JSON.stringify({ ...message, ts: "now" }))).toThrow();
+  });
+});
+
+
+describe("Planner, recap, time cap and reference messages", () => {
+  it("accepts the recorded suggestion card by title, cap and steer only", () => {
+    const suggestion = { type: "suggestion", ts: "2026-10-19T10:00:00Z", slug: "house-robber", title: "House Robber", difficulty: "Medium", cap_minutes: 35, steer: "more dynamic programming", message: "A dynamic programming problem next.", source: "planner" };
+    expect(parseMessage(JSON.stringify(suggestion))).toMatchObject(suggestion);
+    const fallback = { ...suggestion, slug: "coin-change", title: "Coin Change", steer: null, message: "The Planner didn't answer; here's a code-ranked suggestion.", source: "fallback" };
+    expect(parseMessage(JSON.stringify(fallback))).toMatchObject(fallback);
+    for (const invalid of [
+      { ...suggestion, title: "" }, { ...suggestion, difficulty: "Brutal" },
+      { ...suggestion, cap_minutes: 0 }, { ...suggestion, steer: 3 }, { ...suggestion, source: "model" },
+    ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow("Invalid suggestion payload");
+  });
+  it("accepts the Planner's client messages and planner_open", () => {
+    const valid = [
+      { type: "planner_get" }, { type: "planner_go" }, { type: "planner_swap" }, { type: "planner_clear" },
+      { type: "planner_chat", payload: { text: "more dynamic programming" } },
+      { type: "planner_open", slug: "house-robber", title: "House Robber" },
+    ];
+    for (const message of valid) expect(parseMessage(JSON.stringify({ ...message, ts: "now" }))).toMatchObject(message);
+    expect(() => parseMessage('{"type":"planner_go","ts":"now","payload":{}}')).toThrow();
+    expect(() => parseMessage('{"type":"planner_chat","ts":"now","payload":{"text":" "}}')).toThrow();
+    expect(() => parseMessage('{"type":"planner_open","ts":"now","slug":"house-robber"}')).toThrow("Invalid planner_open payload");
+  });
+  it("accepts the recap states and noted message exactly as the companion sends them", () => {
+    for (const status of ["preparing", "ready", "failed", "feedback_failed"] as const) {
+      const recap = { type: "recap_state", session_id: 12, status, bullets: status === "ready" ? ["Dropped: visited marking."] : [], ...(status === "failed" || status === "feedback_failed" ? { message: "Session review is missing: offline" } : {}) };
+      const parsed = parseMessage(JSON.stringify(recap));
+      expect(parsed).toMatchObject(recap);
+      if (status !== "preparing") expect(parsed).not.toHaveProperty("ts");
+    }
+    expect(parseMessage('{"type":"recap_noted","session_id":12,"note_id":9,"message":"Noted. For a grade correction, use Progress."}')).toMatchObject({ session_id: 12, note_id: 9 });
+    expect(parseMessage('{"type":"recap_get","ts":"now","payload":{"session_id":12}}')).toMatchObject({ type: "recap_get" });
+    expect(parseMessage('{"type":"recap_feedback","ts":"now","payload":{"session_id":12,"text":"Missed the window idea"}}')).toMatchObject({ type: "recap_feedback" });
+    expect(() => parseMessage('{"type":"recap_feedback","ts":"now","payload":{"session_id":12,"text":" "}}')).toThrow("Invalid recap_feedback text");
+    expect(() => parseMessage('{"type":"recap_state","session_id":0,"status":"ready","bullets":[]}')).toThrow("Invalid recap_state payload");
+    expect(() => parseMessage('{"type":"recap_state","session_id":12,"status":"ready","bullets":[1]}')).toThrow("Invalid recap_state payload");
+  });
+  it("accepts the time-up, done and skip senders", () => {
+    expect(parseMessage('{"type":"session_time_up","ts":"now","payload":{"choice":"extend"}}')).toMatchObject({ type: "session_time_up" });
+    expect(parseMessage('{"type":"session_time_up","ts":"now","payload":{"choice":"debrief"}}')).toMatchObject({ type: "session_time_up" });
+    expect(parseMessage('{"type":"session_done","ts":"now"}')).toMatchObject({ type: "session_done" });
+    expect(parseMessage('{"type":"session_skip","ts":"now"}')).toMatchObject({ type: "session_skip" });
+    expect(() => parseMessage('{"type":"session_time_up","ts":"now","payload":{"choice":"finish"}}')).toThrow("Invalid session_time_up payload");
+    expect(() => parseMessage('{"type":"session_done","ts":"now","payload":{}}')).toThrow();
+  });
+  it("accepts the reference review messages and flags", () => {
+    const state = { type: "reference_state", ts: "now", count: 1, references: [{ slug: "top-k-elements-in-list", title: "Top K Frequent Elements", uncertain: ["heap.complexity"], prompt: "Settle this reference", reason: "Reference is not ready yet" }] };
+    expect(parseMessage(JSON.stringify(state))).toMatchObject(state);
+    expect(parseMessage('{"type":"reference_get","ts":"now"}')).toMatchObject({ type: "reference_get" });
+    expect(parseMessage('{"type":"reference_flag","ts":"now","payload":{"message_id":4}}')).toMatchObject({ type: "reference_flag" });
+    expect(parseMessage('{"type":"reference_flag","ts":"now","payload":{"message_id":4,"line":"This misses duplicates"}}')).toMatchObject({ type: "reference_flag" });
+    expect(parseMessage('{"type":"reference_flagged","ts":"now","message_id":4,"note_id":9}')).toMatchObject({ type: "reference_flagged" });
+    expect(parseMessage(JSON.stringify({ type: "reference_apply", ts: "now", payload: { slug: "top-k-elements-in-list", reply: '{"verdict":"reference is fine"}' } }))).toMatchObject({ type: "reference_apply" });
+    expect(parseMessage('{"type":"reference_verdict","ts":"now","slug":"top-k-elements-in-list","accepted":false,"reason":"Invalid verdict"}')).toMatchObject({ type: "reference_verdict" });
+    expect(parseMessage('{"type":"reference_verdict","ts":"now","slug":"top-k-elements-in-list","accepted":true,"reason":"reference is fine","graded":[1,2]}')).toMatchObject({ type: "reference_verdict" });
+    for (const invalid of [
+      { type: "reference_state", ts: "now", count: 1, references: [{ slug: "", title: "x", uncertain: [], prompt: null }] },
+      { type: "reference_flag", ts: "now", payload: { message_id: 0 } },
+      { type: "reference_flag", ts: "now", payload: { message_id: 4, line: "two\nlines" } },
+      { type: "reference_apply", ts: "now", payload: { slug: "x", reply: "" } },
+      { type: "reference_verdict", ts: "now", slug: "x", accepted: "yes", reason: "" },
+    ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow();
   });
 });

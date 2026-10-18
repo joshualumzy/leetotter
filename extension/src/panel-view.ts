@@ -1,10 +1,10 @@
 import type { ConnectionState } from "./connection";
-import type { SessionState, SettingsState } from "./protocol";
+import type { Difficulty, SessionState, SettingsState } from "./protocol";
 
 export type Control = "pause" | "resume" | "end";
-export type Body = "offline" | "first_run" | "start" | "active" | "paused" | "welcome_back" | "another_tab" | "overrun" | "ended";
+export type Body = "offline" | "first_run" | "start" | "active" | "paused" | "welcome_back" | "another_tab" | "time_up" | "debrief" | "ended";
 export type RemarkPool = "offline" | "start" | "active" | "thinking" | "accepted" |
-  "pause_button" | "pause_focus" | "pause_check" | "pause_check_page" | "pause_disconnect" | "pause_closed" | "pause_restart" | "overrun" | "ended" | "name_first" | "name_settings";
+  "pause_button" | "pause_focus" | "pause_check" | "pause_check_page" | "pause_disconnect" | "pause_closed" | "pause_restart" | "time_up" | "debrief" | "ended" | "name_first" | "name_settings";
 export type PanelView = {
   title: string;
   statusTone: "live" | "good" | "paused" | "error" | "idle";
@@ -62,21 +62,39 @@ export function panelView(input: { transport: ConnectionState; session_state?: S
       pauseText: info[1],
     };
   }
+  const body: Body = session.mode === "debrief" ? "debrief" : session.time_up !== null ? "time_up" : "active";
   return {
     ...common,
     statusTone: transport.kind === "error" ? "error" : session.accepted ? "good" : "live",
     controls: ["pause", "end"],
-    body: session.overrun_prompt ? "overrun" : "active",
-    remarkPool: session.accepted ? "accepted" : session.overrun_prompt ? "overrun" : "active",
+    body,
+    remarkPool: session.accepted ? "accepted" : body === "time_up" ? "time_up" : body === "debrief" ? "debrief" : "active",
   };
 }
 
-function clock(seconds: number): string {
+export function clock(seconds: number): string {
   const value = Math.max(0, Math.floor(seconds));
   const h = Math.floor(value / 3600), m = Math.floor(value % 3600 / 60), s = value % 60;
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function timerText(activeSeconds: number, budgetMinutes: number): { elapsed: string; budget: string; over: boolean } {
-  return { elapsed: clock(activeSeconds), budget: clock(budgetMinutes * 60), over: activeSeconds > budgetMinutes * 60 };
+export function timerText(activeSeconds: number): { elapsed: string } {
+  return { elapsed: clock(activeSeconds) };
+}
+
+export function difficultyForCap(capMinutes: number | null): Difficulty | null {
+  if (capMinutes === 20) return "Easy";
+  if (capMinutes === 35) return "Medium";
+  if (capMinutes === 50) return "Hard";
+  return null;
+}
+
+export function capLine(difficulty: Difficulty | null, capMinutes: number | null): string {
+  return difficulty && capMinutes !== null ? `${difficulty}, ${capMinutes} min cap` : "";
+}
+
+export function timerCapText(capMinutes: number | null, secondsLeft: number | null): string {
+  const difficulty = difficultyForCap(capMinutes);
+  if (!difficulty || capMinutes === null || secondsLeft === null) return "";
+  return `${difficulty}, ${capMinutes} min cap · ${clock(secondsLeft)} left`;
 }

@@ -496,47 +496,6 @@ p {
   color:var(--mute)
 }
 
-.budget-choices {
-  display:flex;
-  flex-wrap:wrap;
-  gap:6px;
-  margin:8px 0 12px
-}
-
-.budget-chip {
-  border:1px solid var(--line);
-  background:var(--card);
-  color:var(--ink);
-  border-radius:99px;
-  padding:5px 12px
-}
-
-.budget-chip[aria-pressed="true"] {
-  background:var(--ink);
-  border-color:var(--ink);
-  color:var(--bg)
-}
-
-.budget-other {
-  display:flex;
-  align-items:center;
-  gap:6px;
-  color:var(--mute);
-  font-size:12px
-}
-
-.budget-custom {
-  width:78px;
-  padding:5px 7px;
-  font-size:13px;
-  appearance:textfield
-}
-
-.budget-custom::-webkit-inner-spin-button,
-.budget-custom::-webkit-outer-spin-button {
-  appearance:none
-}
-
 .name-hint {
   font-size:12px;
   color:#b45309;
@@ -946,4 +905,137 @@ p {
   .body {
     padding:10px
   }
+}
+
+.suggestion-card h4,.recap-card h4,.time-up-card h4 {
+  margin-bottom:4px
+}
+
+.cap-line {
+  font-size:12px;
+  margin:0 0 8px
+}
+
+.planner-message {
+  color:var(--ink);
+  margin:0 0 8px
+}
+
+.steer-line {
+  display:flex;
+  align-items:baseline;
+  gap:6px;
+  font-size:12px;
+  color:var(--mute);
+  margin:0 0 8px
+}
+
+.recap-bullets {
+  margin:0 0 10px;
+  padding-left:18px;
+  color:var(--ink);
+  font-size:13px
+}
+
+.recap-bullets li + li {
+  margin-top:4px
+}
+
+.recap-otter {
+  margin:0 auto 6px;
+  text-align:center
+}
+
+.recap-otter .otter {
+  width:68px;
+  height:68px
+}
+
+.recap-feedback {
+  width:100%;
+  margin:2px 0 6px
+}
+
+.recap-alert {
+  color:#b42318
+}
+
+.panel[data-theme="dark"] .recap-alert {
+  color:#ffb4b4
+}
+
+.recap-noted {
+  color:var(--acc);
+  font-weight:600
+}
+
+.time-up-card .row {
+  margin-top:8px
+}
+
+.problem-actions {
+  display:flex;
+  justify-content:flex-end
+}
+
+.debrief-actions {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px
+}
+
+.reference-status {
+  font-size:12px;
+  color:var(--mute);
+  margin:0
+}
+
+.chat-flag {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px;
+  margin-top:5px;
+  font-size:12px
+}
+
+.chat-flag .flag-row {
+  display:flex;
+  gap:4px;
+  width:100%
+}
+
+.chat-flag .flag-line {
+  flex:1;
+  min-width:0;
+  padding:4px 7px;
+  font-size:12px
+}
+
+.reference-review {
+  border-top:1px solid var(--line);
+  margin-top:10px;
+  padding-top:10px
+}
+
+.reference-item {
+  border-top:1px solid var(--line);
+  padding:7px 0
+}
+
+.reference-item summary {
+  cursor:pointer;
+  font-weight:600;
+  font-size:13px
+}
+
+.reference-verdict {
+  width:100%;
+  margin:6px 0
+}
+
+.reference-notice {
+  font-size:12px;
+  color:var(--acc)
 }

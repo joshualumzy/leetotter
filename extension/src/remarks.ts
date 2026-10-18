@@ -20,7 +20,7 @@ const pools: Record<Exclude<RemarkPool, "offline">, Line[]> = {
   start: [
     plain("I'm here when you're ready."),
     plain("A little time to practise?"),
-    named("Hi {name}! How long have you got?"),
+    named("Hi {name}! Ready to practise?"),
     touchLine,
   ],
   active: [
@@ -40,7 +40,8 @@ const pools: Record<Exclude<RemarkPool, "offline">, Line[]> = {
   pause_disconnect: [plain("The tutor connection was lost.")],
   pause_closed: [plain("Welcome back."), plain("I'm still here."), named("Good to see you, {name}.")],
   pause_restart: [plain("Ready when you are."), plain("Here again, whenever you like."), named("Welcome back, {name}.")],
-  overrun: [plain("Time's up. Your call."), plain("One more, or float ashore?"), named("Your call, {name}.")],
+  time_up: [plain("Time's up. Extend, debrief, or skip."), plain("The cap's up; your call."), named("Your call, {name}.")],
+  debrief: [plain("Let's look back over that one."), plain("Tell me what happened, and we'll untangle it."), named("Let's retrace it, {name}.")],
   ended: [plain("A good place to rest."), plain("That session is tucked away."), named("See you next time, {name}.")],
   name_first: [named("Nice to meet you, {name}!"), named("Hello, {name}!"), named("Glad to meet you, {name}!")],
   name_settings: [named("Got it, {name}."), named("Noted, {name}."), named("Okay, {name}.")],

@@ -1,5 +1,5 @@
 import { CompanionConnection, type ConnectionState } from "./connection";
-import { MISSING_READER_MESSAGE, readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type SessionState, type SettingsState } from "./protocol";
+import { MISSING_READER_MESSAGE, readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type RecapState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
 import { reactionForReaderEvent } from "./reader-reaction";
 
 declare const __LEETOTTER_PORT__: number;
@@ -17,6 +17,10 @@ let importResult: { already_imported: boolean; matched: number; unmatched: strin
 let importPending = false;
 let sessionState: SessionState | undefined;
 let settingsState: SettingsState | undefined;
+let suggestion: Suggestion | undefined;
+let recapState: RecapState | undefined;
+let referenceState: ReferenceState | undefined;
+let plannerTabId: number | null = null;
 let sessionTabId: number | null = null;
 let orphanReported = false;
 let disconnectResumeSent = false;
@@ -92,6 +96,8 @@ const connection = new CompanionConnection(
       connection.send({ type: "session_get_state", ts: new Date().toISOString() });
       connection.send({ type: "settings_get", ts: new Date().toISOString() });
       connection.send({ type: "chat_get", ts: new Date().toISOString() });
+      connection.send({ type: "planner_get", ts: new Date().toISOString() });
+      connection.send({ type: "reference_get", ts: new Date().toISOString() });
       resyncFocus();
     }
     if (next.kind === "error" && importPending) { importPending = false; panel({ kind: "import_error", message: next.message }); }
@@ -104,8 +110,24 @@ const connection = new CompanionConnection(
       return;
     }
     if (message.type === "settings_state") { settingsState = message; panel({ kind: "settings_state", settings: message }); return; }
+    if (message.type === "suggestion") { suggestion = message; panel({ kind: "suggestion", message }); return; }
+    if (message.type === "planner_open") {
+      suggestion = undefined;
+      void openPlannerProblem(message.slug, message.title);
+      panel({ kind: "planner_open", message });
+      return;
+    }
+    if (message.type === "recap_state") { recapState = message; panel({ kind: "recap_state", message }); return; }
+    if (message.type === "recap_noted") { panel({ kind: "recap_noted", message }); return; }
+    if (message.type === "reference_state") { referenceState = message; panel({ kind: "reference_state", state: message }); return; }
+    if (message.type === "reference_flagged") { panel({ kind: "reference_flagged", message }); connection.send({ type: "reference_get", ts: new Date().toISOString() }); return; }
+    if (message.type === "reference_verdict") { panel({ kind: "reference_verdict", message }); connection.send({ type: "reference_get", ts: new Date().toISOString() }); return; }
     if (message.type === "session_state") {
       if (notice && message.mode === "watching" && (sessionState?.state === "idle" || sessionState?.state === "ended")) { notice = ""; showReaderAlert(); }
+      if (message.state === "active" && message.problem && suggestion) {
+        suggestion = undefined;
+        panel({ kind: "suggestion", message: null });
+      }
       sessionState = message;
       if (message.state !== "paused" || message.paused_reason !== "disconnect") disconnectResumeSent = false;
       if (message.state !== "active") orphanReported = false;
@@ -120,7 +142,7 @@ const connection = new CompanionConnection(
         if (message.state === "paused" && message.paused_reason === "disconnect" && boundExists && !disconnectResumeSent) {
           disconnectResumeSent = connection.send({ type: "session_resume", ts: new Date().toISOString() });
         }
-        await setMode(message.mode);
+        await setMode(message.mode === "debrief" ? "watching" : message.mode);
       })();
       panel({ kind: "session_state", state: message });
       return;
@@ -130,6 +152,22 @@ const connection = new CompanionConnection(
     panel({ kind: "import_state", imported, result: importResult });
   },
 );
+async function openPlannerProblem(slug: string, title: string): Promise<void> {
+  try {
+    let tabId = sessionTabId;
+    if (tabId === null) {
+      if (plannerTabId !== null && await tabExists(plannerTabId)) tabId = plannerTabId;
+      else tabId = (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id ?? null;
+    }
+    if (tabId === null) throw new Error("Open a NeetCode tab to go to a suggestion.");
+    const tab = await chrome.tabs.get(tabId);
+    if (!neetcodeUrl(tab.url)) throw new Error("Open a NeetCode tab to go to a suggestion.");
+    await chrome.tabs.update(tabId, { url: `https://neetcode.io/problems/${slug}/` });
+    plannerTabId = tabId;
+  } catch (error) {
+    panel({ kind: "error", message: `Could not open ${title}: ${error instanceof Error ? error.message : String(error)}` });
+  }
+}
 function send(type: ReaderMessageType, payload: Record<string, unknown>): boolean {
   const delivered = connection.send({ type, ts: new Date().toISOString(), payload });
   if (delivered) {
@@ -184,10 +222,44 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.kind === "get_session_state") return sessionState;
     if (message?.kind === "get_session_binding") return { tabId: sessionTabId };
     if (message?.kind === "get_settings_state") return settingsState;
+    if (message?.kind === "get_suggestion") return suggestion;
+    if (message?.kind === "get_recap_state") return recapState;
+    if (message?.kind === "get_reference_state") return referenceState;
     if (["help_request", "chat_message", "chat_get"].includes(message?.kind)) {
       if (message.kind === "chat_message" && (typeof message.text !== "string" || !message.text.trim() || [...message.text.trim()].length > 4000)) return { error: "Message must be 1 to 4000 characters." };
       const outgoing = { type: message.kind, ts: new Date().toISOString(), ...(message.kind === "chat_message" ? { payload: { text: message.text.trim() } } : {}) };
       return connection.send(outgoing) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "planner_get" || message?.kind === "planner_swap" || message?.kind === "planner_clear") {
+      return connection.send({ type: message.kind, ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "planner_go") {
+      plannerTabId = Number.isInteger(message.tabId) ? message.tabId as number : plannerTabId;
+      return connection.send({ type: "planner_go", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "planner_chat") {
+      if (typeof message.text !== "string" || !message.text.trim() || [...message.text.trim()].length > 4000) return { error: "Message must be 1 to 4000 characters." };
+      return connection.send({ type: "planner_chat", ts: new Date().toISOString(), payload: { text: message.text.trim() } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "recap_get") {
+      if (!Number.isInteger(message.session_id) || message.session_id <= 0) return { error: "Invalid recap request." };
+      return connection.send({ type: "recap_get", ts: new Date().toISOString(), payload: { session_id: message.session_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "recap_feedback") {
+      if (!Number.isInteger(message.session_id) || message.session_id <= 0 || typeof message.text !== "string" || !message.text.trim()) return { error: "Feedback text is required." };
+      return connection.send({ type: "recap_feedback", ts: new Date().toISOString(), payload: { session_id: message.session_id, text: message.text.trim() } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "reference_get") {
+      return connection.send({ type: "reference_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "reference_flag") {
+      const line = typeof message.line === "string" ? message.line : "";
+      if (!Number.isInteger(message.message_id) || message.message_id <= 0 || line.includes("\n") || line.length > 500) return { error: "Invalid flag." };
+      return connection.send({ type: "reference_flag", ts: new Date().toISOString(), payload: { message_id: message.message_id, line } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "reference_apply") {
+      if (typeof message.slug !== "string" || !message.slug || typeof message.reply !== "string" || !message.reply.trim()) return { error: "Paste the verdict first." };
+      return connection.send({ type: "reference_apply", ts: new Date().toISOString(), payload: { slug: message.slug, reply: message.reply } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "settings_get") return connection.send({ type: "settings_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     if (message?.kind === "skip_name") {
@@ -203,9 +275,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if (message?.kind === "session_command") {
       const command = message.command;
-      const types = { start: "session_start", pause: "session_pause", resume: "session_resume", end: "session_end", overrun_finish: "session_overrun", overrun_stop: "session_overrun" } as const;
+      const types = { start: "session_start", pause: "session_pause", resume: "session_resume", end: "session_end", time_up_extend: "session_time_up", time_up_debrief: "session_time_up", done: "session_done", skip: "session_skip" } as const;
       if (!(command in types)) return { error: "Unknown session command." };
-      if (command === "start" && (!Number.isInteger(message.budget_minutes) || message.budget_minutes < 1 || message.budget_minutes > 1440)) return { error: "Invalid session budget." };
       if (command === "start" || command === "resume") {
         if (sessionState && ["active", "paused"].includes(sessionState.state) && sessionTabId !== message.tabId && await tabExists(sessionTabId)) return { error: "A session is running in another tab." };
         let tab: chrome.tabs.Tab;
@@ -214,7 +285,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         if (command === "start" && !problemUrl(tab.url)) return { error: "Open a problem on NeetCode to start a session." };
       }
       const type = types[command as keyof typeof types];
-      const payload = command === "start" ? { budget_minutes: message.budget_minutes } : command === "overrun_finish" ? { choice: "finish" } : command === "overrun_stop" ? { choice: "stop" } : undefined;
+      const payload = command === "time_up_extend" ? { choice: "extend" } : command === "time_up_debrief" ? { choice: "debrief" } : undefined;
       if (command === "resume" && message.problem_slug !== undefined) {
         if (typeof message.problem_slug !== "string" || !/^[a-z0-9-]+$/.test(message.problem_slug)) return { error: "Invalid saved problem." };
         await bindTab(message.tabId);
@@ -227,8 +298,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         return connection.send({ type, ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
       }
       if (!connection.send({ type, ts: new Date().toISOString(), ...(payload ? { payload } : {}) })) return { error: "Tutor service isn't connected." };
-      if (command === "start" || command === "resume") { orphanReported = false; disconnectResumeSent = false; await bindTab(message.tabId); }
-      if (command === "end") await bindTab(null);
+      if (command === "start" || command === "resume") {
+        orphanReported = false; disconnectResumeSent = false; await bindTab(message.tabId);
+        plannerTabId = message.tabId;
+        if (command === "start") connection.send({ type: "planner_get", ts: new Date().toISOString() });
+      }
+      if (command === "end") { suggestion = undefined; panel({ kind: "suggestion", message: null }); await bindTab(null); }
       return { sent: true };
     }
     if (message?.kind === "import_history") {
