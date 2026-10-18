@@ -122,9 +122,9 @@ def add_session(path, *, ended=True, recap=None, seen=0):
 def test_hello_sends_pending_recaps_and_only_unseen_ready_recaps(tmp_path, monkeypatch):
     async def scenario():
         path = recap_store(tmp_path, monkeypatch)
-        pending = add_session(path)
         unseen = add_session(path, recap=["Kept: two pointers."])
         add_session(path, recap=["Dropped: visited marking."], seen=1)
+        pending = add_session(path)
         connection = Connection([msg("hello")])
         await socket._handle(connection)
         recaps = [state for state in connection.sent if state["type"] == "recap_state"]
