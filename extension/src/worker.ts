@@ -249,6 +249,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (!Number.isInteger(message.session_id) || message.session_id <= 0 || typeof message.text !== "string" || !message.text.trim()) return { error: "Feedback text is required." };
       return connection.send({ type: "recap_feedback", ts: new Date().toISOString(), payload: { session_id: message.session_id, text: message.text.trim() } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
+    if (message?.kind === "recap_seen") {
+      if (!Number.isInteger(message.session_id) || message.session_id <= 0) return { error: "Invalid recap request." };
+      const sent = connection.send({ type: "recap_seen", ts: new Date().toISOString(), payload: { session_id: message.session_id } });
+      if (sent && recapState?.session_id === message.session_id) recapState = undefined;
+      return sent ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
     if (message?.kind === "reference_get") {
       return connection.send({ type: "reference_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }

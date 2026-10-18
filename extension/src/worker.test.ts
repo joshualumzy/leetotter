@@ -580,6 +580,16 @@ describe("Planner, recap, cap and reference relay", () => {
     expect(socket.sent.at(-1)).toMatchObject({ type: "reference_apply", payload: { slug: "top-k-elements-in-list" } });
     expect(await dispatch({ kind: "reference_flag", message_id: 4, line: "two\nlines" })).toEqual({ error: "Invalid flag." });
   });
+  it("relays a seen recap and forgets it, so reopening the panel does not show it again", async () => {
+    await start(); socket.readyState = 1;
+    const recap = { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] };
+    socket.onmessage?.({ data: JSON.stringify(recap) });
+    expect(await dispatch({ kind: "get_recap_state" })).toEqual(recap);
+    expect(await dispatch({ kind: "recap_seen", session_id: 12 })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "recap_seen", payload: { session_id: 12 } });
+    expect(await dispatch({ kind: "get_recap_state" })).toBeUndefined();
+    expect(await dispatch({ kind: "recap_seen", session_id: 0 })).toEqual({ error: "Invalid recap request." });
+  });
   it("renders planner and reference errors loudly through the panel", async () => {
     await start(); socket.readyState = 1;
     socket.onmessage?.({ data: JSON.stringify({ type: "error", ts: "now", message: "The Planner failed and no eligible problems are available to suggest." }) });

@@ -110,6 +110,8 @@ describe("Planner, recap, time cap and reference messages", () => {
     }
     expect(parseMessage('{"type":"recap_noted","session_id":12,"note_id":9,"message":"Noted. For a grade correction, use Progress."}')).toMatchObject({ session_id: 12, note_id: 9 });
     expect(parseMessage('{"type":"recap_get","ts":"now","payload":{"session_id":12}}')).toMatchObject({ type: "recap_get" });
+    expect(parseMessage('{"type":"recap_seen","ts":"now","payload":{"session_id":12}}')).toMatchObject({ type: "recap_seen" });
+    expect(() => parseMessage('{"type":"recap_seen","ts":"now","payload":{"session_id":0}}')).toThrow("Invalid recap_seen payload");
     expect(parseMessage('{"type":"recap_feedback","ts":"now","payload":{"session_id":12,"text":"Missed the window idea"}}')).toMatchObject({ type: "recap_feedback" });
     expect(() => parseMessage('{"type":"recap_feedback","ts":"now","payload":{"session_id":12,"text":" "}}')).toThrow("Invalid recap_feedback text");
     expect(() => parseMessage('{"type":"recap_state","session_id":0,"status":"ready","bullets":[]}')).toThrow("Invalid recap_state payload");

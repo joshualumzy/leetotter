@@ -25,6 +25,7 @@ export type Message =
   | { type: "planner_get" | "planner_go" | "planner_swap" | "planner_clear"; ts: string }
   | { type: "planner_chat"; ts: string; payload: { text: string } }
   | { type: "recap_get"; ts: string; payload: { session_id: number } }
+  | { type: "recap_seen"; ts: string; payload: { session_id: number } }
   | { type: "recap_feedback"; ts: string; payload: { session_id: number; text: string } }
   | { type: "reference_get"; ts: string }
   | { type: "reference_flag"; ts: string; payload: { message_id: number; line?: string } }
@@ -61,7 +62,7 @@ export type ReaderMessageType = "problem_opened" | "problem_statement" | "code_c
 export const MISSING_READER_MESSAGE = "Leetotter can't see this NeetCode page. Reload the tab.";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
-const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
+const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
 
 export function validateImportUrls(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every(url => typeof url === "string" && /^https:\/\/(?:www\.)?leetcode\.com\/problems\/[^/?#]+\/?(?:[?#].*)?$/.test(url))) {
@@ -195,7 +196,7 @@ export function parseMessage(raw: string): Message {
   }
   if (message.type === "suggestion") validateSuggestion(message);
   if (message.type === "planner_open" && (!nonempty(message.slug) || !nonempty(message.title))) throw new Error("Invalid planner_open payload");
-  if (message.type === "recap_get" || message.type === "recap_feedback") {
+  if (message.type === "recap_get" || message.type === "recap_feedback" || message.type === "recap_seen") {
     const payload = message.payload as Record<string, unknown> | undefined;
     if (!payload || !positiveInteger(payload.session_id)) throw new Error(`Invalid ${message.type} payload`);
     if (message.type === "recap_feedback" && (typeof payload.text !== "string" || !payload.text.trim())) throw new Error("Invalid recap_feedback text");

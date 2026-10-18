@@ -57,6 +57,10 @@ MIGRATIONS = (
     (
         "DELETE FROM events WHERE type IN ('overrun_prompted', 'overrun_choice')",
     ),
+    (
+        "ALTER TABLE sessions ADD COLUMN recap_seen INTEGER NOT NULL DEFAULT 0",
+        "UPDATE sessions SET recap_seen = 1 WHERE recap_bullets IS NOT NULL",
+    ),
 )
 
 

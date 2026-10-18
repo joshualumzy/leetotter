@@ -638,6 +638,7 @@ describe("panel actions", () => {
       showStart();
       notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
       click("recap-close");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 12 });
       expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
       expect(document.querySelector(".recap-card")).toBeNull();
       notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
@@ -707,6 +708,10 @@ describe("panel actions", () => {
       expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_feedback", session_id: 12, text: "That drop was wrong" });
       notify({ kind: "recap_noted", message: { type: "recap_noted", session_id: 12, note_id: 9, message: "Noted. For a grade correction, use Progress." } });
       expect(document.querySelector(".recap-noted")?.textContent).toContain("Noted");
+      sendMessage.mockClear();
+      click("recap-close");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 12 });
+      expect(document.querySelector(".recap-card")).toBeNull();
     });
     it("shows no recap card when a ready recap has nothing to report", () => {
       showStart();
@@ -714,10 +719,11 @@ describe("panel actions", () => {
       expect(document.querySelector(".recap-card")).toBeNull();
       expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
     });
-    it("closes the recap without sending an empty feedback note", () => {
+    it("closes the recap as seen without sending an empty feedback note", () => {
       showStart();
       notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
       click("recap-close");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 12 });
       expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
       expect(document.querySelector(".recap-card")).toBeNull();
     });

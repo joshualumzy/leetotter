@@ -793,6 +793,7 @@ body.addEventListener("click", event => {
     if (recapDraft.trim() && recap.status === "ready") {
       void send({ kind: "recap_feedback", session_id: recap.session_id, text: recapDraft.trim() }).then(ok => { if (ok) recapDraft = ""; });
     } else {
+      void send({ kind: "recap_seen", session_id: recap.session_id });
       recapDismissedFor = recap.session_id;
       recap = undefined; recapNoted = ""; recapDraft = ""; render();
     }

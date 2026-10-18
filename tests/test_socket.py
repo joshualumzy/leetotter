@@ -2,13 +2,19 @@ import asyncio
 import base64
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
+import companion.socket as socket
+from companion.session import SessionCoordinator
 from companion.socket import ALLOWED_ORIGIN, serve_companion
+from companion.store import open_store
+from tests.test_planner_socket import Connection
+from tests.test_session import msg
 
 
 def test_allowed_origin_matches_the_manifest_public_key():
@@ -91,3 +97,80 @@ def test_malformed_reader_events_get_an_error(message):
                 assert message["type"] in reply["message"]
 
     asyncio.run(check())
+
+
+def recap_store(tmp_path, monkeypatch):
+    path = tmp_path / "store.sqlite3"
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(path))
+    socket._clients.clear()
+    socket._coordinator = SessionCoordinator(path, lambda: datetime(2026, 10, 18, tzinfo=timezone.utc))
+    socket._planner = None
+    socket._grading_lock = asyncio.Lock()
+    socket._reflection_lock = asyncio.Lock()
+    return path
+
+
+def add_session(path, *, ended=True, recap=None, seen=0):
+    with open_store(path) as db:
+        return db.execute(
+            "INSERT INTO sessions (started_at, ended_at, summary, recap_bullets, recap_seen) VALUES (?, ?, ?, ?, ?)",
+            ("2026-10-17T10:00:00+00:00", "2026-10-17T10:30:00+00:00" if ended else None,
+             "Done." if recap is not None else None, json.dumps(recap) if recap is not None else None, seen),
+        ).lastrowid
+
+
+def test_hello_sends_pending_recaps_and_only_unseen_ready_recaps(tmp_path, monkeypatch):
+    async def scenario():
+        path = recap_store(tmp_path, monkeypatch)
+        pending = add_session(path)
+        unseen = add_session(path, recap=["Kept: two pointers."])
+        add_session(path, recap=["Dropped: visited marking."], seen=1)
+        connection = Connection([msg("hello")])
+        await socket._handle(connection)
+        recaps = [state for state in connection.sent if state["type"] == "recap_state"]
+        assert [(state["session_id"], state["status"]) for state in recaps] == [(pending, "preparing"), (unseen, "ready")]
+
+    asyncio.run(scenario())
+
+
+def test_recap_seen_marks_an_ended_session_without_a_reply(tmp_path, monkeypatch):
+    async def scenario():
+        path = recap_store(tmp_path, monkeypatch)
+        session_id = add_session(path, recap=["Kept: two pointers."])
+        connection = Connection([msg("recap_seen", {"session_id": session_id})])
+        await socket._handle(connection)
+        assert connection.sent == []
+        with open_store(path) as db:
+            assert db.execute("SELECT recap_seen FROM sessions WHERE id = ?", (session_id,)).fetchone() == (1,)
+
+    asyncio.run(scenario())
+
+
+def test_recap_seen_rejects_an_unknown_or_unended_session(tmp_path, monkeypatch):
+    async def scenario():
+        path = recap_store(tmp_path, monkeypatch)
+        ended = add_session(path, recap=["Kept: two pointers."])
+        unended = add_session(path, ended=False)
+        connection = Connection([msg("recap_seen", {"session_id": 999}),
+                                 msg("recap_seen", {"session_id": unended})])
+        await socket._handle(connection)
+        errors = [state for state in connection.sent if state["type"] == "error"]
+        assert len(errors) == 2
+        assert all("No ended session for recap" in error["message"] for error in errors)
+        with open_store(path) as db:
+            assert db.execute("SELECT recap_seen FROM sessions WHERE id = ?", (ended,)).fetchone() == (0,)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"session_id": "1"}, {"session_id": 0}, {"session_id": -1}, {"session_id": True}])
+def test_malformed_recap_seen_gets_an_error(payload, tmp_path, monkeypatch):
+    async def scenario():
+        recap_store(tmp_path, monkeypatch)
+        connection = Connection([msg("recap_seen", payload)])
+        await socket._handle(connection)
+        errors = [state for state in connection.sent if state["type"] == "error"]
+        assert len(errors) == 1
+        assert "recap_seen" in errors[0]["message"]
+
+    asyncio.run(scenario())

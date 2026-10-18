@@ -39,7 +39,7 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 # and streaming is the id of the turn whose reply is still coming, or null.
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
 PLANNER_TYPES = frozenset({"planner_go", "planner_swap", "planner_clear", "planner_chat"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recap_feedback", "recap_noted", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
 REFERENCE_TYPES = frozenset({"reference_get", "reference_flag", "reference_apply"})
 MESSAGE_TYPES |= REFERENCE_TYPES | {"reference_state", "reference_flagged", "reference_verdict"}
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
@@ -195,7 +195,7 @@ def _validate(raw):
             raise ValueError(f"Invalid planner_chat payload: text must be 1 to {CHAT_LIMIT} characters")
     if kind in {"planner_go", "planner_swap", "planner_clear", "planner_get", "session_done", "session_skip"} and "payload" in message:
         raise ValueError(f"Invalid {kind} payload")
-    if kind in ("recap_get", "recap_feedback"):
+    if kind in ("recap_get", "recap_feedback", "recap_seen"):
         payload = message.get("payload")
         if not isinstance(payload, dict) or type(payload.get("session_id")) is not int or payload["session_id"] <= 0:
             raise ValueError(f"Invalid {kind} payload")
@@ -222,7 +222,7 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback", "recap_seen", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
@@ -230,7 +230,8 @@ async def _handle(connection):
                     for session_id in pending_sessions(store_path()):
                         await connection.send(json.dumps(recap_state(store_path(), session_id)))
                     with open_store() as db:
-                        ready = db.execute("SELECT id FROM sessions WHERE recap_bullets IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+                        ready = db.execute("SELECT id FROM sessions WHERE recap_bullets IS NOT NULL AND recap_seen = 0 "
+                                           "ORDER BY id DESC LIMIT 1").fetchone()
                     if ready:
                         await connection.send(json.dumps(recap_state(store_path(), ready[0])))
                     if _planner is not None:
@@ -307,6 +308,13 @@ async def _handle(connection):
                     await connection.send(json.dumps({"type": "recap_noted", "session_id": session_id, "note_id": note_id,
                                                       "message": "Noted. For a grade correction, use Progress."}))
                     _schedule_feedback(session_id, note_id)
+                elif kind == "recap_seen":
+                    session_id = message["payload"]["session_id"]
+                    with open_store() as db:
+                        ended = db.execute("SELECT ended_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                        if ended is None or ended[0] is None:
+                            raise ValueError("No ended session for recap")
+                        db.execute("UPDATE sessions SET recap_seen = 1 WHERE id = ?", (session_id,))
                 elif kind in TUTOR_TYPES:
                     text = message["payload"]["text"].strip() if kind == "chat_message" else None
                     outgoing, turn = _coordinator.begin_turn("chat" if kind == "chat_message" else "help", text)
