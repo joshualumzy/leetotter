@@ -128,24 +128,34 @@ def _call_validated(client, db_path, messages, schema, validate):
                         {"role": "user", "content": f"Invalid evidence or content: {error}. Return corrected JSON only."}]
 
 
+def _effective_changes(db, changes):
+    effective, dropped = [], set()
+    for change in changes:
+        if change.action == "drop":
+            if change.hypothesis_id in dropped or db.execute(
+                    "SELECT status FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()[0] == "rejected":
+                continue
+            dropped.add(change.hypothesis_id)
+        effective.append(change)
+    return effective
+
+
 def _apply_changes(db, changes, note_id=None):
     for change in changes:
-        if change.action == "drop" and db.execute(
-            "SELECT status FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()[0] == "rejected":
-            continue
         if change.action == "add":
             db.execute("INSERT INTO hypotheses (text, category, skill, status, cited_event_ids, cited_note_id) "
                        "VALUES (?, ?, ?, 'open', ?, ?)",
                        (change.text, change.category, change.skill, json.dumps(change.cited_event_ids), change.cited_note_id))
         elif change.action == "reword":
+            earlier = json.loads(db.execute("SELECT cited_event_ids FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()[0])
             db.execute("UPDATE hypotheses SET text = ?, category = ?, skill = ?, cited_event_ids = ?, cited_note_id = ? WHERE id = ?",
-                       (change.text, change.category, change.skill, json.dumps(change.cited_event_ids),
+                       (change.text, change.category, change.skill,
+                        json.dumps(sorted(set(earlier) | set(change.cited_event_ids))),
                         change.cited_note_id, change.hypothesis_id))
         else:
             floor = db.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0] if note_id else None
-            db.execute("UPDATE hypotheses SET status = ?, rejected_note_id = ?, rejected_after_event_id = ?, cited_event_ids = ?, cited_note_id = ? WHERE id = ?",
-                       ("rejected" if note_id else "dropped", note_id, floor, json.dumps(change.cited_event_ids),
-                        change.cited_note_id, change.hypothesis_id))
+            db.execute("UPDATE hypotheses SET status = ?, rejected_note_id = ?, rejected_after_event_id = ? WHERE id = ?",
+                       ("rejected" if note_id else "dropped", note_id, floor, change.hypothesis_id))
 
 
 def _reached_150(db, session_id):
@@ -205,8 +215,7 @@ def reflect_session(client, db_path, session_id):
         if db.execute("SELECT summary FROM sessions WHERE id = ?", (session_id,)).fetchone()[0] is not None:
             return {"type": "recap_state", "session_id": session_id, "status": "ready",
                     "bullets": json.loads(db.execute("SELECT recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])}
-        effective = [change for change in reply.changes if change.action != "drop" or db.execute(
-            "SELECT status FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()[0] != "rejected"]
+        effective = _effective_changes(db, reply.changes)
         _apply_changes(db, effective)
         for item in reply.teaching:
             db.execute("INSERT INTO teaching (problem_slug, cited_event_ids, idea, category, framing, help_kind, outcome) "
@@ -265,8 +274,7 @@ def reflect_feedback(client, db_path, session_id, note_id):
 
     reply = _call_validated(client, db_path, messages, FeedbackChanges, validate)
     with open_store(db_path) as db:
-        effective = [change for change in reply.changes if change.action != "drop" or db.execute(
-            "SELECT status FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()[0] != "rejected"]
+        effective = _effective_changes(db, reply.changes)
         _apply_changes(db, effective, note_id)
         bullets = json.loads(db.execute("SELECT recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
         bullets += [change.recap_line for change in effective]

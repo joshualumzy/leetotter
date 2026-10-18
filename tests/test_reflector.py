@@ -101,10 +101,11 @@ def test_feedback_is_saved_immediately_then_rejects_a_weakness_without_touching_
     drop = {"action": "drop", "hypothesis_id": hypothesis_id, "rejected_id": None,
             "text": None, "category": None, "skill": None, "cited_event_ids": [],
             "cited_note_id": note_id, "recap_line": "Dropped: visited marking."}
-    state = reflect_feedback(RecordedReflector({"changes": [drop]}), path, session_id, note_id)
-    assert state["bullets"][-1] == "Dropped: visited marking."
+    state = reflect_feedback(RecordedReflector({"changes": [drop, drop]}), path, session_id, note_id)
+    assert state["bullets"].count("Dropped: visited marking.") == 1
     with open_store(path) as db:
-        assert db.execute("SELECT status, rejected_note_id FROM hypotheses").fetchone() == ("rejected", note_id)
+        assert db.execute("SELECT status, rejected_note_id, cited_event_ids FROM hypotheses").fetchone() == (
+            "rejected", note_id, json.dumps([event_id]))
         assert db.execute("SELECT * FROM reviews").fetchall() == before_reviews
 
 
