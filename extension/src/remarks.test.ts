@@ -3,7 +3,7 @@ import { remark } from "./remarks";
 
 it("does not repeat a remark and only uses a person's name when it is set", () => {
   const now = new Date("2026-10-15T14:00:00");
-  const anonymous = { name: null, minutesLeft: null, now };
+  const anonymous = { name: null, now };
   const first = remark("start", anonymous, () => 0);
   const second = remark("start", anonymous, () => 0);
   expect(second).not.toBe(first);
@@ -11,8 +11,13 @@ it("does not repeat a remark and only uses a person's name when it is set", () =
   expect(remark("ended", { ...anonymous, name: "Ada" }, () => 0.99)).toContain("Ada");
 });
 
+it("never repeats the cap clock in a remark", () => {
+  const context = { name: "Ada", now: new Date("2026-10-15T14:00:00") };
+  for (let index = 0; index < 20; index++) expect(remark("active", context, () => index / 20)).not.toMatch(/\d+ min left/i);
+});
+
 it("varies each saved-name acknowledgement without repeating its previous choice", () => {
-  const context = { name: "Ada", minutesLeft: null, now: new Date("2026-10-15T14:00:00") };
+  const context = { name: "Ada", now: new Date("2026-10-15T14:00:00") };
   const first = remark("name_first", context, () => 0);
   expect(first).toMatch(/Ada/);
   remark("start", context, () => 0);

@@ -1,6 +1,6 @@
 import type { ConnectionState } from "./connection";
 import { MISSING_READER_MESSAGE, type RecapNoted, type RecapState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
-import { capLine, panelView, timerCapText, timerText, type PanelView } from "./panel-view";
+import { capLine, clock, panelView, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
 import { otter, touchForDate } from "./otter";
 import type { ReaderReaction } from "./reader-reaction";
@@ -17,11 +17,10 @@ const title = document.getElementById("problem-title");
 const dot = document.getElementById("status-dot");
 const remarkNode = document.getElementById("remark");
 const timer = document.getElementById("timer");
-const elapsed = document.getElementById("elapsed");
-const capNode = document.getElementById("cap");
+const clockNode = document.getElementById("clock");
 const controls = document.getElementById("controls");
 const composer = document.getElementById("composer");
-if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !elapsed || !capNode || !controls || !composer) throw new Error("Panel elements are missing");
+if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !clockNode || !controls || !composer) throw new Error("Panel elements are missing");
 
 let transport: ConnectionState = { kind: "offline" };
 let session: SessionState | undefined;
@@ -50,6 +49,7 @@ let referenceNotice = "";
 let recapDraft = "";
 let flagTurn: number | null = null;
 let flagDraft = "";
+const flagNoted = new Set<number>();
 const referenceDrafts = new Map<string, string>();
 let reactionCaption: string | null = null;
 let reactionClass = "";
@@ -142,21 +142,17 @@ function button(id: string, label: string, className = "btn"): HTMLButtonElement
 function appendText(parent: HTMLElement, tag: string, text: string, className = ""): HTMLElement {
   const node = element(tag, className, text); parent.append(node); return node;
 }
-function currentSeconds(): number {
-  return Math.max(0, (session?.active_seconds || 0) + (session?.running ? Math.floor((Date.now() - receivedAt) / 1000) : 0));
-}
 function currentCapSeconds(): number | null {
   if (!session || session.cap_seconds_left === null) return null;
   return Math.max(0, session.cap_seconds_left - (session.running ? Math.floor((Date.now() - receivedAt) / 1000) : 0));
 }
 function updateTimer(): void {
-  if (!session || ["idle", "ended"].includes(session.state) || transport.kind === "offline") { timer!.hidden = true; return; }
+  if (!session?.problem || ["idle", "ended"].includes(session.state) || transport.kind === "offline") { timer!.hidden = true; return; }
+  const left = currentCapSeconds();
+  if (left === null) { timer!.hidden = true; return; }
   timer!.hidden = false;
-  elapsed!.textContent = timerText(currentSeconds()).elapsed;
-  const cap = session.problem ? timerCapText(session.cap_minutes, currentCapSeconds()) : "";
-  capNode!.textContent = cap;
-  capNode!.hidden = !cap;
-  timer!.className = `timer${session.running ? "" : " stopped"}${session.cap_seconds_left === 0 ? " over" : ""}`;
+  clockNode!.textContent = clock(left);
+  timer!.className = `timer${session.running ? "" : " stopped"}${left === 0 ? " over" : ""}`;
 }
 async function refreshPanelTab(): Promise<void> {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -165,6 +161,7 @@ async function refreshPanelTab(): Promise<void> {
   render();
 }
 function onProblemPage(): boolean { return /^https:\/\/neetcode\.io\/problems\/[^/]+/.test(panelTabUrl); }
+function onNeetCode(): boolean { return /^https:\/\/neetcode\.io(?:\/|$)/.test(panelTabUrl); }
 function onCurrentProblem(): boolean {
   if (!session?.problem) return false;
   try {
@@ -184,14 +181,12 @@ function newRemark(view: PanelView): void {
   if (transport.kind === "error") { remarkNode!.textContent = `Tutor service error: ${transport.message}`; return; }
   if (nameAcknowledgement) { remarkNode!.textContent = nameAcknowledgement; return; }
   if (chat.streaming !== null && !chat.turns.some(turn => turn.turn_id === chat.streaming && turn.kind === "reply" && turn.text)) {
-    remarkNode!.textContent = remark("thinking", { name: settings?.name || null, minutesLeft: null, now: new Date() });
+    remarkNode!.textContent = remark("thinking", { name: settings?.name || null, now: new Date() });
     return;
   }
   const key = `${view.remarkPool}:${session?.state || "idle"}:${session?.paused_reason || ""}:${session?.mode || ""}:${session?.time_up ? "up" : ""}:${session?.problem?.slug || ""}:${suggestion?.slug || ""}`;
   if (key !== remarkKey) {
-    const left = currentCapSeconds();
-    const minutesLeft = left === null ? null : Math.ceil(left / 60);
-    currentRemark = remark(view.remarkPool, { name: settings?.name || null, minutesLeft, now: new Date() });
+    currentRemark = remark(view.remarkPool, { name: settings?.name || null, now: new Date() });
     remarkKey = key;
   }
   remarkNode!.textContent = reactionCaption || currentRemark;
@@ -219,9 +214,9 @@ function startCard(): HTMLElement {
   appendText(card, "h4", "New session");
   appendText(card, "p", "The Planner will suggest one problem. Go with it, swap it, or steer it when its card appears.");
   const start = button("start-session", "Start", "btn primary");
-  start.disabled = !onProblemPage();
+  start.disabled = !onNeetCode();
   card.append(start);
-  if (!onProblemPage()) appendText(card, "p", "Open a problem on NeetCode to start.", "quiet");
+  if (!onNeetCode()) appendText(card, "p", "Open NeetCode to start.", "quiet");
   return card;
 }
 function suggestionCard(): HTMLElement | null {
@@ -250,7 +245,6 @@ function recapCard(): HTMLElement | null {
     card.append(otterNode);
     appendText(card, "h4", "Preparing notes");
     appendText(card, "p", "The otter is writing up this session. It will appear here when it's ready.");
-    card.append(button("recap-refresh", "Check again", "link"));
     return card;
   }
   if (recap.status === "failed") {
@@ -260,6 +254,7 @@ function recapCard(): HTMLElement | null {
     card.append(button("recap-close", "Close", "link"));
     return card;
   }
+  if (recap.status === "ready" && !recap.bullets.length) return null;
   appendText(card, "h4", recap.status === "feedback_failed" ? "Recap" : "Session recap");
   if (recap.status === "feedback_failed") {
     const alert = appendText(card, "p", recap.message || "The feedback review failed; your note was saved.", "recap-alert");
@@ -270,8 +265,6 @@ function recapCard(): HTMLElement | null {
     const list = element("ul", "recap-bullets");
     for (const bullet of recap.bullets) appendText(list, "li", bullet);
     card.append(list);
-  } else {
-    appendText(card, "p", "A smooth session; nothing to note.");
   }
   if (recapNoted) {
     appendText(card, "p", recapNoted, "recap-noted");
@@ -377,12 +370,49 @@ function historyRow(): HTMLElement {
   row.append(importButton); appendText(row, "p", importResult).id = "import-result";
   return row;
 }
+const FLAG_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 2v12M4 3h7l-1.5 2.5L11 8H4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function flagFooter(turn_id: number): HTMLElement {
+  const footer = element("div", "chat-flag");
+  const open = flagTurn === turn_id;
+  footer.dataset.state = `${flagNoted.has(turn_id) ? "noted" : "idle"}:${open ? "open" : "closed"}`;
+  footer.classList.toggle("open", open);
+  if (flagNoted.has(turn_id)) {
+    const noted = element("span", "flag-noted");
+    noted.setAttribute("role", "status");
+    noted.setAttribute("aria-label", "Noted");
+    noted.title = "Noted";
+    noted.innerHTML = `${CHECK_ICON}<span>Noted</span>`;
+    footer.append(noted);
+    return footer;
+  }
+  const toggle = element("button", "flag-toggle") as HTMLButtonElement;
+  toggle.id = `seems-wrong-${turn_id}`;
+  toggle.type = "button";
+  toggle.setAttribute("aria-label", "Seems wrong");
+  toggle.title = "Seems wrong";
+  toggle.innerHTML = FLAG_ICON;
+  footer.append(toggle);
+  if (!open) return footer;
+  const row = element("div", "flag-row");
+  const input = element("input", "field flag-line") as HTMLInputElement;
+  input.placeholder = "What looks off? (optional)"; input.maxLength = 500;
+  input.setAttribute("aria-label", "What looks off?");
+  input.value = flagDraft;
+  row.append(input, button(`flag-send-${turn_id}`, "Send", "btn"));
+  footer.append(row);
+  return footer;
+}
 function updateFlagFooter(node: HTMLElement, turn_id: number): void {
   const footer = node.querySelector<HTMLElement>(".chat-flag");
   if (!footer) return;
-  const open = flagTurn === turn_id;
-  const row = footer.querySelector<HTMLElement>(".flag-row");
-  if (row) row.hidden = !open;
+  const state = `${flagNoted.has(turn_id) ? "noted" : "idle"}:${flagTurn === turn_id ? "open" : "closed"}`;
+  if (footer.dataset.state !== state) {
+    const next = flagFooter(turn_id);
+    footer.replaceWith(next);
+    if (state.endsWith("open")) next.querySelector<HTMLInputElement>(".flag-line")?.focus();
+    return;
+  }
   const input = footer.querySelector<HTMLInputElement>(".flag-line");
   if (input && input.value !== flagDraft) input.value = flagDraft;
 }
@@ -393,19 +423,7 @@ function chatNode(turn: ChatTurn): HTMLElement {
   if (turn.kind === "press") node.textContent = "You asked for a hint";
   else if (turn.kind === "failed") { node.textContent = turn.message || "The Tutor couldn't answer."; node.setAttribute("role", "alert"); }
   else fillBubble(node, turn, turn.kind === "reply" && pacers.has(turn.turn_id) ? pacers.get(turn.turn_id)!.pacer.visible : turn.text || "");
-  if (turn.kind === "reply") {
-    const footer = element("div", "chat-flag");
-    footer.append(button(`seems-wrong-${turn.turn_id}`, "Seems wrong", "link"));
-    const row = element("div", "flag-row");
-    const input = element("input", "field flag-line") as HTMLInputElement;
-    input.placeholder = "What looks off? (optional)"; input.maxLength = 500;
-    input.setAttribute("aria-label", "What looks off?");
-    row.append(input, button(`flag-send-${turn.turn_id}`, "Send", "btn"));
-    row.hidden = true;
-    footer.append(row);
-    node.append(footer);
-    updateFlagFooter(node, turn.turn_id);
-  }
+  if (turn.kind === "reply") node.append(flagFooter(turn.turn_id));
   return node;
 }
 function paintReply(node: HTMLElement, text: string, freshFrom?: number): void {
@@ -584,12 +602,12 @@ function receiveTutor(message: TutorMessage): void {
   if (!document.getElementById("chat-stream") && chat.turns.length) render();
   else if (document.getElementById("chat-stream") && !chat.turns.length) render();
   else renderChat();
-  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage() });
+  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage(), problemOpen: onCurrentProblem() });
   newRemark(view);
   if (pacers.size) pace();
 }
 function render(): void {
-  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage() });
+  const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage(), problemOpen: onCurrentProblem() });
   renderHeader(view);
   renderComposer(view);
   // The conversation survives a redraw as the same elements, so scroll position, selection and code scrolling stay put.
@@ -760,7 +778,7 @@ body.addEventListener("click", event => {
   if (id === "save-first-name") saveName("first-name");
   if (id === "save-settings-name") saveName("settings-name");
   if (id === "skip-name") void send({ kind: "skip_name" });
-  if (id === "start-session" && onProblemPage()) void send({ kind: "session_command", command: "start", tabId: panelTabId });
+  if (id === "start-session" && onNeetCode()) void send({ kind: "session_command", command: "start", tabId: panelTabId });
   if (id === "planner-go") void send({ kind: "planner_go", tabId: panelTabId });
   if (id === "planner-swap") void send({ kind: "planner_swap" });
   if (id === "planner-clear") void send({ kind: "planner_clear" });
@@ -768,7 +786,6 @@ body.addEventListener("click", event => {
   if (id === "time-up-debrief") void send({ kind: "session_command", command: "time_up_debrief" });
   if (id === "time-up-skip" || id === "debrief-skip" || id === "skip-problem") void send({ kind: "session_command", command: "skip" });
   if (id === "debrief-done") void send({ kind: "session_command", command: "done" });
-  if (id === "recap-refresh" && recap) void send({ kind: "recap_get", session_id: recap.session_id });
   if (id === "recap-close" && recap) {
     if (recapDraft.trim() && recap.status === "ready") {
       void send({ kind: "recap_feedback", session_id: recap.session_id, text: recapDraft.trim() }).then(ok => { if (ok) recapDraft = ""; });
@@ -791,6 +808,7 @@ body.addEventListener("click", event => {
   }
   if (id?.startsWith("seems-wrong-")) {
     const turnId = Number(id.slice("seems-wrong-".length));
+    if (flagNoted.has(turnId)) return;
     flagTurn = flagTurn === turnId ? null : turnId;
     flagDraft = "";
     renderChat();
@@ -801,8 +819,8 @@ body.addEventListener("click", event => {
     const line = (footer?.querySelector<HTMLInputElement>(".flag-line")?.value || "").split("\n")[0].trim().slice(0, 500);
     void send({ kind: "reference_flag", message_id: turnId, line }).then(ok => {
       if (!ok) return;
+      flagNoted.add(turnId);
       flagTurn = null; flagDraft = "";
-      referenceNotice = "Thanks — flagged for review.";
       render();
     });
   }
@@ -884,7 +902,7 @@ chrome.runtime.onMessage.addListener(message => {
     settings = message.settings;
     if (pendingName && settings?.name === pendingName.value) {
       window.clearTimeout(acknowledgementTimer);
-      nameAcknowledgement = remark(pendingName.pool, { name: pendingName.value, minutesLeft: null, now: new Date() });
+      nameAcknowledgement = remark(pendingName.pool, { name: pendingName.value, now: new Date() });
       pendingName = null;
       acknowledgementTimer = window.setTimeout(() => { nameAcknowledgement = ""; render(); }, 4000);
     }
@@ -900,7 +918,11 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "recap_noted") { const noted = message.message as RecapNoted; recapNoted = noted.message; recapDraft = ""; render(); }
   if (message?.kind === "reference_state") { referenceState = message.state as ReferenceState; render(); }
-  if (message?.kind === "reference_flagged") { referenceNotice = "Thanks — flagged for review."; render(); }
+  if (message?.kind === "reference_flagged") {
+    const turnId = message.message?.message_id;
+    if (Number.isInteger(turnId)) { flagNoted.add(turnId); if (flagTurn === turnId) flagTurn = null; }
+    render();
+  }
   if (message?.kind === "reference_verdict") { referenceNotice = message.message.accepted ? `Reference updated: ${message.message.reason}` : `Verdict refused: ${message.message.reason}`; render(); }
   if (message?.kind === "error") { actionError = message.message; render(); }
   if (message?.kind === "reader_error") { readerError = message.message || ""; render(); }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capLine, difficultyForCap, panelView, timerCapText, timerText } from "./panel-view";
+import { capLine, clock, panelView, timerText } from "./panel-view";
 import type { SessionState, SettingsState } from "./protocol";
 
 const settings: SettingsState = { type: "settings_state", ts: "now", name: "Ada", theme: "match" };
@@ -11,6 +11,11 @@ describe("panel state", () => {
     expect(panelView({ transport: { kind: "connected" }, session_state: base, settings: { ...settings, name: null }, readerError: "" })).toMatchObject({ title: "Leetotter", body: "first_run", controls: [], remarkPool: "start" });
     expect(panelView({ transport: { kind: "connected" }, session_state: base, readerError: "" }).body).toBe("first_run");
     expect(view()).toMatchObject({ body: "start", controls: [], remarkPool: "start" });
+  });
+  it("shows the problem title only while that problem is open", () => {
+    const active: SessionState = { ...base, state: "active", mode: "watching", running: true, cap_minutes: 35, cap_seconds_left: 2100, problem: { slug: "contains-duplicate", title: "Contains Duplicate" } };
+    expect(panelView({ transport: { kind: "connected" }, session_state: active, settings, readerError: "", problemOpen: true }).title).toBe("Contains Duplicate");
+    expect(panelView({ transport: { kind: "connected" }, session_state: active, settings, readerError: "", problemOpen: false }).title).toBe("Leetotter");
   });
   it("shows active, time-up, debrief and ended states", () => {
     const active: SessionState = { ...base, state: "active", mode: "watching", running: true, cap_minutes: 35, cap_seconds_left: 2100, problem: { slug: "two-sum", title: "Two Sum" } };
@@ -66,12 +71,9 @@ describe("timer and cap", () => {
     expect(timerText(2701)).toEqual({ elapsed: "45:01" });
     expect(timerText(3601)).toEqual({ elapsed: "1:00:01" });
   });
-  it("names the difficulty and shows active time left on its cap", () => {
-    expect(difficultyForCap(20)).toBe("Easy");
-    expect(difficultyForCap(35)).toBe("Medium");
-    expect(difficultyForCap(50)).toBe("Hard");
+  it("names the difficulty and shows the time left on its cap", () => {
     expect(capLine("Medium", 35)).toBe("Medium, 35 min cap");
-    expect(timerCapText(35, 754)).toBe("Medium, 35 min cap · 12:34 left");
-    expect(timerCapText(null, null)).toBe("");
+    expect(clock(754)).toBe("12:34");
+    expect(clock(0)).toBe("0:00");
   });
 });

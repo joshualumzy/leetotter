@@ -105,11 +105,31 @@ describe("panel actions", () => {
   it("clears the problem title and the timer from the header once the session has ended", () => {
     const active = { ...session, state: "active", mode: "watching", running: true, active_seconds: 52, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
     notify({ kind: "session_state", state: active });
-    expect(document.getElementById("title")?.textContent || document.body.textContent).toContain("Duplicate Integer");
+    expect(document.getElementById("problem-title")?.textContent).toContain("Duplicate Integer");
     notify({ kind: "session_state", state: { ...active, state: "ended", mode: "idle", running: false } });
     expect(document.body.textContent).not.toContain("Duplicate Integer");
     expect((document.getElementById("timer") as HTMLElement).hidden).toBe(true);
     expect(document.body.textContent).toContain("Session ended · 0:52");
+  });
+  it("shows one cap countdown in the header, and no problem means no clock", () => {
+    const active = { ...session, state: "active", mode: "watching", running: true, cap_minutes: 20, cap_seconds_left: 1178, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    expect((document.getElementById("timer") as HTMLElement).hidden).toBe(false);
+    expect(document.getElementById("clock")?.textContent).toBe("19:38");
+    expect(document.getElementById("elapsed")).toBeNull();
+    expect(document.getElementById("session-body")?.textContent).not.toContain("min cap ·");
+    expect(document.getElementById("remark")?.textContent).not.toMatch(/min left/i);
+    notify({ kind: "session_state", state: { ...active, problem: null } });
+    expect((document.getElementById("timer") as HTMLElement).hidden).toBe(true);
+  });
+  it("keeps the header title only while the session's problem is open", async () => {
+    const active = { ...session, state: "active", mode: "watching", running: true, cap_minutes: 20, cap_seconds_left: 1178, problem: { slug: "duplicate-integer", title: "Contains Duplicate" } } as SessionState;
+    notify({ kind: "session_state", state: active });
+    expect(document.getElementById("problem-title")?.textContent).toBe("Contains Duplicate");
+    activeUrl = "https://neetcode.io/practice/";
+    updatedTab(7, { url: activeUrl });
+    await vi.waitFor(() => expect(document.getElementById("problem-title")?.textContent).toBe("Leetotter"));
+    expect(document.getElementById("remark")).toBeTruthy();
   });
   it("offers a Reload tab button when the page reader is missing", async () => {
     await bindPanelTab();
@@ -291,18 +311,21 @@ describe("panel actions", () => {
     expect(document.querySelector(".chat-you")).toBeNull();
     expect(sendMessage).toHaveBeenCalledWith({ kind: "chat_get" });
   });
-  it("disables Start off a problem and refreshes after navigation", async () => {
+  it("allows Start anywhere on NeetCode and disables it only on other sites", async () => {
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
     activeUrl = "https://neetcode.io/practice/";
     updatedTab(7, { url: activeUrl });
+    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(false));
+    expect(document.getElementById("session-body")?.textContent).not.toContain("Open NeetCode to start.");
+    click("start-session");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "start", tabId: 7 });
+    sendMessage.mockClear();
+    activeUrl = "https://example.com/";
+    updatedTab(7, { url: activeUrl });
     await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(true));
-    expect(document.getElementById("session-body")?.textContent).toContain("Open a problem on NeetCode to start.");
+    expect(document.getElementById("session-body")?.textContent).toContain("Open NeetCode to start.");
     click("start-session");
     expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "session_command", command: "start" }));
-    activeUrl = "https://neetcode.io/problems/two-sum/";
-    updatedTab(7, { url: activeUrl });
-    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(false));
-    expect(document.getElementById("session-body")?.textContent).not.toContain("Open a problem on NeetCode to start.");
   });
   it("acknowledges a saved first name for four seconds", async () => {
     vi.useFakeTimers();
@@ -347,10 +370,11 @@ describe("panel actions", () => {
 
   it("offers resume or end and start over after a closed tab, with a stopped timer", async () => {
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
-    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "closed", active_seconds: 1394, problem: { slug: "daily-temperatures", title: "Daily Temperatures" } } });
+    notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "closed", active_seconds: 1394, cap_minutes: 35, cap_seconds_left: 600, problem: { slug: "daily-temperatures", title: "Daily Temperatures" } } });
     expect(document.getElementById("session-body")?.textContent).toContain("Pick up where you left off?");
     expect(document.getElementById("session-body")?.textContent).toContain("Daily Temperatures, 23 min");
     expect(document.getElementById("timer")?.classList.contains("stopped")).toBe(true);
+    expect(document.getElementById("clock")?.textContent).toBe("10:00");
     click("welcome-resume");
     expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "resume", tabId: 7, problem_slug: "daily-temperatures" });
     click("end-and-start");
@@ -363,7 +387,7 @@ describe("panel actions", () => {
     notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
     activeUrl = "https://neetcode.io/practice/";
     updatedTab(7, { url: activeUrl });
-    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(true));
+    await vi.waitFor(() => expect((document.getElementById("start-session") as HTMLButtonElement).disabled).toBe(false));
     notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "check", check_message: "Open a problem and I'll pick the timer back up.", active_seconds: 1394, problem: { slug: "daily-temperatures", title: "Daily Temperatures" } } });
     expect(document.querySelector(".welcome-back")?.textContent).toContain("Daily Temperatures, 23 min");
     expect(document.getElementById("session-body")?.textContent).not.toContain("Open a problem and I'll pick the timer back up.");
@@ -620,8 +644,7 @@ describe("panel actions", () => {
       showStart();
       notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "preparing", bullets: [] } });
       expect(document.querySelector(".recap-card")?.textContent).toContain("Preparing notes");
-      click("recap-refresh");
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_get", session_id: 12 });
+      expect(document.getElementById("recap-refresh")).toBeNull();
       notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
       expect(document.querySelector(".recap-card")?.textContent).toContain("Dropped: visited marking.");
       expect(document.getElementById("recap-feedback")).toBeTruthy();
@@ -632,6 +655,12 @@ describe("panel actions", () => {
       expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_feedback", session_id: 12, text: "That drop was wrong" });
       notify({ kind: "recap_noted", message: { type: "recap_noted", session_id: 12, note_id: 9, message: "Noted. For a grade correction, use Progress." } });
       expect(document.querySelector(".recap-noted")?.textContent).toContain("Noted");
+    });
+    it("shows no recap card when a ready recap has nothing to report", () => {
+      showStart();
+      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: [] } });
+      expect(document.querySelector(".recap-card")).toBeNull();
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
     });
     it("closes the recap without sending an empty feedback note", () => {
       showStart();
@@ -660,17 +689,26 @@ describe("panel actions", () => {
       click("debrief-skip");
       expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "skip" });
     });
-    it("offers Seems wrong on each reply and sends the turn id with an optional line", () => {
+    it("offers a quiet flag icon on each reply and turns it into Noted after sending", async () => {
       notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, problem: { slug: "two-sum", title: "Two Sum" } } });
       notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", streaming: null, turns: [{ turn_id: 7, kind: "reply", text: "Try a set", gap: "none", gap_note: null, help_kind: "hint" }] } });
+      const flag = document.getElementById("seems-wrong-7");
+      expect(flag?.getAttribute("aria-label")).toBe("Seems wrong");
+      expect(flag?.title).toBe("Seems wrong");
+      expect(flag?.querySelector("svg")).toBeTruthy();
+      expect(document.querySelector(".flag-row")).toBeNull();
       click("seems-wrong-7");
       const input = document.querySelector(".flag-line") as HTMLInputElement;
+      expect(input.placeholder).toBe("What looks off? (optional)");
       input.value = "This misses duplicates";
       input.dispatchEvent(new window.Event("input", { bubbles: true }));
       click("flag-send-7");
       expect(sendMessage).toHaveBeenCalledWith({ kind: "reference_flag", message_id: 7, line: "This misses duplicates" });
+      await vi.waitFor(() => expect(document.querySelector(".flag-noted")?.textContent).toContain("Noted"));
+      expect(document.getElementById("seems-wrong-7")).toBeNull();
+      expect(document.querySelector(".flag-row")).toBeNull();
       notify({ kind: "reference_flagged", message: { type: "reference_flagged", ts: "now", message_id: 7, note_id: 9 } });
-      expect(document.querySelector(".chat-flag")?.textContent).toContain("Seems wrong");
+      expect(document.querySelector(".flag-noted")).toBeTruthy();
     });
     it("lists disputed references in settings and applies a pasted verdict", () => {
       notify({ kind: "reference_state", state: { type: "reference_state", ts: "now", count: 1, references: [{ slug: "top-k-elements-in-list", title: "Top K Frequent Elements", uncertain: ["heap.complexity"], prompt: "Settle this reference" }] } });

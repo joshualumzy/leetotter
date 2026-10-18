@@ -1,7 +1,7 @@
 import type { RemarkPool } from "./panel-view";
 import { touchForDate } from "./otter";
 
-type Context = { name: string | null; minutesLeft: number | null; now: Date };
+type Context = { name: string | null; now: Date };
 type Line = (context: Context) => string | null;
 const named = (line: string): Line => ({ name }) => name ? line.replace("{name}", name) : null;
 const plain = (line: string): Line => () => line;
@@ -28,7 +28,6 @@ const pools: Record<Exclude<RemarkPool, "offline">, Line[]> = {
     plain("I'm watching quietly."),
     plain("Take your time."),
     named("I'm right here, {name}."),
-    ({ minutesLeft }) => minutesLeft !== null && minutesLeft >= 0 ? `${minutesLeft} min left.` : null,
     touchLine,
   ],
   thinking: [plain("Thinking this through…"), plain("Let me look at this…"), plain("Finding a useful next step…")],

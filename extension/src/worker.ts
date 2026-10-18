@@ -215,7 +215,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   void (async () => {
     await ready;
     if (message?.kind === "get_status") return state;
-    if (message?.kind === "get_mode") return sender.tab?.id === undefined || sender.tab.id === sessionTabId ? mode : "idle";
+    if (message?.kind === "get_mode") return sender.tab?.id === undefined || (sender.tab.id === sessionTabId && problemUrl(sender.tab.url)) ? mode : "idle";
     if (message?.kind === "get_reader_error") return readerError || notice;
     if (message?.kind === "get_reader_activity") return readerActivity;
     if (message?.kind === "get_import_state") return { imported, result: importResult };
@@ -282,7 +282,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         let tab: chrome.tabs.Tab;
         try { tab = await chrome.tabs.get(message.tabId); } catch { return { error: "Open a NeetCode tab to start or resume." }; }
         if (!Number.isInteger(message.tabId) || !neetcodeUrl(tab.url)) return { error: "Open a NeetCode tab to start or resume." };
-        if (command === "start" && !problemUrl(tab.url)) return { error: "Open a problem on NeetCode to start a session." };
       }
       const type = types[command as keyof typeof types];
       const payload = command === "time_up_extend" ? { choice: "extend" } : command === "time_up_debrief" ? { choice: "debrief" } : undefined;
@@ -399,7 +398,14 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
       // The session's tab left NeetCode: nothing is watching any more, so it pauses like a closed tab.
       if (!orphanReported) orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
       await bindTab(null);
-    } else await save();
+    } else {
+      if (id === sessionTabId) {
+        // A NeetCode page that is not a problem keeps its reader idle; opening a problem picks the mode back up.
+        const modeForPage = problemUrl(change.url) ? mode : "idle";
+        try { await chrome.tabs.sendMessage(id, { kind: "watch_mode", mode: modeForPage }); } catch { /* The new page may not have its reader yet. */ }
+      }
+      await save();
+    }
     await setPanelForTab({ ...tab, id, url: change.url });
   });
 });

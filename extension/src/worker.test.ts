@@ -295,12 +295,32 @@ describe("worker reader delivery", () => {
       expect(socket.sent.at(-1)).toMatchObject({ type, ...(payload ? { payload } : {}) });
     }
   });
-  it("only starts on the requested tab's current problem URL, while resume accepts another NeetCode page", async () => {
+  it("starts on any NeetCode page and keeps the reader idle until a problem page opens", async () => {
     await start(); socket.readyState = 1;
     vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
-    expect(await dispatch({ kind: "session_command", command: "start", tabId: 7 })).toEqual({ error: "Open a problem on NeetCode to start a session." });
-    expect(socket.sent.some(item => item.type === "session_start")).toBe(false);
-    expect(await dispatch({ kind: "session_command", command: "resume", tabId: 7 })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "session_command", command: "start", tabId: 7 })).toEqual({ sent: true });
+    expect(socket.sent.some(item => item.type === "session_start")).toBe(true);
+    expect(socket.sent.some(item => item.type === "planner_get")).toBe(true);
+    expect(await dispatch({ kind: "get_session_binding" })).toEqual({ tabId: 7 });
+    pushSession("watching");
+    expect(await dispatch({ kind: "get_mode" }, { id: 7, url: "https://neetcode.io/practice/" })).toBe("idle");
+    expect(await dispatch({ kind: "get_mode" }, { id: 7, url: "https://neetcode.io/problems/two-sum/" })).toBe("watching");
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://example.com/" } as chrome.tabs.Tab);
+    expect(await dispatch({ kind: "session_command", command: "start", tabId: 7 })).toEqual({ error: "Open a NeetCode tab to start or resume." });
+  });
+  it("tells the reader on the bound tab to watch when a problem opens and to stay idle elsewhere", async () => {
+    await start(); socket.readyState = 1;
+    vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
+    await dispatch({ kind: "session_command", command: "start", tabId: 7 });
+    pushSession("watching");
+    sent.length = 0;
+    updated.at(-1)?.(7, { url: "https://neetcode.io/problems/two-sum/" }, { id: 7, url: "https://neetcode.io/problems/two-sum/" });
+    await vi.waitFor(() => expect(sent).toContainEqual({ tab: 7, message: { kind: "watch_mode", mode: "watching" } }));
+    sent.length = 0;
+    updated.at(-1)?.(7, { url: "https://neetcode.io/practice/" }, { id: 7, url: "https://neetcode.io/practice/" });
+    await vi.waitFor(() => expect(sent).toContainEqual({ tab: 7, message: { kind: "watch_mode", mode: "idle" } }));
+    expect(await dispatch({ kind: "get_reader_error" })).toBe("");
   });
   it("binds the panel tab and opens the saved problem before resuming", async () => {
     saved.readerState.sessionTabId = null;

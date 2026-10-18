@@ -63,7 +63,7 @@ button {
 
 .top {
   display:grid;
-  grid-template-columns:48px minmax(0,1fr) auto auto;
+  grid-template-columns:48px minmax(0,1fr) auto;
   align-items:center;
   column-gap:10px;
   row-gap:2px;
@@ -94,8 +94,8 @@ button {
 }
 
 .title {
-  grid-column:2;
-  grid-row:1;
+  grid-column:1 / -1;
+  grid-row:2;
   min-width:0;
   font-weight:700;
   white-space:nowrap;
@@ -105,7 +105,7 @@ button {
 
 .status {
   grid-column:1 / -1;
-  grid-row:2;
+  grid-row:3;
   font-size:12px;
   color:var(--mute);
   display:flex;
@@ -160,8 +160,9 @@ button {
 }
 
 .timer {
-  grid-column:3;
+  grid-column:2;
   grid-row:1;
+  justify-self:end;
   text-align:right;
   line-height:1.1;
   flex:none
@@ -170,11 +171,6 @@ button {
 .timer strong {
   font:600 17px/1 ui-monospace,SFMono-Regular,monospace;
   display:block
-}
-
-.timer span {
-  font-size:11px;
-  color:var(--mute)
 }
 
 .timer.stopped strong {
@@ -186,7 +182,7 @@ button {
 }
 
 .controls {
-  grid-column:4;
+  grid-column:3;
   grid-row:1;
   display:flex;
   gap:2px;
@@ -995,9 +991,61 @@ p {
   display:flex;
   flex-wrap:wrap;
   align-items:center;
+  justify-content:flex-end;
   gap:6px;
-  margin-top:5px;
+  margin-top:3px;
   font-size:12px
+}
+
+.chat-flag .flag-toggle {
+  border:0;
+  background:transparent;
+  color:var(--mute);
+  border-radius:6px;
+  width:24px;
+  height:24px;
+  padding:3px;
+  display:grid;
+  place-items:center;
+  opacity:0;
+  transition:opacity .15s ease
+}
+
+.chat-flag .flag-toggle svg {
+  width:15px;
+  height:15px
+}
+
+.chat-reply:hover .flag-toggle,
+.chat-reply:focus-within .flag-toggle,
+.chat-flag.open .flag-toggle {
+  opacity:1
+}
+
+.chat-flag .flag-toggle:hover,
+.chat-flag .flag-toggle:focus-visible {
+  background:var(--line);
+  color:var(--ink)
+}
+
+@media(hover:none) {
+  .chat-flag .flag-toggle {
+    opacity:.7
+  }
+}
+
+.chat-flag .flag-noted {
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  color:var(--acc);
+  font-size:11px;
+  font-weight:600
+}
+
+.chat-flag .flag-noted svg {
+  width:13px;
+  height:13px
 }
 
 .chat-flag .flag-row {

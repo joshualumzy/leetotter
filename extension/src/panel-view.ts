@@ -16,10 +16,10 @@ export type PanelView = {
   pauseText?: string;
 };
 
-export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string; sessionTabId?: number | null; panelTabId?: number | null; boundTabExists?: boolean; panelOnProblemPage?: boolean }): PanelView {
-  const { transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage } = input;
+export function panelView(input: { transport: ConnectionState; session_state?: SessionState; settings?: SettingsState; readerError: string; sessionTabId?: number | null; panelTabId?: number | null; boundTabExists?: boolean; panelOnProblemPage?: boolean; problemOpen?: boolean }): PanelView {
+  const { transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage, problemOpen = true } = input;
   // An ended session leaves no problem or timer in the header; "Session ended · time" below is its recap.
-  const title = session?.state === "ended" ? "Leetotter" : session?.problem?.title || "Leetotter";
+  const title = session?.state === "ended" || !session?.problem || !problemOpen ? "Leetotter" : session.problem.title;
   if (session && ["active", "paused"].includes(session.state) && sessionTabId != null && panelTabId != null && boundTabExists && sessionTabId !== panelTabId) {
     return { title, statusTone: "paused", controls: [], body: "another_tab", remarkPool: "active", alerts: [] };
   }
@@ -82,19 +82,6 @@ export function timerText(activeSeconds: number): { elapsed: string } {
   return { elapsed: clock(activeSeconds) };
 }
 
-export function difficultyForCap(capMinutes: number | null): Difficulty | null {
-  if (capMinutes === 20) return "Easy";
-  if (capMinutes === 35) return "Medium";
-  if (capMinutes === 50) return "Hard";
-  return null;
-}
-
 export function capLine(difficulty: Difficulty | null, capMinutes: number | null): string {
   return difficulty && capMinutes !== null ? `${difficulty}, ${capMinutes} min cap` : "";
-}
-
-export function timerCapText(capMinutes: number | null, secondsLeft: number | null): string {
-  const difficulty = difficultyForCap(capMinutes);
-  if (!difficulty || capMinutes === null || secondsLeft === null) return "";
-  return `${difficulty}, ${capMinutes} min cap · ${clock(secondsLeft)} left`;
 }
