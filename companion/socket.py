@@ -49,6 +49,7 @@ _clients = set()
 _turns = set()
 _grading_tasks = set()
 _reference_tasks = {}
+_reference_statements = {}
 _grading_lock = None
 _reflection_tasks = set()
 _reflection_lock = None
@@ -279,22 +280,30 @@ async def _handle(connection):
                         _turns.add(task)
                         task.add_done_callback(_turns.discard)
                 elif kind != "ping":
-                    before_problem = _coordinator.problem
+                    before_state = _coordinator.state
                     outgoing = _coordinator.handle(message)
                     await _broadcast(outgoing, connection, kind != "session_get_state")
                     if not any(item["type"] == "error" for item in outgoing):
                         if _planner is not None:
-                            if kind in ("session_done", "session_skip"):
+                            if kind == "session_start":
+                                _planner.session_started(_coordinator.session_id)
+                            elif kind in ("session_done", "session_skip"):
                                 _schedule_planner(_planner.problem_left(_coordinator.session_id))
                                 _schedule_grading("next_problem")
-                            elif kind == "problem_opened" and before_problem and before_problem != _coordinator.problem:
+                            elif kind == "problem_opened" and _coordinator.problem is not None:
                                 _planner.session_ended()
                             elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
                                 _planner.session_ended()
+                        if kind in ("session_start", "session_end"):
+                            _reference_statements.clear()
                         if kind == "problem_opened":
                             _schedule_grading("next_problem")
                         elif kind == "problem_statement":
+                            if _coordinator.problem and _coordinator.problem["slug"] == message["payload"]["slug"]:
+                                _reference_statements[message["payload"]["slug"]] = message["payload"]["statement"]
                             _schedule_reference(message["payload"])
+                        if before_state == "paused" and _coordinator.state == "active":
+                            _retry_current_reference()
                         elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
                             _schedule_grading("initial")
                             await _broadcast([recap_state(store_path(), _coordinator.session_id)], connection)
@@ -430,19 +439,37 @@ def _schedule_reference(payload):
     task.add_done_callback(lambda _: _reference_tasks.pop(slug, None))
 
 
+def _retry_current_reference():
+    if _coordinator is None or _coordinator.problem is None:
+        return
+    slug = _coordinator.problem["slug"]
+    statement = _reference_statements.get(slug)
+    if statement is None:
+        with open_store() as db:
+            rows = db.execute("SELECT payload FROM events WHERE session_id = ? AND type = 'problem_statement' ORDER BY id DESC",
+                              (_coordinator.session_id,))
+            statement = next((payload["statement"] for (raw,) in rows
+                              if (payload := json.loads(raw))["slug"] == slug), None)
+    if statement:
+        _schedule_reference({"slug": slug, "statement": statement})
+
+
 async def _run_reference(problem, statement):
     slug = problem["slug"]
+    checked = False
     try:
         result = await asyncio.to_thread(write_and_check, slug, problem["title"], _get_models(),
                                          db_path=store_path(), statement=statement, grade_waiting=False)
         if result.status == "checked":
+            checked = True
             await _run_grading("initial")
         if _coordinator is not None and _coordinator.problem and _coordinator.problem["slug"] == slug:
             await _broadcast([_coordinator._state(_coordinator.clock())], None)
     except Exception as error:
-        logger.exception("On-demand reference failed for %s", slug)
+        logger.exception("On-demand %s failed for %s", "grading" if checked else "reference", slug)
         await _broadcast([{"type": "error", "ts": _timestamp(),
-                           "message": f"Reference for {problem['title']} is not checked yet: {error}"}], None)
+                           "message": (f"Grading after checking {problem['title']} failed: {error}" if checked else
+                                       f"Reference for {problem['title']} is not checked yet: {error}")}], None)
 
 
 def _schedule_reflection(session_id):

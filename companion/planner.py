@@ -69,6 +69,7 @@ class PlannerRequest:
     started: datetime
     allowed: list[dict]
     messages: list[dict]
+    known_patterns: frozenset[str]
 
 
 def _reviews(db):
@@ -90,6 +91,7 @@ def learner_summary(db, *, now):
     result = {}
     for category in CATEGORIES:
         recent = {difficulty: [] for difficulty in ("Easy", "Medium", "Hard")}
+        recent_dated = {difficulty: [] for difficulty in ("Easy", "Medium", "Hard")}
         done = imports = 0
         for entry in catalog.entries:
             if entry["category"] != category:
@@ -100,10 +102,12 @@ def learner_summary(db, *, now):
                 latest = graded[-1]
                 done += latest["grade"] in ("good", "hard") and bool(latest["meets"])
                 for row in graded[-5:]:
-                    recent[row["difficulty"] or entry["difficulty"]].append(row["grade"])
+                    difficulty = row["difficulty"] or entry["difficulty"]
+                    recent[difficulty].append(row["grade"])
+                    recent_dated[difficulty].append({"grade": row["grade"], "at": row["at"]})
         result[category] = {"solve": item_memory(db, "category:solve", category, now),
                             "analysis": item_memory(db, "category:analysis", category, now),
-                            "recent": recent, "done": done, "imported": imports}
+                            "recent": recent, "recent_dated": recent_dated, "done": done, "imported": imports}
     return result
 
 
@@ -129,16 +133,30 @@ def _session_attempts(db, session_id):
     return attempts
 
 
+def _unfinished(db):
+    catalog = load_catalog()
+    reviewed = {slug for (slug,) in db.execute("SELECT DISTINCT item_key FROM reviews WHERE item_type = 'problem'")}
+    latest = {}
+    for (session_id,) in db.execute("SELECT id FROM sessions ORDER BY id"):
+        for attempt in _session_attempts(db, session_id):
+            latest[attempt["slug"]] = attempt
+    return [{"slug": slug, "title": catalog.by_slug(slug)["title"], "last_left": attempt["left"]}
+            for slug, attempt in latest.items() if not attempt["accepted"] and slug not in reviewed
+            and catalog.by_slug(slug) is not None]
+
+
 def allowed_next(db, *, session_id, now):
     catalog = load_catalog()
     reviews = _reviews(db)
     patterns = _patterns(db)
     attempts = _session_attempts(db, session_id)
-    skipped = {a["slug"] for a in attempts if not a["accepted"] and not any(r["grade"] for r in reviews.get(a["slug"], []))}
+    imported = {json.loads(raw)["slug"] for (raw,) in db.execute("SELECT payload FROM events WHERE type = 'prior_solve'")}
+    skipped = {a["slug"] for a in attempts if not a["accepted"]}
     pending_session = {a["slug"] for a in attempts if a["accepted"] and not any(r["grade"] and r["at"] >= a["left"] for r in reviews.get(a["slug"], []))}
     eligible_untried_150 = any(e["neetcode150"] and not e["locked"] and e["slug"] not in skipped | pending_session and
                                not reviews.get(e["slug"]) for e in catalog.entries)
-    last_retry = bool(attempts and any(r["grade"] for r in reviews.get(attempts[-1]["slug"], [])))
+    last_retry = bool(attempts and any(r["grade"] and r["at"] < attempts[-1]["opened"]
+                                       for r in reviews.get(attempts[-1]["slug"], [])))
     candidates = []
     for entry in catalog.entries:
         slug = entry["slug"]
@@ -164,7 +182,8 @@ def allowed_next(db, *, session_id, now):
             if graded[-1]["grade"] == "again" and patterns.get(slug):
                 siblings = {e["slug"] for e in catalog.entries if not e["locked"] and e["slug"] != slug and
                             set(patterns.get(e["slug"], [])) & set(patterns[slug])}
-                unseen_siblings = {other for other in siblings if not reviews.get(other)}
+                unseen_siblings = {other for other in siblings if other not in imported | skipped | pending_session
+                                   and not reviews.get(other)}
                 practiced = any(r["grade"] and r["at"] > graded[-1]["at"] for other in siblings for r in reviews.get(other, []))
                 practiced |= any(a["slug"] in siblings and a["left"] > graded[-1]["at"] for a in attempts)
                 if unseen_siblings and not practiced:
@@ -190,7 +209,7 @@ def code_ranked(candidates, summary, steer=None):
         raise ValueError("No eligible problems to suggest")
     pool = _focused(candidates, steer["focus"]) if steer else candidates
     return min(pool, key=lambda c: (summary[c["category"]]["solve"].recall if summary[c["category"]]["solve"] else -1,
-                                    2 if c["done"] else 1 if not c["neetcode150"] else 0,
+                                    3 if c["done"] else 0 if c["retry"] else 2 if not c["neetcode150"] else 1,
                                     c["title"]))
 
 
@@ -209,7 +228,7 @@ def _validate_reply(reply, request):
     if request.trigger == "chat" and reply.reading == "none" or request.trigger != "chat" and reply.reading != "none":
         raise ValueError("Reading does not match request")
     catalog = load_catalog()
-    known_patterns = {p for c in request.allowed for p in c["patterns"]}
+    known_patterns = request.known_patterns
     for focus in (reply.ask or []) + (reply.steer.focus if reply.steer else []):
         if any(c not in CATEGORIES for c in focus.categories) or any(p not in known_patterns for p in focus.patterns):
             raise ValueError("Unknown focus id")
@@ -250,6 +269,7 @@ class Planner:
         self.db_path = db_path
         self.clock = clock
         self.card = None
+        self._card_session_id = None
         self._waiting = None
         self._chat = []
 
@@ -263,6 +283,8 @@ class Planner:
             hypotheses = [dict(text=t, category=c, skill=s) for t, c, s in db.execute("SELECT text, category, skill FROM hypotheses WHERE status = 'open'")]
             preferences = [t for (t,) in db.execute("SELECT text FROM notes WHERE kind = 'preference' ORDER BY id DESC LIMIT 20")]
             attempts = _session_attempts(db, session_id)
+            unfinished = _unfinished(db)
+            known_patterns = frozenset(p for patterns in _patterns(db).values() for p in patterns)
         catalog = load_catalog()
         session_problems = []
         for a in attempts:
@@ -273,14 +295,16 @@ class Planner:
                                          "help": a["help"], "outcome": "accepted" if a["accepted"] else "unfinished"})
         rendered = {category: {"solve": vars(v["solve"]) if v["solve"] else None,
                                "analysis": vars(v["analysis"]) if v["analysis"] else None,
-                               "recent": v["recent"], "done": v["done"], "imported": v["imported"]}
+                               "recent": v["recent"], "recent_dated": v["recent_dated"],
+                               "done": v["done"], "imported": v["imported"]}
                     for category, v in summary.items()}
         content = {"today": now.date().isoformat(), "allowed": allowed, "learner_summary": rendered,
                    "session_problems": session_problems, "imported_history": imported, "hypotheses": hypotheses,
-                   "preferences": preferences, "unfinished": [a for a in session_problems if a["outcome"] == "unfinished"],
+                   "preferences": preferences, "unfinished": unfinished,
                    "card": self.card, "chat": self._chat, "steer": steer, "message": text}
         request = PlannerRequest(trigger, session_id, now, allowed,
-                                 [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": json.dumps(content)}])
+                                 [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": json.dumps(content)}],
+                                 known_patterns)
         self._waiting = request
         return request
 
@@ -294,9 +318,18 @@ class Planner:
         self._chat = []
         return self._request("between", session_id)
 
+    def _card_owner(self, session_id):
+        if self._card_session_id is None and session_id is not None:
+            with open_store(self.db_path) as db:
+                active = db.execute("SELECT 1 FROM sessions WHERE id = ? AND ended_at IS NULL", (session_id,)).fetchone()
+            if active:
+                self.session_started(session_id)
+        return self._card_session_id
+
     def swap(self, session_id):
         if not self.card:
             raise ValueError("No suggestion to swap")
+        session_id = self._card_owner(session_id)
         with open_store(self.db_path) as db:
             db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES (?, 'preference', ?, ?)",
                        (self.clock().isoformat(), f"Swapped {self.card['slug']}", session_id))
@@ -308,11 +341,12 @@ class Planner:
         if not self.card:
             return None
         self._chat.append(text)
-        return self._request("chat", session_id, text)
+        return self._request("chat", self._card_owner(session_id), text)
 
     def clear_steer(self, session_id):
         if not self.card:
             raise ValueError("No suggestion to clear")
+        session_id = self._card_owner(session_id)
         with open_store(self.db_path) as db:
             db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES (?, 'steer_clear', '', ?)",
                        (self.clock().isoformat(), session_id))
@@ -331,6 +365,19 @@ class Planner:
         self.card = None
         self._waiting = None
         self._chat = []
+        self._card_session_id = None
+
+    def session_started(self, session_id):
+        if self.card is None or self._card_session_id is not None:
+            self.session_ended()
+        else:
+            self._waiting = None
+            self._chat = []
+            self._card_session_id = session_id
+        with open_store(self.db_path) as db:
+            latest = db.execute("SELECT id, kind, text, session_id FROM notes WHERE kind IN ('steer', 'steer_clear') ORDER BY id DESC LIMIT 1").fetchone()
+            if latest and latest[1] == "steer" and latest[3] is None and json.loads(latest[2])["horizon"] == "session":
+                db.execute("UPDATE notes SET session_id = ? WHERE id = ?", (session_id, latest[0]))
 
     def _show(self, request, candidate, source, message):
         with open_store(self.db_path) as db:
@@ -339,6 +386,7 @@ class Planner:
                      "title": candidate["title"], "difficulty": candidate["difficulty"],
                      "cap_minutes": {"Easy": 20, "Medium": 35, "Hard": 50}[candidate["difficulty"]],
                      "steer": steer["label"] if steer else None, "message": message, "source": source}
+        self._card_session_id = request.session_id
         self._waiting = None
         return [self.card]
 
@@ -368,6 +416,9 @@ class Planner:
             steer = active_steer(db, session_id=request.session_id)
             db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES (?, 'planner_failure', ?, ?)",
                        (self.clock().isoformat(), str(error), request.session_id))
+        if not request.allowed:
+            self.session_ended()
+            return [{"type": "error", "message": "The Planner failed and no eligible problems are available to suggest."}]
         message = "The Planner failed; your steer wasn't saved. Here's a suggestion from the fallback." if request.trigger == "chat" else "The Planner didn't answer; here's a code-ranked suggestion."
         return self._show(request, code_ranked(request.allowed, summary, steer), "fallback", message)
 

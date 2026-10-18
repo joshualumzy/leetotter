@@ -77,7 +77,7 @@ def _context(db, session_id):
                   for id_, text, category, skill, status, cites, rejected in db.execute(
                       "SELECT id, text, category, skill, status, cited_event_ids, rejected_note_id FROM hypotheses ORDER BY id")]
     notes = [dict(id=id_, kind=kind, text=text) for id_, kind, text in db.execute(
-        "SELECT id, kind, text FROM notes ORDER BY id")]
+        "SELECT id, kind, text FROM notes WHERE kind IN ('preference', 'correction', 'recap_feedback') ORDER BY id")]
     teaching = [dict(problem_slug=slug, idea=idea, framing=framing, help_kind=kind, outcome=outcome)
                 for slug, idea, framing, kind, outcome in db.execute(
                     "SELECT problem_slug, idea, framing, help_kind, outcome FROM teaching ORDER BY id")]
