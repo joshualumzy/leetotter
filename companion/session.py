@@ -18,7 +18,8 @@ READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed",
 #              invalid_output, error, context (the prompt couldn't be built), restart, shutdown
 TURN_REQUESTS = frozenset({"chat_message", "help_request"})
 TURN_EVENTS = TURN_REQUESTS | {"help_turn", "help_failed"}
-EVENT_TYPES = READER_TYPES | TURN_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "overrun_prompted", "overrun_choice", "session_restored"}
+FOLLOWUP_EVENTS = frozenset({"followup_asked", "complexity_postponed", "followup_answered", "reasoning_requested", "followup_skipped", "analysis_resolved"})
+EVENT_TYPES = READER_TYPES | TURN_EVENTS | FOLLOWUP_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "overrun_prompted", "overrun_choice", "session_restored"}
 CODE_EVENTS = frozenset({"code_snapshot", "code_changed"})
 RESTART_MESSAGE = "The companion restarted before the Tutor finished."
 logger = logging.getLogger(__name__)
@@ -208,6 +209,21 @@ class SessionCoordinator:
                 if (not isinstance(payload.get("slug"), str) or not payload["slug"]
                         or not isinstance(payload.get("cases"), list) or not payload["cases"]):
                     raise ValueError("Invalid run_result event")
+            elif kind in FOLLOWUP_EVENTS:
+                if not isinstance(payload.get("slug"), str) or not payload["slug"]:
+                    raise ValueError(f"Invalid {kind} event")
+                if kind == "followup_asked" and (not isinstance(payload.get("question"), str)
+                        or type(payload.get("complexity")) is not bool):
+                    raise ValueError("Invalid followup_asked event")
+                if kind == "complexity_postponed" and not isinstance(payload.get("reason"), str):
+                    raise ValueError("Invalid complexity_postponed event")
+                if kind in {"followup_answered", "reasoning_requested", "followup_skipped", "analysis_resolved"} and type(payload.get("question_id")) is not int:
+                    raise ValueError(f"Invalid {kind} event")
+                if kind == "analysis_resolved" and payload.get("reason") not in {"no_reasoning", "complexity_stated"}:
+                    raise ValueError("Invalid analysis_resolved event")
+                if kind == "followup_answered" and (not isinstance(payload.get("text"), str)
+                        or type(payload.get("has_reasoning")) is not bool):
+                    raise ValueError("Invalid followup_answered event")
             elif kind == "session_ended":
                 raise ValueError("Open session contains session_ended")
         if active_since is not None:
