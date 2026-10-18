@@ -1,7 +1,7 @@
 [roles]
 tutor = "x-test-2"
 reflector = "x-test-1"
-planner = "x-test-1"
+planner = "x-test-2"
 grader = ["x-test-1", "x-test-2"]
 reference_writer = "x-test-1"
 checker = "x-test-2"
