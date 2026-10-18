@@ -19,7 +19,8 @@ CHANGE_RULES = ("Field rules: use null, never 0 or an empty string, for a field 
                 "Wording: every recap_line and bullet is one plain sentence of at most 160 characters, addressed "
                 "to the learner, about what they did or need to practise. Put event ids only in the "
                 "cited_event_ids fields, never in any text; never name logging or system events (restores, "
-                "snapshots, pauses, focus changes).")
+                "snapshots, pauses, focus changes). A hypothesis change already appears as its own recap line, so never "
+                "repeat it as a bullet; bullets are only for other things worth saying.")
 PROMPT = ("Review only the given session. Summarize briefly. Hypotheses and teaching entries need real "
           "event citations. Every hypothesis change needs a one-line recap_line. Carried-over bullets "
           "need new evidence of recurrence or improvement. A smooth session may have no bullets. "
