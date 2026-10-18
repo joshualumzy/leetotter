@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from companion.catalog import load_catalog
 from companion.model import ModelClient
 from companion.store import open_store
 
@@ -19,6 +20,7 @@ FIELDS_OF = {"complexity": ("time", "space"), "interview_expected": ("interview_
 
 FORMAT = """Write a short reference for a coding-interview problem as JSON with these fields:
 slug, title, difficulty, neetcode_category (NeetCode's category name),
+summary: one plain sentence saying what the problem asks, without an approach or pattern name,
 patterns: reusable interview ideas the problem uses (sliding window, fast and slow pointers, monotonic stack...),
 analysis_concepts: finer tags for complexity analysis,
 approaches: a list of {id (unique), name, idea (one line), time, space,
@@ -49,6 +51,7 @@ class Reference(BaseModel):
     title: str = Field(min_length=1)
     difficulty: str = Field(min_length=1)
     neetcode_category: str = Field(min_length=1)
+    summary: str | None = None
     patterns: list[str]
     analysis_concepts: list[str]
     approaches: list[Approach] = Field(min_length=1)
@@ -133,7 +136,8 @@ def load_reference(db, slug) -> StoredReference | None:
     return StoredReference(Reference.model_validate(content), row[1], uncertain)
 
 
-def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str | Path | None = None) -> StoredReference:
+def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str | Path | None = None,
+                    statement: str | None = None, grade_waiting: bool = True) -> StoredReference:
     """Write, check and store one reference. A stored `checked` reference is returned as is; a stored
     `needs_review` one is replaced only by a result that is now `checked`."""
     with open_store(db_path) as db:
@@ -141,10 +145,27 @@ def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str 
     if existing and existing.status == "checked":
         return existing
 
+    catalog_problem = load_catalog().by_slug(slug) if statement is not None else None
+    if statement is not None and catalog_problem is None:
+        raise ValueError(f"Unknown catalog problem: {slug}")
+
     reference = models.call_role("reference_writer", [
         {"role": "system", "content": FORMAT},
-        {"role": "user", "content": f"Problem slug: {slug}\nTitle: {title}"},
+        {"role": "user", "content": f"Problem slug: {slug}\nTitle: {title}"
+         + (f"\nDifficulty: {catalog_problem['difficulty']}\nNeetCode category: {catalog_problem['category']}"
+            f"\nProblem statement: {statement}" if statement else "")},
     ], Reference)
+    if statement is not None:
+        if (reference.slug != slug or reference.title != title or
+                reference.difficulty != catalog_problem["difficulty"] or
+                reference.neetcode_category != catalog_problem["category"]):
+            raise ValueError("On-demand reference does not match catalog metadata")
+        summary = reference.summary
+        if not summary or not summary.strip():
+            raise ValueError("On-demand reference requires a summary")
+        forbidden = [a.name for a in reference.approaches] + [pattern.replace("-", " ") for pattern in reference.patterns]
+        if any(name and name.casefold() in summary.casefold() for name in forbidden):
+            raise ValueError("Reference summary names an approach or pattern")
     disagreements = _check(models, reference)
     if disagreements:
         revised = _regenerate(models, reference, disagreements)
@@ -161,7 +182,7 @@ def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str 
         db.execute('INSERT INTO "references" (problem_key, content, status) VALUES (?, ?, ?) '
                    "ON CONFLICT(problem_key) DO UPDATE SET content = excluded.content, status = excluded.status",
                    (slug, content, result.status))
-    if result.status == "checked":
+    if result.status == "checked" and grade_waiting:
         from companion.grading import grade_pending
         try:
             grade_pending(models, db_path=db_path, only_slug=slug)

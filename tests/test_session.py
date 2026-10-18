@@ -6,6 +6,7 @@ import pytest
 from websockets.asyncio.client import connect
 
 from companion.session import SessionCoordinator
+from companion.catalog import load_catalog
 from companion.socket import ALLOWED_ORIGIN, serve_companion
 from companion.store import open_store
 
@@ -83,6 +84,26 @@ def check(ok, message=None):
     if message is not None:
         payload["message"] = message
     return msg("reader_check", payload)
+
+
+def test_free_250_problem_exposes_unchecked_reference_and_locked_page_fails_self_check(tmp_path):
+    coordinator, _, _ = make(tmp_path)
+    extra = load_catalog().by_slug("concatenation-of-array")
+    locked = load_catalog().by_slug("valid-word-square")
+    coordinator.handle(start_msg())
+    state, = coordinator.handle(opened(extra["slug"], extra["title"]))
+    assert state["state"] == "active"
+    assert state["problem"] == {"slug": extra["slug"], "title": extra["title"]}
+    assert state["reference_status"] == "not_checked_yet"
+    assert state["reference_message"] == "Reference not checked yet"
+    state, = coordinator.handle(opened(locked["slug"], locked["title"]))
+    assert state["state"] == "paused"
+    assert state["paused_reason"] == "check"
+    assert "locked" in state["check_message"].lower()
+    state, = coordinator.handle(check(True))
+    assert state["state"] == "paused"
+    state, = coordinator.handle(opened(extra["slug"], extra["title"]))
+    assert state["state"] == "active"
 
 
 def events(path):
@@ -878,7 +899,8 @@ def test_restart_restores_an_unfinished_session_as_paused_with_reason_restart(tm
     assert {k: v for k, v in s.items() if k != "ts"} == {
         "type": "session_state", "state": "paused", "paused_reason": "restart", "check_message": None,
         "budget_minutes": 25, "active_seconds": 120, "running": False, "overrun_prompt": False,
-        "problem": {"slug": SLUG_A, "title": TITLE_A}, "accepted": False, "mode": "paused",
+        "problem": {"slug": SLUG_A, "title": TITLE_A}, "reference_status": "not_checked_yet",
+        "reference_message": "Reference not checked yet", "accepted": False, "mode": "paused",
     }
     restored = of_type(path, "session_restored")
     assert len(restored) == 1 and restored[0][1] == {"active_seconds": 120}

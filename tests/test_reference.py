@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from companion.reference import Reference, write_and_check
+from companion.catalog import load_catalog
 from companion.store import open_store
 
 
@@ -77,6 +78,34 @@ def test_agreeing_checker_stores_checked(tmp_path):
     [(key, content, status)] = stored(path)
     assert (key, status) == ("two-sum", "checked")
     assert json.loads(content)["approaches"][0]["id"] == "hash"
+
+
+def test_on_demand_reference_uses_statement_for_real_250_problem(tmp_path):
+    problem = load_catalog().by_slug("concatenation-of-array")
+    statement = "Given an integer array nums, return an array with nums followed by nums."
+    reply = {"slug": problem["slug"], "title": problem["title"], "difficulty": problem["difficulty"],
+             "neetcode_category": problem["category"], "summary": "Return the input sequence repeated twice.",
+             "patterns": ["array"],
+             "analysis_concepts": ["linear-time"], "approaches": [approach("copy", space="O(n)")]}
+    checks = {"verdicts": [{"approach_id": "copy", "label": label, "agree": True, "reason": "correct"}
+                           for label in ("complexity", "interview_expected", "trick")]}
+    models = FakeModels([reply], [checks])
+    result = write_and_check(problem["slug"], problem["title"], models,
+                             statement=statement, db_path=tmp_path / "db")
+    assert result.status == "checked"
+    assert statement in models.calls[0][1][-1]["content"]
+    assert problem["category"] in models.calls[0][1][-1]["content"]
+    assert problem["difficulty"] in models.calls[0][1][-1]["content"]
+
+
+def test_on_demand_reference_requires_a_plain_summary(tmp_path):
+    problem = load_catalog().by_slug("concatenation-of-array")
+    reply = {"slug": problem["slug"], "title": problem["title"], "difficulty": problem["difficulty"],
+             "neetcode_category": problem["category"], "patterns": ["array"],
+             "analysis_concepts": ["linear-time"], "approaches": [approach("copy")]}
+    with pytest.raises(ValueError, match="summary"):
+        write_and_check(problem["slug"], problem["title"], FakeModels([reply]),
+                        statement="Return an array with nums repeated twice.", db_path=tmp_path / "db")
 
 
 def test_disagreement_regenerates_only_that_part_then_agrees(tmp_path):

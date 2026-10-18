@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import datetime
+from companion.catalog import load_catalog
 from companion.grading import write_missed
 from companion.reference import load_reference
 from companion.store import open_store
@@ -241,12 +242,23 @@ class SessionCoordinator:
         return int(self.elapsed + running)
 
     def _state(self, now):
-        return {"type": "session_state", "ts": now.isoformat(), "state": self.state,
+        reference_status = None
+        if self.problem:
+            with open_store(self.db_path) as db:
+                row = db.execute('SELECT status FROM "references" WHERE problem_key = ?',
+                                 (self.problem["slug"],)).fetchone()
+            reference_status = row[0] if row and row[0] in {"checked", "resolved_by_you"} else "not_checked_yet"
+        state = {"type": "session_state", "ts": now.isoformat(), "state": self.state,
                 "paused_reason": self.paused_reason, "check_message": self.check_message,
                 "budget_minutes": self.budget_minutes, "active_seconds": self._seconds(now),
                 "running": self.state == "active", "overrun_prompt": self.overrun_prompt,
                 "problem": self.problem, "accepted": self.accepted,
                 "mode": "watching" if self.state == "active" else "paused" if self.state == "paused" else "idle"}
+        if self.problem:
+            state["reference_status"] = reference_status
+            if reference_status == "not_checked_yet":
+                state["reference_message"] = "Reference not checked yet"
+        return state
 
     def _pause(self, db, now, reason, message=None):
         self.elapsed += (now - self.active_since).total_seconds()
@@ -306,9 +318,15 @@ class SessionCoordinator:
         if kind == "tab_closed" and self.state != "active":
             return [self._state(now)]
         if kind in READER_TYPES and (self.state in ("idle", "ended") or
-            (self.state == "paused" and kind not in ("focus_changed", "reader_check", "submit_result"))):
+            (self.state == "paused" and kind not in ("focus_changed", "reader_check", "submit_result")
+             and not (kind == "problem_opened" and self.paused_reason == "check"))):
             return [self._state(now)]
         with open_store(self.db_path) as db:
+            if (kind == "problem_opened" and self.state == "paused" and self.paused_reason == "check"):
+                catalog_problem = load_catalog().by_slug(payload["slug"])
+                if catalog_problem is None or catalog_problem["locked"]:
+                    return [self._state(now)]
+                self._resume(db, now)
             if kind == "session_start":
                 self._reset(now, payload["budget_minutes"])
                 row = db.execute("INSERT INTO sessions (started_at, budget_minutes) VALUES (?, ?)",
@@ -338,7 +356,9 @@ class SessionCoordinator:
                 elif kind == "reader_check":
                     if self.state == "active" and payload["ok"] is False:
                         self._pause(db, now, "check", payload.get("message"))
-                    elif self.state == "paused" and self.paused_reason == "check" and payload["ok"] is True:
+                    elif (self.state == "paused" and self.paused_reason == "check" and payload["ok"] is True
+                          and not (self.problem and (catalog := load_catalog().by_slug(self.problem["slug"]))
+                                   and catalog["locked"])):
                         self._resume(db, now)
                 elif kind == "problem_opened":
                     if self.problem and self.problem["slug"] != payload["slug"]:
@@ -349,6 +369,9 @@ class SessionCoordinator:
                         self.attempt_start = event_id
                         self.problem_started = self._seconds(now)
                     self.problem = {"slug": payload["slug"], "title": payload["title"]}
+                    catalog_problem = load_catalog().by_slug(payload["slug"])
+                    if catalog_problem and catalog_problem["locked"] and self.state == "active":
+                        self._pause(db, now, "check", "This problem is locked on NeetCode.")
                 elif kind == "submit_result" and payload["accepted"] and self.problem and payload["slug"] == self.problem["slug"]:
                     if self.state == "paused":
                         self.pending_accept = True

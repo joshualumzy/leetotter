@@ -9,10 +9,11 @@ from datetime import datetime, timezone
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
-from companion.catalog import normalize_link
+from companion.catalog import load_catalog, normalize_link
 from companion.grading import grade_pending
 from companion.history import import_history, import_status
 from companion.model import ModelClient
+from companion.reference import write_and_check
 from companion.reflector import pending_sessions, recap_state, reflect_feedback, reflect_session, submit_feedback
 from companion.session import SessionCoordinator
 from companion.store import open_store, store_path
@@ -43,6 +44,7 @@ _models = None
 _clients = set()
 _turns = set()
 _grading_tasks = set()
+_reference_tasks = {}
 _grading_lock = None
 _reflection_tasks = set()
 _reflection_lock = None
@@ -241,6 +243,8 @@ async def _handle(connection):
                     if not any(item["type"] == "error" for item in outgoing):
                         if kind == "problem_opened":
                             _schedule_grading("next_problem")
+                        elif kind == "problem_statement":
+                            _schedule_reference(message["payload"])
                         elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
                             _schedule_grading("initial")
                             await _broadcast([recap_state(store_path(), _coordinator.session_id)], connection)
@@ -260,7 +264,7 @@ async def _broadcast(outgoing, sender, broadcast=True):
             logger.error("Session request rejected: %s", message["message"])
             message = {**message, "ts": _timestamp()}
         turn_message = message["type"].startswith("tutor_") and message["turn_id"] is not None
-        targets = tuple(_clients) if turn_message or (broadcast and message["type"] in ("session_state", "settings_state", "recap_state")) else (sender,)
+        targets = tuple(_clients) if sender is None or turn_message or (broadcast and message["type"] in ("session_state", "settings_state", "recap_state")) else (sender,)
         for target in targets:
             try:
                 await target.send(json.dumps(message))
@@ -342,6 +346,38 @@ def _schedule_grading(trigger="initial"):
     task.add_done_callback(_grading_tasks.discard)
 
 
+def _schedule_reference(payload):
+    slug = payload["slug"]
+    if (_coordinator is None or _coordinator.state != "active" or
+            _coordinator.problem is None or _coordinator.problem["slug"] != slug):
+        return
+    problem = load_catalog().by_slug(slug)
+    if problem is None or problem["neetcode150"] or problem["locked"] or slug in _reference_tasks:
+        return
+    with open_store() as db:
+        stored = db.execute('SELECT status FROM "references" WHERE problem_key = ?', (slug,)).fetchone()
+    if stored is not None:
+        return
+    task = asyncio.create_task(_run_reference(problem, payload["statement"]))
+    _reference_tasks[slug] = task
+    task.add_done_callback(lambda _: _reference_tasks.pop(slug, None))
+
+
+async def _run_reference(problem, statement):
+    slug = problem["slug"]
+    try:
+        result = await asyncio.to_thread(write_and_check, slug, problem["title"], _get_models(),
+                                         db_path=store_path(), statement=statement, grade_waiting=False)
+        if result.status == "checked":
+            await _run_grading("initial")
+        if _coordinator is not None and _coordinator.problem and _coordinator.problem["slug"] == slug:
+            await _broadcast([_coordinator._state(_coordinator.clock())], None)
+    except Exception as error:
+        logger.exception("On-demand reference failed for %s", slug)
+        await _broadcast([{"type": "error", "ts": _timestamp(),
+                           "message": f"Reference for {problem['title']} is not checked yet: {error}"}], None)
+
+
 def _schedule_reflection(session_id):
     task = asyncio.create_task(_run_reflection(session_id))
     _reflection_tasks.add(task)
@@ -352,7 +388,7 @@ async def _run_reflection(session_id):
     async with _reflection_lock:
         try:
             if _grading_tasks:
-                await asyncio.gather(*tuple(_grading_tasks))
+                await asyncio.gather(*tuple(_grading_tasks), return_exceptions=True)
             state = await asyncio.to_thread(reflect_session, _get_models(), store_path(), session_id)
             await _broadcast([state], None)
         except Exception as error:
@@ -429,6 +465,7 @@ async def serve_companion(port=8765, models=None):
                 task.cancel()
             await asyncio.gather(*_turns, return_exceptions=True)
             await asyncio.gather(*_grading_tasks, return_exceptions=True)
+            await asyncio.gather(*tuple(_reference_tasks.values()), return_exceptions=True)
             await asyncio.gather(*_reflection_tasks, return_exceptions=True)
             tick_task.cancel()
             try:
