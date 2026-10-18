@@ -153,7 +153,7 @@ def test_two_consecutive_provider_failures_raise_unavailable(tmp_path, monkeypat
         instance.call_role("checker", message(), Reply)
     with pytest.raises(ModelUnavailable) as caught:
         instance.call_role("checker", message(), Reply)
-    assert set(caught.value.affected_roles) == {"checker", "grader", "tutor"}
+    assert set(caught.value.affected_roles) == {"checker", "grader", "planner", "tutor"}
     assert [row[-1] for row in rows(path)] == ["error", "unavailable"]
 
 
