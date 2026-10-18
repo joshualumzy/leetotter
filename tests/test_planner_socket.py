@@ -75,7 +75,7 @@ def test_panel_open_sends_title_only_and_go_opens_it(tmp_path, monkeypatch):
 def test_leaving_an_accepted_problem_starts_planner_before_grading(tmp_path, monkeypatch):
     async def scenario():
         setup(tmp_path, monkeypatch, ["house-robber"])
-        connection = Connection([msg("session_start", {"budget_minutes": 60}),
+        connection = Connection([msg("session_start"),
                                  opened("climbing-stairs", "Climbing Stairs"),
                                  submit("climbing-stairs", True), msg("session_done")])
         await socket._handle(connection)
@@ -88,7 +88,7 @@ def test_leaving_an_accepted_problem_starts_planner_before_grading(tmp_path, mon
 def test_swap_and_clear_are_routed_to_planner(tmp_path, monkeypatch):
     async def scenario():
         setup(tmp_path, monkeypatch, ["house-robber", "coin-change", "climbing-stairs"])
-        connection = Connection([msg("hello"), msg("session_start", {"budget_minutes": 60}),
+        connection = Connection([msg("hello"), msg("session_start"),
                                  msg("planner_swap"), msg("planner_clear")])
         await socket._handle(connection)
         suggestions = [m["slug"] for m in connection.sent if m["type"] == "suggestion"]
@@ -103,7 +103,7 @@ def test_card_chat_stores_steer_and_clear_replaces_without_swap(tmp_path, monkey
             "steer": {"label": "more dynamic programming", "horizon": "session", "focus": [{
                 "categories": ["1-D Dynamic Programming"], "patterns": [], "direction": "more"}]},
             "understood": "More dynamic programming this session.", "named_by_you": False}, "climbing-stairs"])
-        connection = Connection([msg("hello"), msg("session_start", {"budget_minutes": 60}),
+        connection = Connection([msg("hello"), msg("session_start"),
                                  msg("planner_chat", {"text": "more DP"}), msg("planner_clear")])
         await socket._handle(connection)
         cards = [m for m in connection.sent if m["type"] == "suggestion"]

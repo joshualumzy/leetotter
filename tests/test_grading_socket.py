@@ -37,7 +37,7 @@ def test_permanent_grading_failure_is_visible_with_specific_message(tmp_path, mo
     async def scenario():
         socket._coordinator = SessionCoordinator(path, lambda: datetime.now(timezone.utc))
         socket._grading_lock = asyncio.Lock()
-        connection = Connection([msg("session_start", {"budget_minutes": 10}),
+        connection = Connection([msg("session_start"),
                                  opened("unknown-for-grading", "Unknown"),
                                  submit("unknown-for-grading", True), msg("session_end")])
         await socket._handle(connection)
@@ -50,23 +50,3 @@ def test_permanent_grading_failure_is_visible_with_specific_message(tmp_path, mo
     asyncio.run(scenario())
     with open_store(path) as db:
         assert db.execute("SELECT count(*) FROM grading_failures").fetchone()[0] == 1
-
-
-def test_overrun_stop_schedules_grading(tmp_path, monkeypatch):
-    path = tmp_path / "grading.sqlite3"
-    monkeypatch.setenv("LEETOTTER_DB_PATH", str(path))
-    triggers = []
-    monkeypatch.setattr(socket, "_schedule_grading", lambda trigger="initial": triggers.append(trigger))
-
-    async def scenario():
-        now = datetime.now(timezone.utc)
-        socket._coordinator = SessionCoordinator(path, lambda: now)
-        socket._coordinator.handle(msg("session_start", {"budget_minutes": 1}))
-        socket._coordinator.clock = lambda: now + timedelta(minutes=2)
-        socket._coordinator.tick()
-        connection = Connection([msg("session_overrun", {"choice": "stop"})])
-        await socket._handle(connection)
-        assert any(item["type"] == "session_state" and item["state"] == "ended" for item in connection.sent)
-
-    asyncio.run(scenario())
-    assert triggers == ["initial"]

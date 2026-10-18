@@ -1,5 +1,4 @@
 [roles]
-observer = "qwen3.8:27b"
 tutor = "x-test-2"
 reflector = "x-test-1"
 planner = "x-test-1"
@@ -8,7 +7,6 @@ reference_writer = "x-test-1"
 checker = "x-test-2"
 
 [timeouts]
-observer = 20
 tutor = 60
 grader = 60
 planner_start = 180
@@ -17,14 +15,9 @@ reflector = 180
 reference_writer = 180
 checker = 180
 
-[provider]
-# Confirm this endpoint accepts chat_template_kwargs in python -m companion.check.
-observer_thinking_extra_body = { chat_template_kwargs = { enable_thinking = false } }
-
 [streaming]
 tutor = true
 
 [display_names]
-"qwen3.8:27b" = "Qwen 3.8 27B"
 "x-test-1" = "GLM 5.3 Flash"
 "x-test-2" = "DeepSeek V4.1 Flash"

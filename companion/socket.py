@@ -25,7 +25,7 @@ from companion.tutor import ask_tutor, failure
 EXTENSION_ID = "oohbhndckkkkdngkglilcbpcoekapmgp"
 ALLOWED_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
-SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_done", "session_skip", "session_get_state", "tab_closed"})
+SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_time_up", "session_done", "session_skip", "session_get_state", "tab_closed"})
 # Tutor messages. Client: help_request (a press of "I need help", no payload) and chat_message {text}.
 # Server, each with the turn's id: tutor_start {request, press_index}; tutor_chunk {attempt, text}, reply text
 # as it streams (append chunks of the same attempt; a higher attempt is a retry after an invalid reply and
@@ -161,13 +161,13 @@ def _validate(raw):
     if kind in READER_TYPES:
         _reader_payload(kind, message.get("payload"))
     if kind == "session_start":
-        payload = message.get("payload")
-        if not isinstance(payload, dict) or not _integer(payload.get("budget_minutes")) or payload["budget_minutes"] <= 0:
+        payload = message.get("payload", {})
+        if not isinstance(payload, dict) or payload:
             raise ValueError("Invalid session_start payload")
-    if kind == "session_overrun":
+    if kind == "session_time_up":
         payload = message.get("payload")
-        if not isinstance(payload, dict) or payload.get("choice") not in ("finish", "stop"):
-            raise ValueError("Invalid session_overrun payload")
+        if not isinstance(payload, dict) or payload.get("choice") not in ("extend", "debrief"):
+            raise ValueError("Invalid session_time_up payload")
     if kind in ("tab_closed", "help_request", "chat_get") and "payload" in message:
         raise ValueError(f"Invalid {kind} payload")
     if kind == "chat_message":
@@ -321,6 +321,14 @@ async def _handle(connection):
                     outgoing = _coordinator.handle(message)
                     await _broadcast(outgoing, connection, kind != "session_get_state")
                     if not any(item["type"] == "error" for item in outgoing):
+                        if kind == "session_time_up" and message["payload"]["choice"] == "debrief":
+                            started, turn = _coordinator.begin_turn("debrief")
+                            if turn is None:
+                                await _broadcast(started, connection)
+                            else:
+                                task = asyncio.create_task(_run_turn(turn, started))
+                                _turns.add(task)
+                                task.add_done_callback(_turns.discard)
                         if _planner is not None:
                             if kind == "session_start":
                                 _planner.session_started(_coordinator.session_id)
@@ -329,7 +337,7 @@ async def _handle(connection):
                                 _schedule_grading("next_problem")
                             elif kind == "problem_opened" and _coordinator.problem is not None:
                                 _planner.session_ended()
-                            elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
+                            elif kind == "session_end":
                                 _planner.session_ended()
                         if kind in ("session_start", "session_end"):
                             _reference_statements.clear()
@@ -341,7 +349,7 @@ async def _handle(connection):
                             _schedule_reference(message["payload"])
                         if before_state == "paused" and _coordinator.state == "active":
                             _retry_current_reference()
-                        elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
+                        elif kind == "session_end":
                             _schedule_grading("initial")
                             await _broadcast([recap_state(store_path(), _coordinator.session_id)], connection)
                             _schedule_reflection(_coordinator.session_id)

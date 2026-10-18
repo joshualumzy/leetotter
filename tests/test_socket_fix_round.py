@@ -12,7 +12,7 @@ from companion.catalog import load_catalog
 def test_off_plan_open_discards_card_and_planner_chat_is_rejected(tmp_path, monkeypatch):
     async def scenario():
         setup(tmp_path, monkeypatch, ["house-robber"])
-        connection = Connection([msg("hello"), msg("session_start", {"budget_minutes": 60}),
+        connection = Connection([msg("hello"), msg("session_start"),
                                  opened("climbing-stairs", "Climbing Stairs"),
                                  msg("planner_chat", {"text": "more DP"})])
         await socket._handle(connection)
@@ -25,7 +25,7 @@ def test_session_start_discards_waiting_start_request(tmp_path, monkeypatch):
     async def scenario():
         setup(tmp_path, monkeypatch, [])
         pending = socket._planner.panel_opened("idle")
-        connection = Connection([msg("session_start", {"budget_minutes": 60})])
+        connection = Connection([msg("session_start")])
         await socket._handle(connection)
         assert socket._planner.answer(pending, None) == []
     asyncio.run(scenario())
@@ -57,7 +57,7 @@ def test_reference_statement_is_retried_when_session_resumes(tmp_path, monkeypat
         seen = []
         monkeypatch.setattr(socket, "_schedule_reference", seen.append)
         slug = "minimum-size-subarray-sum"
-        connection = Connection([msg("session_start", {"budget_minutes": 60}),
+        connection = Connection([msg("session_start"),
                                  opened(slug, "Minimum Size Subarray Sum"),
                                  msg("problem_statement", {"slug": slug, "statement": "Find the shortest subarray."}),
                                  msg("session_pause"), msg("session_resume")])
@@ -77,7 +77,7 @@ def test_statement_received_while_paused_starts_reference_on_resume(tmp_path, mo
             started.append((problem["slug"], statement))
         monkeypatch.setattr(socket, "_run_reference", write)
         slug = "minimum-size-subarray-sum"
-        connection = Connection([msg("session_start", {"budget_minutes": 60}),
+        connection = Connection([msg("session_start"),
                                  opened(slug, "Minimum Size Subarray Sum"), msg("session_pause"),
                                  msg("problem_statement", {"slug": slug, "statement": "Shortest subarray."}),
                                  msg("session_resume")])

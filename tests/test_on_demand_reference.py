@@ -107,7 +107,7 @@ def test_reference_is_checked_after_ungraded_solve_without_blocking_tutor(tmp_pa
             handler = asyncio.create_task(socket._handle(connection))
             await connection.request("problem_statement", {"slug": PROBLEM["slug"], "statement": STATEMENT})
             assert not await asyncio.to_thread(models.writer_started.wait, 0.1)
-            assert (await connection.request("session_start", {"budget_minutes": 30}))["state"] == "active"
+            assert (await connection.request("session_start"))["state"] == "active"
             state = await connection.request("problem_opened", {"site": "neetcode", "slug": PROBLEM["slug"],
                                                                  "title": PROBLEM["title"]})
             assert state["reference_status"] == "not_checked_yet"

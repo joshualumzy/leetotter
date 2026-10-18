@@ -21,7 +21,7 @@ TRANSIENT_RETRY_DELAY = 1.5  # seconds before the one retry of a call that got n
 ROLES_PATH = Path(__file__).resolve().parent.parent / "roles.toml"
 BACKGROUND_ROLES = frozenset({"reference_writer", "checker"})
 ROLE_EFFECTS = (
-    ("observer", "approach nudges"), ("tutor", "tutoring"),
+    ("tutor", "tutoring"),
     ("reflector", "session reviews"), ("planner", "suggestions"),
     ("grader", "grading"), ("reference_writer", "reference writing"),
     ("checker", "reference checking"),
@@ -34,7 +34,6 @@ class RoleConfig:
     timeouts: dict[str, int]
     streaming: dict[str, bool]
     display_names: dict[str, str]
-    observer_thinking_extra_body: dict
 
 
 def load_roles(path: str | Path = ROLES_PATH) -> RoleConfig:
@@ -59,8 +58,7 @@ def load_roles(path: str | Path = ROLES_PATH) -> RoleConfig:
     for model in {m for models in roles.values() for m in models}:
         if not names.get(model):
             raise ValueError(f"missing display_name for model {model}")
-    return RoleConfig(roles, timeouts, data.get("streaming", {}), names,
-                      data["provider"]["observer_thinking_extra_body"])
+    return RoleConfig(roles, timeouts, data.get("streaming", {}), names)
 
 
 class ModelUnavailable(RuntimeError):
@@ -205,8 +203,7 @@ class ModelClient:
 
     def call_role(self, role: str, messages: list[dict], schema_class: type[BaseModel], *,
                   model: str | None = None, planner_phase: Literal["start", "between"] = "start",
-                  on_first_token=None, on_response=None, on_delta=None, response_mode: Literal["json_schema", "json_object", "plain"] = "json_schema",
-                  thinking_off: bool = True):
+                  on_first_token=None, on_response=None, on_delta=None, response_mode: Literal["json_schema", "json_object", "plain"] = "json_schema"):
         if role not in self.config.roles:
             raise ValueError(f"Unknown role: {role}")
         if role == "planner" and planner_phase not in ("start", "between"):
@@ -228,8 +225,6 @@ class ModelClient:
                     "name": schema_class.__name__.lower(), "strict": True, "schema": schema_class.model_json_schema()}}
             elif response_mode == "json_object":
                 kwargs["response_format"] = {"type": "json_object"}
-            if role == "observer" and thinking_off:
-                kwargs["extra_body"] = self.config.observer_thinking_extra_body
             streamed = self.config.streaming.get(role, False)
             if streamed:
                 kwargs.update(stream=True, stream_options={"include_usage": True})

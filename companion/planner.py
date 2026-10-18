@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from companion.catalog import CATEGORIES, load_catalog
 from companion.memory import item_memory
+from companion.session import TIME_CAP_MINUTES
 from companion.store import open_store
 
 logger = logging.getLogger(__name__)
@@ -384,7 +385,7 @@ class Planner:
             steer = active_steer(db, session_id=request.session_id)
         self.card = {"type": "suggestion", "ts": self.clock().isoformat(), "slug": candidate["slug"],
                      "title": candidate["title"], "difficulty": candidate["difficulty"],
-                     "cap_minutes": {"Easy": 20, "Medium": 35, "Hard": 50}[candidate["difficulty"]],
+                     "cap_minutes": TIME_CAP_MINUTES[candidate["difficulty"]],
                      "steer": steer["label"] if steer else None, "message": message, "source": source}
         self._card_session_id = request.session_id
         self._waiting = None

@@ -168,11 +168,13 @@ Close calls: if they already use the tool correctly elsewhere, it's pattern_not_
 
 3. Follow their approach, even when it isn't one the reference lists. Brute force is never a wrong path. Going straight for the optimal solution is fine; only when that has left them with nothing working, suggest getting a brute force working first.
 
-4. Match the help to how long and how hard they've struggled: early on, nudge lightly; a long struggle with repeated failures earns something more concrete. Weigh the value of more struggle against the time left in the session: with little time left, be more direct.
+4. Match the help to how long and how hard they've struggled: early on, stay light; a long struggle with repeated failures earns something more concrete. Weigh the value of more struggle against the time left on the problem's cap: with little time left, be more direct.
 
 5. Once a full solution has been shown, add only the explanation they still need. Don't restart the questioning.
 
 6. After an accepted submission, chat is a discussion. If they solved it on their own, they may ask you to compare approaches or help improve theirs.
+
+In a debrief (entered from the time-up card), work out from the code-built timeline what went wrong and build their intuition; you may walk through the solution. Use only the timeline and the reference you are given, and make no tool calls.
 
 Rules:
 - If they ask to steer practice while solving, say you will take it at the next suggestion.
@@ -211,9 +213,9 @@ CASE_FIELD_LIMIT = 600
 
 @dataclass(frozen=True)
 class TutorRequest:
-    kind: Literal["help", "chat"]
+    kind: Literal["help", "chat", "debrief"]
     press_index: int | None  # help: which answered press this is (1 = first); chat: None
-    text: str | None  # chat: the learner's message; help: None
+    text: str | None  # chat: the learner's message; help and debrief: None
 
 
 @dataclass(frozen=True)
@@ -238,7 +240,7 @@ FirstHelpReply = _schema("FirstHelpReply", _PRESSED, tuple(k for k in HELP_KINDS
 
 def reply_schema(request: TutorRequest) -> type[TutorReply]:
     """A press always gets help, and a first press never the full solution; the schema enforces both."""
-    if request.kind == "chat":
+    if request.kind in ("chat", "debrief"):
         return TutorReply
     return FirstHelpReply if request.press_index == 1 else HelpReply
 
@@ -354,45 +356,82 @@ def _request(request: TutorRequest, events):
             "A press always gets real help, so never label it gap none or help_kind none.")
 
 
+def _debrief_request(request: TutorRequest, timeline: list[dict]):
+    rendered = json.dumps(timeline, ensure_ascii=False, separators=(",", ":"))
+    if request.kind == "chat":
+        now = (f'## Now\nThe learner wrote during the debrief:\n"""\n{request.text}\n"""\n'
+               "Answer in the debrief: work from the timeline below, and give only the help they ask for.")
+    elif request.kind == "help":
+        now = ('## Now\nThe learner pressed "I need help" during the debrief. Use the timeline below to help with what '
+               "actually blocked them, and label the help you give.")
+    else:
+        now = ("## Now\nThe problem's time cap has run out and the learner chose the debrief. Work out from the timeline "
+               "what went wrong, build their intuition, and walk through the solution if that helps. Typing the code in "
+               "afterwards is optional.")
+    return "\n\n".join([
+        "## Debrief timeline (built by code, oldest first; no tool calls)",
+        rendered,
+        now,
+        "Use only this timeline and the reference. Make no tool calls."])
+
+
 def build_messages(problem: dict, events: list, *, reference: StoredReference | None, prior_solve: bool,
-                   problem_seconds: int, seconds_left: int, request: TutorRequest) -> list[dict]:
+                   problem_seconds: int, seconds_left: int, request: TutorRequest,
+                   timeline: list[dict] | None = None) -> list[dict]:
     """The Tutor's prompt, from the current problem and this session's events about it, oldest first.
 
     `events` are (type, payload) pairs; the code events are those since the problem was last opened. Only this
     session is used and never the learner's name, so nothing from outside the session is sent (beyond whether
-    NeetCode shows the problem solved). New context (Observer notes, Reflector hypotheses, framings that worked)
-    is a new argument and one more section here.
+    NeetCode shows the problem solved). New context (Reflector hypotheses, framings that worked)
+    is a new argument and one more section here. In the debrief, `timeline` replaces the ordinary code, result
+    and conversation sections: it is the compact timeline built by code, and the Tutor makes no tool calls.
     """
     statements = [p["statement"] for kind, p in events if kind == "problem_statement" and p["slug"] == problem["slug"]]
     statement = (f"## Statement\n{_clip(statements[-1], STATEMENT_LIMIT)}" if statements else
                  "## Statement\nThe problem statement isn't available. Rely on the title, the test cases in the run results "
                  "and the reference.")
-    code, behind = current_code([(k, p) for k, p in events if k in ("code_snapshot", "code_changed")])
-    if code is None or not code.strip():
-        code_section = "## Their code\nThe learner hasn't written any code yet (none seen). Help from the problem and what they say."
+    if timeline is not None or request.kind == "debrief":
+        body = _debrief_request(request, timeline or [])
     else:
-        code_section = f"## Their code\n```python\n{_clip(code, CODE_LIMIT)}\n```"
-        if behind:
-            code_section += "\n(The code may be slightly behind their latest edits.)"
-    edits = [p["diff"] for kind, p in events if kind == "code_changed"][-RECENT_EDITS:]
-    if edits:
-        rendered = []
-        for d in edits:
-            change = "\n".join([*(f"- {line}" for line in d["removed"]), *(f"+ {line}" for line in d["added"])])
-            rendered.append(f"At line {d['start_line']}:\n{_clip(change, EDIT_LIMIT)}")
-        code_section += "\n## Recent edits (oldest first)\n" + "\n".join(rendered)
-    results = [(k, p) for k, p in events if k in ("run_result", "submit_result") and p["slug"] == problem["slug"]][-RECENT_RESULTS:]
-    results_section = ("## Recent runs and submits (oldest first)\n" + "\n".join(_result(k, p) for k, p in results)
-                       if results else "## Runs and submits\nThe learner hasn't run or submitted this problem yet.")
-    time_left = (f"{_minutes(seconds_left)} left in the session" if seconds_left >= 0
-                 else f"the session is over its time budget by {_minutes(-seconds_left)}")
+        code, behind = current_code([(k, p) for k, p in events if k in ("code_snapshot", "code_changed")])
+        if code is None or not code.strip():
+            code_section = "## Their code\nThe learner hasn't written any code yet (none seen). Help from the problem and what they say."
+        else:
+            code_section = f"## Their code\n```python\n{_clip(code, CODE_LIMIT)}\n```"
+            if behind:
+                code_section += "\n(The code may be slightly behind their latest edits.)"
+        edits = [p["diff"] for kind, p in events if kind == "code_changed"][-RECENT_EDITS:]
+        if edits:
+            rendered = []
+            for d in edits:
+                change = "\n".join([*(f"- {line}" for line in d["removed"]), *(f"+ {line}" for line in d["added"])])
+                rendered.append(f"At line {d['start_line']}:\n{_clip(change, EDIT_LIMIT)}")
+            code_section += "\n## Recent edits (oldest first)\n" + "\n".join(rendered)
+        results = [(k, p) for k, p in events if k in ("run_result", "submit_result") and p["slug"] == problem["slug"]][-RECENT_RESULTS:]
+        results_section = ("## Recent runs and submits (oldest first)\n" + "\n".join(_result(k, p) for k, p in results)
+                           if results else "## Runs and submits\nThe learner hasn't run or submitted this problem yet.")
+        body = "\n\n".join([code_section, results_section, _conversation(events), _request(request, events)])
+    if seconds_left > 0:
+        time_left = f"{_minutes(seconds_left)} left on the problem's cap"
+    elif seconds_left == 0:
+        time_left = "the problem's cap has run out"
+    else:
+        time_left = f"the problem's cap ran out {_minutes(-seconds_left)} ago"
     learner = [f"## The learner\nActive time on this problem: {_minutes(problem_seconds)}; {time_left}."]
     if prior_solve:
         learner.append("They solved this problem before on NeetCode, before using Leetotter; how much help they had then is unknown.")
     user = "\n\n".join([
-        f"# Problem: {problem['title']} ({problem['slug']})", statement, _reference(reference), "\n".join(learner),
-        code_section, results_section, _conversation(events), _request(request, events)])
+        f"# Problem: {problem['title']} ({problem['slug']})", statement, _reference(reference), "\n".join(learner), body])
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+
+
+def build_debrief_messages(problem: dict, timeline: list[dict], *, reference: StoredReference | None,
+                           prior_solve: bool, problem_seconds: int, seconds_left: int,
+                           request: TutorRequest) -> list[dict]:
+    """The debrief prompt: the same problem context, with the code-built timeline as the Tutor's only input."""
+    return build_messages(problem, [], reference=reference, prior_solve=prior_solve,
+                          problem_seconds=problem_seconds, seconds_left=seconds_left,
+                          request=request, timeline=timeline)
 
 
 def ask_tutor(models, messages: list[dict], schema: type[TutorReply], on_text) -> TutorReply:

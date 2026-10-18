@@ -80,7 +80,7 @@ class Shown:
                 prepare(db)
         self.planner = Planner(self.path, self.clock)
         request = self.planner.panel_opened("idle")
-        self.coord.handle(start_msg(60))
+        self.coord.handle(start_msg())
         self.session_id = self.coord.session_id
         self.card = card(answered(self.planner, request, reply(CLIMBING)))
 
@@ -285,7 +285,7 @@ def next_session(shown):
     shown.planner.session_ended()
     shown.clock.advance(86400)
     request = shown.planner.panel_opened("ended")
-    shown.coord.handle(start_msg(60))
+    shown.coord.handle(start_msg())
     return request, shown.coord.session_id
 
 

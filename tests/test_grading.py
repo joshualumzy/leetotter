@@ -92,7 +92,7 @@ class Run:
         self.sent += self.coord.handle(message)
 
     def start(self):
-        self.send(start_msg(120))
+        self.send(start_msg())
 
     def open(self, slug=MEDIUM, title=MEDIUM_TITLE):
         self.send(opened(slug, title))

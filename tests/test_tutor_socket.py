@@ -62,7 +62,7 @@ async def until(ws, kind, **fields):
 
 
 async def in_session(ws):
-    await ws.send(wire("session_start", {"budget_minutes": 30}))
+    await ws.send(wire("session_start"))
     await until(ws, "session_state", state="active")
     await ws.send(wire("problem_opened", {"site": "neetcode", "slug": "duplicate-integer", "title": "Duplicate Integer"}))
     await until(ws, "session_state")

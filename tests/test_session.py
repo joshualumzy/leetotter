@@ -47,8 +47,8 @@ def msg(kind, payload=None):
     return message
 
 
-def start_msg(minutes=25):
-    return msg("session_start", {"budget_minutes": minutes})
+def start_msg():
+    return msg("session_start")
 
 
 def opened(slug=SLUG_A, title=TITLE_A):
@@ -122,7 +122,7 @@ def of_type(path, kind):
 
 def sessions(path):
     with open_store(path) as db:
-        return db.execute("SELECT id, started_at, ended_at, budget_minutes FROM sessions ORDER BY id").fetchall()
+        return db.execute("SELECT id, started_at, ended_at FROM sessions ORDER BY id").fetchall()
 
 
 def state(out):
@@ -150,19 +150,19 @@ def test_idle_state(tmp_path):
     assert same_time(s["ts"], START)
     assert {k: v for k, v in s.items() if k != "ts"} == {
         "type": "session_state", "state": "idle", "paused_reason": None, "check_message": None,
-        "budget_minutes": None, "active_seconds": 0, "running": False, "overrun_prompt": False,
-        "problem": None, "accepted": False, "mode": "idle",
+        "active_seconds": 0, "running": False, "problem": None, "accepted": False, "mode": "idle",
+        "cap_minutes": None, "cap_seconds_left": None, "time_up": None,
     }
 
 
 def test_active_state_and_on_connect_and_get_state_agree(tmp_path):
     coord, clock, _ = make(tmp_path)
-    out = coord.handle(start_msg(25))
+    out = coord.handle(start_msg())
     assert out[0] == current(coord) == state(coord.on_connect())
     assert {k: v for k, v in out[0].items() if k != "ts"} == {
         "type": "session_state", "state": "active", "paused_reason": None, "check_message": None,
-        "budget_minutes": 25, "active_seconds": 0, "running": True, "overrun_prompt": False,
-        "problem": None, "accepted": False, "mode": "watching",
+        "active_seconds": 0, "running": True, "problem": None, "accepted": False, "mode": "watching",
+        "cap_minutes": None, "cap_seconds_left": None, "time_up": None,
     }
 
 
@@ -192,7 +192,6 @@ def test_ended_state_keeps_final_active_seconds(tmp_path):
     clock.advance(500)
     s = current(coord)
     assert (s["state"], s["paused_reason"], s["running"], s["mode"], s["active_seconds"]) == ("ended", None, False, "idle", 90)
-    assert s["overrun_prompt"] is False
 
 
 def test_state_names_the_current_problem(tmp_path):
@@ -207,7 +206,7 @@ def test_state_names_the_current_problem(tmp_path):
 
 def test_start_pause_resume_end_events_and_timestamps(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     clock.advance(10)
     coord.handle(msg("session_pause"))
     clock.advance(5)
@@ -218,26 +217,26 @@ def test_start_pause_resume_end_events_and_timestamps(tmp_path):
     assert [r[0] for r in rows] == ["session_started", "session_paused", "session_resumed", "session_ended"]
     assert rows[1][1] == {"reason": "button"}
     assert rows[2][1] == {"reason": "button"}
-    assert rows[3][1]["active_seconds"] == 17 and rows[3][1]["overrun_seconds"] == 0
-    assert rows[0][1]["budget_minutes"] == 25
+    assert rows[3][1]["active_seconds"] == 17
+    assert rows[0][1] == {}
     assert [same_time(r[3], at(t)) for r, t in zip(rows, (0, 10, 15, 22))] == [True] * 4
     assert {r[2] for r in rows} == {1}
-    (sid, started, ended, budget), = sessions(path)
-    assert sid == 1 and budget == 25 and same_time(started, at(0)) and same_time(ended, at(22))
+    (sid, started, ended), = sessions(path)
+    assert sid == 1 and same_time(started, at(0)) and same_time(ended, at(22))
 
 
 def test_start_is_allowed_again_after_the_session_ended_and_starts_clean(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     coord.handle(opened())
     coord.handle(submit())
     clock.advance(30)
     coord.handle(msg("session_end"))
     clock.advance(100)
-    s = state(coord.handle(start_msg(10)))
-    assert (s["state"], s["budget_minutes"], s["active_seconds"], s["problem"], s["accepted"], s["overrun_prompt"]) == ("active", 10, 0, None, False, False)
+    s = state(coord.handle(start_msg()))
+    assert (s["state"], s["active_seconds"], s["problem"], s["accepted"], s["time_up"]) == ("active", 0, None, False, None)
     rows = sessions(path)
-    assert [r[0] for r in rows] == [1, 2] and rows[1][3] == 10 and rows[1][2] is None
+    assert [r[0] for r in rows] == [1, 2] and rows[1][2] is None
     assert of_type(path, "session_started")[1][2] == 2
 
 
@@ -245,21 +244,14 @@ def test_start_is_allowed_again_after_the_session_ended_and_starts_clean(tmp_pat
     ([], msg("session_pause")),
     ([], msg("session_resume")),
     ([], msg("session_end")),
-    ([], msg("session_overrun", {"choice": "finish"})),
     ([start_msg()], start_msg()),
     ([start_msg()], msg("session_resume")),
-    ([start_msg()], msg("session_overrun", {"choice": "stop"})),
     ([start_msg(), msg("session_pause")], start_msg()),
     ([start_msg(), msg("session_pause")], msg("session_pause")),
-    ([start_msg(), msg("session_pause")], msg("session_overrun", {"choice": "finish"})),
     ([start_msg(), msg("session_end")], msg("session_pause")),
     ([start_msg(), msg("session_end")], msg("session_resume")),
     ([start_msg(), msg("session_end")], msg("session_end")),
-    ([], msg("session_start", {"budget_minutes": 0})),
-    ([], msg("session_start", {"budget_minutes": -5})),
-    ([], msg("session_start", {"budget_minutes": "25"})),
-    ([], msg("session_start", {"budget_minutes": True})),
-    ([], msg("session_start", {})),
+    ([], msg("session_start", {"unexpected": 1})),
 ])
 def test_rejected_commands_change_nothing(tmp_path, setup, command):
     coord, clock, path = make(tmp_path)
@@ -267,15 +259,6 @@ def test_rejected_commands_change_nothing(tmp_path, setup, command):
         coord.handle(step)
         clock.advance(5)
     assert_rejected(coord, path, command)
-
-
-def test_overrun_choice_other_than_finish_or_stop_is_rejected(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(60)
-    coord.tick()
-    assert_rejected(coord, path, msg("session_overrun", {"choice": "later"}))
-    assert current(coord)["overrun_prompt"] is True
 
 
 def test_pause_during_a_pause_keeps_the_original_reason_and_paused_time_out_of_the_timer(tmp_path):
@@ -327,112 +310,6 @@ def test_ending_while_paused_does_not_count_the_paused_stretch(tmp_path):
     assert s["state"] == "ended" and s["active_seconds"] == 40
     assert same_time(sessions(path)[0][2], at(540))
     assert of_type(path, "session_ended")[0][1]["active_seconds"] == 40
-
-
-# --- timer budget and overrun -----------------------------------------------
-
-def test_overrun_prompt_appears_exactly_once_and_only_through_tick(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(59)
-    assert coord.tick() == []
-    clock.advance(1)
-    # handle() never raises the prompt; only tick() does
-    assert current(coord)["overrun_prompt"] is False
-    assert of_type(path, "overrun_prompted") == []
-    out = coord.tick()
-    assert len(out) == 1 and out[0]["type"] == "session_state"
-    assert out[0]["overrun_prompt"] is True and out[0]["state"] == "active" and out[0]["active_seconds"] == 60
-    prompted = of_type(path, "overrun_prompted")
-    assert len(prompted) == 1 and same_time(prompted[0][3], at(60))
-    clock.advance(30)
-    assert coord.tick() == []
-    assert len(of_type(path, "overrun_prompted")) == 1
-    assert current(coord)["overrun_prompt"] is True
-
-
-def test_tick_does_nothing_when_idle_ended_or_under_budget(tmp_path):
-    coord, clock, path = make(tmp_path)
-    assert coord.tick() == []
-    coord.handle(start_msg(1))
-    clock.advance(10)
-    assert coord.tick() == []
-    coord.handle(msg("session_end"))
-    clock.advance(1000)
-    assert coord.tick() == []
-    assert "overrun_prompted" not in types(path)
-
-
-def test_timer_cannot_run_out_while_paused(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(50)
-    coord.handle(msg("session_pause"))
-    clock.advance(1000)
-    assert coord.tick() == []
-    assert current(coord)["overrun_prompt"] is False
-    coord.handle(msg("session_resume"))
-    clock.advance(9)
-    assert coord.tick() == []
-    clock.advance(1)
-    out = coord.tick()
-    assert len(out) == 1 and out[0]["overrun_prompt"] is True and out[0]["active_seconds"] == 60
-
-
-def test_overrun_finish_clears_prompt_keeps_going_and_is_not_asked_again(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(60)
-    coord.tick()
-    clock.advance(10)
-    s = state(coord.handle(msg("session_overrun", {"choice": "finish"})))
-    assert s["overrun_prompt"] is False and s["state"] == "active" and s["running"] is True
-    choice = of_type(path, "overrun_choice")
-    assert len(choice) == 1 and choice[0][1] == {"choice": "finish"} and same_time(choice[0][3], at(70))
-    clock.advance(30)
-    assert coord.tick() == []
-    assert current(coord)["active_seconds"] == 100
-    assert len(of_type(path, "overrun_prompted")) == 1
-    s = state(coord.handle(msg("session_end")))
-    ended = of_type(path, "session_ended")[0][1]
-    assert ended["active_seconds"] == 100 and ended["overrun_seconds"] == 40
-    assert_rejected(coord, path, msg("session_overrun", {"choice": "finish"}))
-
-
-def test_overrun_stop_ends_the_session_with_overrun_seconds(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(2))
-    clock.advance(120)
-    coord.tick()
-    clock.advance(25)
-    s = state(coord.handle(msg("session_overrun", {"choice": "stop"})))
-    assert s["state"] == "ended" and s["active_seconds"] == 145 and s["mode"] == "idle"
-    assert [t for t in types(path) if t in ("overrun_prompted", "overrun_choice", "session_ended")] == ["overrun_prompted", "overrun_choice", "session_ended"]
-    assert of_type(path, "overrun_choice")[0][1] == {"choice": "stop"}
-    ended = of_type(path, "session_ended")[0]
-    assert ended[1]["active_seconds"] == 145 and ended[1]["overrun_seconds"] == 25
-    assert same_time(sessions(path)[0][2], at(145))
-
-
-def test_overrun_seconds_is_zero_when_budget_not_exceeded(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(5))
-    clock.advance(299)
-    coord.handle(msg("session_end"))
-    ended = of_type(path, "session_ended")[0][1]
-    assert ended["active_seconds"] == 299 and ended["overrun_seconds"] == 0
-
-
-def test_overrun_seconds_ignores_paused_time(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(70)
-    coord.tick()
-    coord.handle(msg("session_pause"))
-    clock.advance(900)
-    coord.handle(msg("session_end"))
-    ended = of_type(path, "session_ended")[0][1]
-    assert ended["active_seconds"] == 70 and ended["overrun_seconds"] == 10
 
 
 # --- pause reasons -----------------------------------------------------------
@@ -756,7 +633,7 @@ def test_accept_seen_while_paused_is_never_counted_if_the_session_ends_paused(tm
 
 def test_full_session_event_sequence(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
+    coord.handle(start_msg())
     coord.handle(opened())
     clock.advance(30)
     coord.handle(msg("session_pause"))
@@ -765,22 +642,18 @@ def test_full_session_event_sequence(tmp_path):
     clock.advance(30)
     coord.handle(submit())
     clock.advance(30)
-    coord.tick()
-    coord.handle(msg("session_overrun", {"choice": "finish"}))
-    clock.advance(5)
     coord.handle(opened(SLUG_B, TITLE_B))
+    clock.advance(5)
     coord.handle(msg("session_end"))
     assert types(path) == [
         "session_started", "problem_opened", "session_paused", "session_resumed", "submit_result",
-        "accept_counted", "overrun_prompted", "overrun_choice", "problem_opened", "problem_left",
-        "problem_left", "session_ended",
+        "accept_counted", "problem_opened", "problem_left", "problem_left", "session_ended",
     ] or types(path) == [
         "session_started", "problem_opened", "session_paused", "session_resumed", "submit_result",
-        "accept_counted", "overrun_prompted", "overrun_choice", "problem_left", "problem_opened",
-        "problem_left", "session_ended",
+        "accept_counted", "problem_left", "problem_opened", "problem_left", "session_ended",
     ]
     ended = of_type(path, "session_ended")[0][1]
-    assert ended["active_seconds"] == 95 and ended["overrun_seconds"] == 35
+    assert ended["active_seconds"] == 95
 
 
 # --- closed tab ---------------------------------------------------------------
@@ -888,7 +761,7 @@ def reopen(path, clock, gap):
 
 def test_restart_restores_an_unfinished_session_as_paused_with_reason_restart(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     coord.handle(opened())
     clock.advance(120)
     coord.handle(snapshot())
@@ -898,24 +771,25 @@ def test_restart_restores_an_unfinished_session_as_paused_with_reason_restart(tm
     s = current(fresh)
     assert {k: v for k, v in s.items() if k != "ts"} == {
         "type": "session_state", "state": "paused", "paused_reason": "restart", "check_message": None,
-        "budget_minutes": 25, "active_seconds": 120, "running": False, "overrun_prompt": False,
+        "active_seconds": 120, "running": False,
         "problem": {"slug": SLUG_A, "title": TITLE_A}, "reference_status": "not_checked_yet",
         "reference_message": "Reference not checked yet", "accepted": False, "mode": "paused",
+        "cap_minutes": 20, "cap_seconds_left": 20 * 60 - 120, "time_up": None,
     }
     restored = of_type(path, "session_restored")
     assert len(restored) == 1 and restored[0][1] == {"active_seconds": 120}
     assert restored[0][2] == 1 and same_time(restored[0][3], at(120 + 600 + 3600))
     assert of_type(path, "session_interrupted") == []
-    (sid, started, ended, budget), = sessions(path)
-    assert ended is None and budget == 25 and sid == 1
+    (sid, started, ended), = sessions(path)
+    assert ended is None and sid == 1
 
 
 def test_restart_with_no_events_after_start_restores_zero_active_seconds(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(10))
+    coord.handle(start_msg())
     fresh = reopen(path, clock, 500)
     s = current(fresh)
-    assert (s["state"], s["paused_reason"], s["active_seconds"], s["budget_minutes"]) == ("paused", "restart", 0, 10)
+    assert (s["state"], s["paused_reason"], s["active_seconds"]) == ("paused", "restart", 0)
     assert of_type(path, "session_restored")[0][1] == {"active_seconds": 0}
 
 
@@ -973,59 +847,6 @@ def test_restart_does_not_restore_a_rejected_submission_as_accepted(tmp_path):
     assert s["problem"] == {"slug": SLUG_A, "title": TITLE_A} and s["accepted"] is False
 
 
-def test_restart_keeps_an_unanswered_overrun_prompt_pending(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(60)
-    coord.tick()                            # prompted at 60
-    clock.advance(5)
-    coord.handle(snapshot())                # t=65
-    fresh = reopen(path, clock, 300)
-    s = current(fresh)
-    assert (s["state"], s["overrun_prompt"], s["active_seconds"]) == ("paused", True, 65)
-    state(fresh.handle(msg("session_resume")))
-    assert current(fresh)["overrun_prompt"] is True
-    clock.advance(50)
-    assert fresh.tick() == []               # prompted once already, not again
-    assert len(of_type(path, "overrun_prompted")) == 1
-    s = state(fresh.handle(msg("session_overrun", {"choice": "finish"})))
-    assert s["overrun_prompt"] is False and s["state"] == "active"
-    assert of_type(path, "overrun_choice")[0][1] == {"choice": "finish"}
-
-
-def test_restart_after_an_answered_finish_is_not_asked_again(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(60)
-    coord.tick()
-    clock.advance(10)
-    coord.handle(msg("session_overrun", {"choice": "finish"}))   # t=70
-    clock.advance(5)
-    coord.handle(snapshot())                # t=75
-    fresh = reopen(path, clock, 300)
-    assert current(fresh)["overrun_prompt"] is False
-    state(fresh.handle(msg("session_resume")))
-    clock.advance(500)
-    assert fresh.tick() == []
-    assert current(fresh)["overrun_prompt"] is False
-    assert len(of_type(path, "overrun_prompted")) == 1
-
-
-def test_restart_before_the_budget_ran_out_still_prompts_once_it_does(tmp_path):
-    coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(1))
-    clock.advance(50)
-    coord.handle(snapshot())
-    fresh = reopen(path, clock, 300)
-    assert current(fresh)["overrun_prompt"] is False
-    fresh.handle(msg("session_resume"))
-    clock.advance(9)
-    assert fresh.tick() == []
-    clock.advance(1)
-    out = fresh.tick()
-    assert len(out) == 1 and out[0]["overrun_prompt"] is True and out[0]["active_seconds"] == 60
-
-
 def test_resume_after_restart_continues_counting_from_the_restored_value(tmp_path):
     coord, clock, path = make(tmp_path)
     coord.handle(start_msg())
@@ -1046,7 +867,7 @@ def test_resume_after_restart_continues_counting_from_the_restored_value(tmp_pat
 
 def test_a_restored_session_ends_normally_from_paused_and_after_resume(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     coord.handle(opened())
     clock.advance(120)
     coord.handle(snapshot())
@@ -1055,13 +876,13 @@ def test_a_restored_session_ends_normally_from_paused_and_after_resume(tmp_path)
     s = state(fresh.handle(msg("session_end")))
     assert s["state"] == "ended" and s["active_seconds"] == 120 and s["mode"] == "idle"
     ended = of_type(path, "session_ended")
-    assert len(ended) == 1 and ended[0][1]["active_seconds"] == 120 and ended[0][1]["overrun_seconds"] == 0
+    assert len(ended) == 1 and ended[0][1]["active_seconds"] == 120
     assert ended[0][2] == 1 and sessions(path)[0][2] is not None
     assert of_type(path, "problem_left")[0][1] == {"slug": SLUG_A, "accepted": False}
 
     (tmp_path / "second").mkdir()
     coord, clock, path = make(tmp_path / "second")
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     clock.advance(120)
     coord.handle(snapshot())
     fresh = reopen(path, clock, 3600)
@@ -1097,20 +918,20 @@ def test_a_session_that_ended_normally_is_not_restored(tmp_path):
     assert (events(path), sessions(path)) == before
     assert of_type(path, "session_restored") == []
     s = current(fresh)
-    assert (s["state"], s["active_seconds"], s["budget_minutes"], s["problem"]) == ("idle", 0, None, None)
-    assert state(fresh.handle(start_msg(5)))["state"] == "active"
+    assert (s["state"], s["active_seconds"], s["problem"]) == ("idle", 0, None)
+    assert state(fresh.handle(start_msg()))["state"] == "active"
     assert [r[0] for r in sessions(path)] == [1, 2]
 
 
 def test_a_third_start_still_has_the_same_open_session_paused_for_restart(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     clock.advance(120)
     coord.handle(snapshot())
     reopen(path, clock, 100)
     third = reopen(path, clock, 100)
     s = current(third)
-    assert (s["state"], s["paused_reason"], s["active_seconds"], s["budget_minutes"]) == ("paused", "restart", 120, 25)
+    assert (s["state"], s["paused_reason"], s["active_seconds"]) == ("paused", "restart", 120)
     assert len(sessions(path)) == 1 and sessions(path)[0][2] is None
     assert len(of_type(path, "session_restored")) >= 1
     assert of_type(path, "session_interrupted") == []
@@ -1118,21 +939,21 @@ def test_a_third_start_still_has_the_same_open_session_paused_for_restart(tmp_pa
 
 def test_with_two_unfinished_rows_only_the_latest_is_restored_and_the_other_is_interrupted(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     clock.advance(10)
     coord.handle(snapshot())                # first session's last event at t=10
     with open_store(path) as db:
-        db.execute("INSERT INTO sessions (started_at, budget_minutes) VALUES (?, 7)", (at(100).isoformat(),))
+        db.execute("INSERT INTO sessions (started_at) VALUES (?)", (at(100).isoformat(),))
         db.execute(
             "INSERT INTO events (session_id, ts, type, payload) VALUES (2, ?, 'session_started', ?)",
-            (at(100).isoformat(), json.dumps({"budget_minutes": 7})))
+            (at(100).isoformat(), json.dumps({})))
         db.execute(
             "INSERT INTO events (session_id, ts, type, payload) VALUES (2, ?, 'code_snapshot', ?)",
             (at(160).isoformat(), json.dumps({"code": "x"})))
     fresh = reopen(path, clock, 1000)
     s = current(fresh)
-    assert (s["state"], s["paused_reason"], s["budget_minutes"], s["active_seconds"]) == ("paused", "restart", 7, 60)
-    (id1, _, ended1, _), (id2, _, ended2, _) = sessions(path)
+    assert (s["state"], s["paused_reason"], s["active_seconds"]) == ("paused", "restart", 60)
+    (id1, _, ended1), (id2, _, ended2) = sessions(path)
     assert same_time(ended1, at(10)) and ended2 is None
     interrupted = of_type(path, "session_interrupted")
     assert len(interrupted) == 1 and interrupted[0][2] == id1
@@ -1142,15 +963,15 @@ def test_with_two_unfinished_rows_only_the_latest_is_restored_and_the_other_is_i
 
 def test_start_is_refused_while_a_restored_session_is_open_and_allowed_after_it_ends(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(25))
+    coord.handle(start_msg())
     clock.advance(30)
     coord.handle(snapshot())
     fresh = reopen(path, clock, 100)
-    assert_rejected(fresh, path, start_msg(10))
+    assert_rejected(fresh, path, start_msg())
     assert len(sessions(path)) == 1
     state(fresh.handle(msg("session_end")))
-    s = state(fresh.handle(start_msg(10)))
-    assert (s["state"], s["budget_minutes"], s["active_seconds"], s["problem"]) == ("active", 10, 0, None)
+    s = state(fresh.handle(start_msg()))
+    assert (s["state"], s["active_seconds"], s["problem"]) == ("active", 0, None)
     assert [r[0] for r in sessions(path)] == [1, 2]
 
 # --- wire --------------------------------------------------------------------
@@ -1178,9 +999,9 @@ def test_session_messages_are_accepted_and_answered_with_session_state(tmp_path,
             async with connect(f"ws://127.0.0.1:{port}", origin=ALLOWED_ORIGIN, proxy=None) as ws:
                 await ws.send(ws_message("session_get_state"))
                 assert (await next_state(ws))["state"] == "idle"
-                await ws.send(ws_message("session_start", {"budget_minutes": 25, "extra": "ignored"}))
+                await ws.send(ws_message("session_start"))
                 s = await next_state(ws)
-                assert (s["state"], s["budget_minutes"], s["mode"]) == ("active", 25, "watching")
+                assert (s["state"], s["cap_minutes"], s["mode"]) == ("active", None, "watching")
                 await ws.send(ws_message("session_pause"))
                 assert (await next_state(ws))["paused_reason"] == "button"
                 await ws.send(ws_message("session_resume"))
@@ -1197,13 +1018,7 @@ def test_session_messages_are_accepted_and_answered_with_session_state(tmp_path,
 
 
 @pytest.mark.parametrize("kind, payload", [
-    ("session_start", {"budget_minutes": 0}),
-    ("session_start", {"budget_minutes": "25"}),
-    ("session_start", {"budget_minutes": True}),
-    ("session_start", {}),
-    ("session_start", None),
-    ("session_overrun", {"choice": "later"}),
-    ("session_overrun", {}),
+    ("session_start", {"unexpected": 1}),
     ("reader_check", {"ok": "yes"}),
     ("reader_check", {}),
     ("reader_check", {"ok": False, "message": 5}),
@@ -1250,10 +1065,10 @@ def test_hello_pushes_session_state_and_a_second_connection_receives_pushes(tmp_
                 for ws in (first, second):
                     await ws.send(ws_message("hello"))
                     assert (await next_state(ws, "idle"))["mode"] == "idle"
-                await first.send(ws_message("session_start", {"budget_minutes": 10}))
+                await first.send(ws_message("session_start"))
                 for ws in (first, second):
                     s = await next_state(ws, "active")
-                    assert s["budget_minutes"] == 10
+                    assert s["cap_minutes"] is None
                 await second.send(ws_message("session_pause"))
                 for ws in (first, second):
                     assert (await next_state(ws, "paused"))["paused_reason"] == "button"
@@ -1270,7 +1085,7 @@ def test_tab_closed_is_accepted_over_the_wire_and_answered_with_session_state(tm
             async with connect(f"ws://127.0.0.1:{port}", origin=ALLOWED_ORIGIN, proxy=None) as ws:
                 await ws.send(ws_message("tab_closed"))
                 assert (await next_state(ws))["state"] == "idle"
-                await ws.send(ws_message("session_start", {"budget_minutes": 25}))
+                await ws.send(ws_message("session_start"))
                 assert (await next_state(ws))["state"] == "active"
                 await ws.send(ws_message("tab_closed"))
                 s = await next_state(ws)
@@ -1288,7 +1103,7 @@ def test_hello_after_a_companion_restart_reports_the_session_paused_for_restart(
     monkeypatch.setenv("LEETOTTER_DB_PATH", str(db))
     clock = FakeClock()
     first = SessionCoordinator(db, clock)
-    first.handle(start_msg(25))
+    first.handle(start_msg())
     clock.advance(90)
     first.handle(snapshot())
     del first
@@ -1299,7 +1114,7 @@ def test_hello_after_a_companion_restart_reports_the_session_paused_for_restart(
             async with connect(f"ws://127.0.0.1:{port}", origin=ALLOWED_ORIGIN, proxy=None) as ws:
                 await ws.send(ws_message("hello"))
                 s = await next_state(ws)
-                assert (s["state"], s["paused_reason"], s["mode"], s["budget_minutes"], s["active_seconds"]) == ("paused", "restart", "paused", 25, 90)
+                assert (s["state"], s["paused_reason"], s["mode"], s["active_seconds"]) == ("paused", "restart", "paused", 90)
                 await ws.send(ws_message("session_resume"))
                 assert (await next_state(ws))["state"] == "active"
 

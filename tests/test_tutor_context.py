@@ -122,7 +122,7 @@ def test_no_runs_yet_is_said():
 def test_time_on_problem_and_time_left():
     out = build(problem_seconds=18 * 60 + 20, seconds_left=27 * 60)
     assert "18 min" in out and "27 min" in out
-    assert "over its time budget by 4 min" in build(seconds_left=-4 * 60)
+    assert "the problem's cap ran out 4 min ago" in build(seconds_left=-4 * 60)
 
 
 def test_prior_solve_on_neetcode():

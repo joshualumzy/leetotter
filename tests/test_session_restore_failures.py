@@ -15,17 +15,17 @@ START = datetime(2026, 10, 15, tzinfo=timezone.utc)
 @pytest.mark.parametrize("event_type,payload,event_time", [
     ("code_snapshot", "{broken json", START + timedelta(seconds=10)),
     ("problem_opened", json.dumps({"slug": "two-sum"}), START + timedelta(seconds=10)),
-    ("session_started", json.dumps({"budget_minutes": True}), START),
+    ("session_started", json.dumps([]), START),
     ("code_snapshot", json.dumps({"code": "x"}), "bad timestamp"),
     ("code_changed", json.dumps({"diff": {"start_line": "two", "removed": [], "added": []}}), START + timedelta(seconds=10)),
 ])
 def test_corrupt_unfinished_session_is_logged_and_interrupted(tmp_path, caplog, event_type, payload, event_time):
     path = tmp_path / "store.sqlite3"
     with open_store(path) as db:
-        db.execute("INSERT INTO sessions (started_at, budget_minutes) VALUES (?, 1)", (START.isoformat(),))
+        db.execute("INSERT INTO sessions (started_at) VALUES (?)", (START.isoformat(),))
         if event_type != "session_started":
             db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (1, ?, 'session_started', ?)",
-                       (START.isoformat(), json.dumps({"budget_minutes": 1})))
+                       (START.isoformat(), json.dumps({})))
         db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (1, ?, ?, ?)",
                    (event_time.isoformat() if isinstance(event_time, datetime) else event_time, event_type, payload))
 

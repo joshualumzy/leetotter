@@ -31,7 +31,7 @@ def context(turn):
 
 def active(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(45))
+    coord.handle(start_msg())
     coord.handle(opened())
     return coord, clock, path
 
@@ -153,7 +153,7 @@ def test_the_context_has_code_statement_time_and_never_the_name(tmp_path):
     coord, clock, path = make(tmp_path)
     with open_store(path) as db:
         db.execute("INSERT INTO settings (key, value) VALUES ('name', 'Zephyrine')")
-    coord.handle(start_msg(45))
+    coord.handle(start_msg())
     clock.advance(120)
     coord.handle(opened())
     coord.handle(statement())
@@ -163,7 +163,7 @@ def test_the_context_has_code_statement_time_and_never_the_name(tmp_path):
     _, turn = begin(coord)
     text = context(turn)
     assert STATEMENT in text and "return len(set(nums)) < len(nums)" in text
-    assert "on this problem: 10 min" in text and "33 min left" in text
+    assert "on this problem: 10 min" in text and "10 min left on the problem's cap" in text
     assert "Zephyrine" not in json.dumps(turn.messages)
 
 
@@ -221,7 +221,7 @@ def test_a_broken_reference_fails_the_turn_loudly_and_logs_it(tmp_path):
 
 def test_code_statement_presses_and_problem_time_are_rebuilt_after_a_restart(tmp_path):
     coord, clock, path = make(tmp_path)
-    coord.handle(start_msg(45))
+    coord.handle(start_msg())
     coord.handle(opened())
     coord.handle(statement())
     coord.handle(snapshot("a\nb"))

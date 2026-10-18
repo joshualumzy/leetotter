@@ -131,7 +131,7 @@ def test_reopening_the_panel_while_planning_or_with_a_card_up_starts_nothing_new
 
 def test_leaving_a_problem_starts_the_planner_at_once_without_waiting_for_the_graders(tmp_path):
     coord, clock, path, planner = setup(tmp_path)
-    coord.handle(start_msg(60))
+    coord.handle(start_msg())
     coord.handle(opened(CLIMBING, "Climbing Stairs"))
     clock.advance(600)
     coord.handle(submit(CLIMBING, True))
@@ -195,7 +195,7 @@ def test_an_answer_in_time_stays_on_the_card(tmp_path):
 
 def test_a_failed_planner_shows_the_code_ranked_pick_at_once_and_logs_it(tmp_path, caplog):
     coord, _, _, planner = setup(tmp_path)
-    coord.handle(start_msg(60))
+    coord.handle(start_msg())
     request = planner.problem_left(coord.session_id)
     with caplog.at_level(logging.WARNING):
         shown = card(planner.fail(request, ValueError("planner reply invalid after retry")))
@@ -208,7 +208,7 @@ def test_a_failed_planner_shows_the_code_ranked_pick_at_once_and_logs_it(tmp_pat
 def test_a_swap_is_logged_as_a_preference_and_the_answer_it_replaced_is_discarded(tmp_path):
     coord, _, path, planner = setup(tmp_path)
     first = planner.panel_opened("idle")
-    coord.handle(start_msg(60))
+    coord.handle(start_msg())
     answered(planner, first, reply(HOUSE_ROBBER))
     swapped = planner.swap(coord.session_id)
     assert swapped.trigger == "swap"
@@ -225,7 +225,7 @@ def test_a_swap_is_logged_as_a_preference_and_the_answer_it_replaced_is_discarde
 def test_go_takes_the_card_down_and_opens_its_problem(tmp_path):
     coord, _, _, planner = setup(tmp_path)
     request = planner.panel_opened("idle")
-    coord.handle(start_msg(60))
+    coord.handle(start_msg())
     answered(planner, request, reply(HOUSE_ROBBER))
     assert planner.go()["slug"] == HOUSE_ROBBER
     assert planner.card is None
@@ -234,7 +234,7 @@ def test_go_takes_the_card_down_and_opens_its_problem(tmp_path):
 def test_ending_the_session_takes_the_card_down_and_discards_a_waiting_answer(tmp_path):
     coord, _, _, planner = setup(tmp_path)
     first = planner.panel_opened("idle")
-    coord.handle(start_msg(60))
+    coord.handle(start_msg())
     answered(planner, first, reply(HOUSE_ROBBER))
     waiting = planner.problem_left(coord.session_id)
     coord.handle(msg("session_end"))
@@ -248,7 +248,7 @@ def test_ending_the_session_takes_the_card_down_and_discards_a_waiting_answer(tm
 
 def test_chat_goes_to_the_planner_only_while_a_card_is_shown(tmp_path):
     coord, _, path, planner = setup(tmp_path)
-    coord.handle(start_msg(60))
+    coord.handle(start_msg())
     assert planner.chat(coord.session_id, "more dynamic programming") is None  # no card yet
     request = planner.problem_left(coord.session_id)
     assert planner.chat(coord.session_id, "more dynamic programming") is None  # still planning
@@ -271,7 +271,7 @@ def test_the_planner_never_names_the_suggested_problems_pattern_unless_you_asked
     with open_store(path) as db:
         reference(db, PERMUTATION, ["sliding-window"])
     request = planner.panel_opened("idle")
-    coord.handle(start_msg(60))
+    coord.handle(start_msg())
     answered(planner, request, reply(HOUSE_ROBBER))
     talk = planner.chat(coord.session_id, "something different please")
     blurted = reply(PERMUTATION, "unreadable", understood="Not sure what you meant; here's a sliding window one.")

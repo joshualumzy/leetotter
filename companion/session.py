@@ -1,5 +1,6 @@
 """Session state, active-time accounting, and append-only session events."""
 
+import difflib
 import json
 import logging
 from datetime import datetime
@@ -10,17 +11,21 @@ from companion.store import open_store
 from companion.tutor import Turn, TutorRequest, answered_presses, build_messages, reply_schema
 
 
+TIME_CAP_MINUTES = {"Easy": 20, "Medium": 35, "Hard": 50}
+EXTENSION_MINUTES = 10
+TIMELINE_LIMIT = 10
+
 READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
 # Tutor turn events. A turn's id is the id of its request event.
-#   chat_message {slug, text}           help_request {slug, press_index}
-#   help_turn {turn_id, slug, request: "help" | "chat", press_index (None for chat), gap, gap_note, help_kind,
-#              reply_text, follow_up_question, model}
+#   chat_message {slug, text}           help_request {slug, press_index}       debrief_request {slug}
+#   help_turn {turn_id, slug, request: "help" | "chat" | "debrief", press_index (None for chat and debrief),
+#              gap, gap_note, help_kind, reply_text, follow_up_question, model}
 #   help_failed {turn_id, slug, reason, message}   reason: model_unavailable, rate_limited, timeout,
 #              invalid_output, error, context (the prompt couldn't be built), restart, shutdown
-TURN_REQUESTS = frozenset({"chat_message", "help_request"})
+TURN_REQUESTS = frozenset({"chat_message", "help_request", "debrief_request"})
 TURN_EVENTS = TURN_REQUESTS | {"help_turn", "help_failed"}
 FOLLOWUP_EVENTS = frozenset({"followup_asked", "complexity_postponed", "followup_answered", "reasoning_requested", "followup_skipped", "analysis_resolved"})
-EVENT_TYPES = READER_TYPES | TURN_EVENTS | FOLLOWUP_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "overrun_prompted", "overrun_choice", "session_restored"}
+EVENT_TYPES = READER_TYPES | TURN_EVENTS | FOLLOWUP_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "time_up_shown", "time_up_choice", "session_restored"}
 CODE_EVENTS = frozenset({"code_snapshot", "code_changed"})
 RESTART_MESSAGE = "The companion restarted before the Tutor finished."
 logger = logging.getLogger(__name__)
@@ -32,21 +37,23 @@ class SessionCoordinator:
         self.clock = clock
         self.state = "idle"
         self.session_id = None
-        self.budget_minutes = None
         self.elapsed = 0.0
         self.active_since = None
         self.paused_reason = None
         self.check_message = None
-        self.overrun_prompt = False
-        self.prompted = False
         self.problem = None
         self.accepted = False
         self.pending_accept = False
         self.attempt_start = None  # id of the event that made the current problem current
-        self.problem_started = 0.0  # active seconds when the current problem was opened
+        self.problem_times = {}  # active seconds per problem in this session, up to the current segment
+        self.problem_since = None  # when the current problem's active segment began
+        self.time_up = None  # {"can_extend": bool} while the current problem's time-up card shows
+        self.time_up_shows = {}  # problem slug -> how many times the card has shown this session
+        self.extensions = set()  # problem slugs that have taken their one extension
+        self.debrief = False  # the current problem is in the Tutor's debrief mode
         self.turn = None  # id of the Tutor turn in flight; one at a time
         with open_store(db_path) as db:
-            rows = db.execute("SELECT id, started_at, budget_minutes FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC").fetchall()
+            rows = db.execute("SELECT id, started_at FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC").fetchall()
             if rows:
                 ids = [row[0] for row in rows]
                 placeholders = ",".join("?" for _ in ids)
@@ -58,17 +65,16 @@ class SessionCoordinator:
                     history[session_id].append((event_id, ts, kind, payload))
                 for session_id in ids:
                     self._close_open_turns(db, session_id, history[session_id], clock().isoformat())
-                for session_id, started_at, budget in rows[1:]:
+                for session_id, started_at in rows[1:]:
                     self._interrupt(db, session_id, self._last_event_time(history[session_id], started_at))
-                session_id, started_at, budget = rows[0]
+                session_id, started_at = rows[0]
                 try:
-                    restored = self._replay(started_at, budget, history[session_id])
+                    restored = self._replay(started_at, history[session_id])
                 except (ValueError, TypeError, KeyError, OverflowError) as exc:
                     logger.error("Cannot restore session %s: %s", session_id, exc, exc_info=True)
                     self._interrupt(db, session_id, self._last_event_time(history[session_id], started_at))
                 else:
                     self.session_id = session_id
-                    self.budget_minutes = budget
                     for name, value in restored.items():
                         setattr(self, name, value)
                     self.state = "paused"
@@ -110,9 +116,7 @@ class SessionCoordinator:
         return started_at
 
     @staticmethod
-    def _replay(started_at, budget, history):
-        if type(budget) is not int or budget <= 0:
-            raise ValueError("Invalid session budget")
+    def _replay(started_at, history):
         started = datetime.fromisoformat(started_at)
         if started.tzinfo is None:
             raise ValueError("Session start has no timezone")
@@ -120,8 +124,12 @@ class SessionCoordinator:
         started_seen = False
         active_since = None
         problem = attempt_start = None
-        problem_started = 0.0
-        accepted = pending_accept = prompted = overrun_prompt = False
+        accepted = pending_accept = False
+        problem_times = {}
+        time_up = None
+        time_up_shows = {}
+        extensions = set()
+        debrief = False
         if not history or history[0][2] != "session_started":
             raise ValueError("Missing session_started event")
         previous = started
@@ -129,12 +137,14 @@ class SessionCoordinator:
             at = datetime.fromisoformat(ts)
             if at.tzinfo is None or at < previous:
                 raise ValueError("Invalid event timestamp")
-            previous = at
             payload = json.loads(raw_payload)
             if kind not in EVENT_TYPES or not isinstance(payload, dict):
                 raise ValueError(f"Unexpected {kind} event payload")
+            if kind != "session_restored" and active_since is not None and problem is not None:
+                problem_times[problem["slug"]] = problem_times.get(problem["slug"], 0.0) + (at - previous).total_seconds()
+            previous = at
             if kind == "session_started":
-                if started_seen or at != started or type(payload.get("budget_minutes")) is not int or payload["budget_minutes"] != budget:
+                if started_seen or at != started:
                     raise ValueError("Invalid session_started event")
                 started_seen = True
                 active_since = at
@@ -163,31 +173,47 @@ class SessionCoordinator:
                 if problem is None or problem["slug"] != payload["slug"]:
                     accepted = pending_accept = False
                     attempt_start = event_id
-                    problem_started = elapsed + ((at - active_since).total_seconds() if active_since else 0)
+                    time_up = None
+                    debrief = False
                 problem = {"slug": payload["slug"], "title": payload["title"]}
+                problem_times.setdefault(problem["slug"], 0.0)
             elif kind == "problem_left":
                 if not isinstance(payload.get("slug"), str) or not payload["slug"] or type(payload.get("accepted")) is not bool:
                     raise ValueError("Invalid problem_left event")
                 if problem and problem["slug"] == payload["slug"]:
                     problem = None
                     accepted = pending_accept = False
+                    time_up = None
+                    debrief = False
             elif kind == "accept_counted":
                 if not isinstance(payload.get("slug"), str) or not payload["slug"]:
                     raise ValueError("Invalid accept_counted event")
                 if problem and problem["slug"] == payload["slug"]:
                     accepted = True
                     pending_accept = False
+                    time_up = None
             elif kind == "submit_result":
                 if type(payload.get("accepted")) is not bool or not isinstance(payload.get("slug"), str) or not payload["slug"]:
                     raise ValueError("Invalid submit_result event")
                 if active_since is None and payload["accepted"] and problem and payload["slug"] == problem["slug"]:
                     pending_accept = True
-            elif kind == "overrun_prompted":
-                prompted = overrun_prompt = True
-            elif kind == "overrun_choice":
-                if payload.get("choice") not in ("finish", "stop"):
-                    raise ValueError("Invalid overrun_choice event")
-                overrun_prompt = False
+            elif kind == "time_up_shown":
+                if (not isinstance(payload.get("slug"), str) or not payload["slug"]
+                        or type(payload.get("can_extend")) is not bool):
+                    raise ValueError("Invalid time_up_shown event")
+                if problem and payload["slug"] == problem["slug"] and not accepted and not debrief:
+                    time_up = {"can_extend": payload["can_extend"]}
+                    time_up_shows[payload["slug"]] = time_up_shows.get(payload["slug"], 0) + 1
+            elif kind == "time_up_choice":
+                if (not isinstance(payload.get("slug"), str) or not payload["slug"]
+                        or payload.get("choice") not in ("extend", "debrief")):
+                    raise ValueError("Invalid time_up_choice event")
+                if problem and payload["slug"] == problem["slug"]:
+                    time_up = None
+                    if payload["choice"] == "extend":
+                        extensions.add(payload["slug"])
+                    else:
+                        debrief = True
             elif kind == "focus_changed":
                 if type(payload.get("tab_active")) is not bool or type(payload.get("window_focused")) is not bool:
                     raise ValueError("Invalid focus_changed event")
@@ -230,8 +256,8 @@ class SessionCoordinator:
         if active_since is not None:
             elapsed += (previous - active_since).total_seconds()
         return {"elapsed": elapsed, "problem": problem, "accepted": accepted, "pending_accept": pending_accept,
-                "overrun_prompt": overrun_prompt, "prompted": prompted, "attempt_start": attempt_start,
-                "problem_started": problem_started}
+                "attempt_start": attempt_start, "problem_times": problem_times, "problem_since": None,
+                "time_up": time_up, "time_up_shows": time_up_shows, "extensions": extensions, "debrief": debrief}
 
     def _event(self, db, session_id, ts, kind, payload):
         return db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, ?, ?)",
@@ -240,6 +266,38 @@ class SessionCoordinator:
     def _seconds(self, now):
         running = (now - self.active_since).total_seconds() if self.active_since is not None else 0
         return int(self.elapsed + running)
+
+    def _problem_seconds(self, now):
+        """Active seconds on the current problem in this session, including its current active segment."""
+        if self.problem is None:
+            return None
+        seconds = self.problem_times.get(self.problem["slug"], 0.0)
+        if self.state == "active" and self.problem_since is not None:
+            seconds += (now - self.problem_since).total_seconds()
+        return seconds
+
+    def _close_problem(self, now):
+        if self.problem is not None and self.problem_since is not None:
+            slug = self.problem["slug"]
+            self.problem_times[slug] = self.problem_times.get(slug, 0.0) + (now - self.problem_since).total_seconds()
+        self.problem_since = None
+
+    def _cap_minutes(self):
+        if self.problem is None:
+            return None
+        problem = load_catalog().by_slug(self.problem["slug"])
+        return TIME_CAP_MINUTES.get(problem["difficulty"]) if problem else None
+
+    def _cap_seconds(self):
+        cap = self._cap_minutes()
+        if cap is None:
+            return None
+        return cap * 60 + (EXTENSION_MINUTES * 60 if self.problem["slug"] in self.extensions else 0)
+
+    def _mode(self):
+        if self.state == "active":
+            return "debrief" if self.debrief else "watching"
+        return "paused" if self.state == "paused" else "idle"
 
     def _state(self, now):
         reference_status = None
@@ -250,17 +308,22 @@ class SessionCoordinator:
             reference_status = row[0] if row and row[0] in {"checked", "resolved_by_you"} else "not_checked_yet"
         state = {"type": "session_state", "ts": now.isoformat(), "state": self.state,
                 "paused_reason": self.paused_reason, "check_message": self.check_message,
-                "budget_minutes": self.budget_minutes, "active_seconds": self._seconds(now),
-                "running": self.state == "active", "overrun_prompt": self.overrun_prompt,
-                "problem": self.problem, "accepted": self.accepted,
-                "mode": "watching" if self.state == "active" else "paused" if self.state == "paused" else "idle"}
+                "active_seconds": self._seconds(now), "running": self.state == "active",
+                "problem": self.problem, "accepted": self.accepted, "mode": self._mode(),
+                "cap_minutes": None, "cap_seconds_left": None, "time_up": None}
         if self.problem:
+            cap = self._cap_minutes()
+            left = self._cap_seconds()
+            state["cap_minutes"] = cap
+            state["cap_seconds_left"] = None if left is None else max(0, int(left - (self._problem_seconds(now) or 0)))
+            state["time_up"] = self.time_up
             state["reference_status"] = reference_status
             if reference_status == "not_checked_yet":
                 state["reference_message"] = "Reference not checked yet"
         return state
 
     def _pause(self, db, now, reason, message=None):
+        self._close_problem(now)
         self.elapsed += (now - self.active_since).total_seconds()
         self.active_since = None
         self.state = "paused"
@@ -272,29 +335,33 @@ class SessionCoordinator:
         reason = self.paused_reason
         self.state = "active"
         self.active_since = now
+        if self.problem is not None:
+            self.problem_since = now
         self.paused_reason = None
         self.check_message = None
         self._event(db, self.session_id, now.isoformat(), "session_resumed", {"reason": reason})
         if self.pending_accept and self.problem and not self.accepted:
             self.accepted = True
+            self.time_up = None
             self._event(db, self.session_id, now.isoformat(), "accept_counted", {"slug": self.problem["slug"]})
         self.pending_accept = False
 
     def _end(self, db, now):
+        self._close_problem(now)
         if self.state == "active":
             self.elapsed += (now - self.active_since).total_seconds()
         self.active_since = None
         if self.problem:
             self._event(db, self.session_id, now.isoformat(), "problem_left", {"slug": self.problem["slug"], "accepted": self.accepted})
         seconds = self._seconds(now)
-        self._event(db, self.session_id, now.isoformat(), "session_ended",
-                    {"active_seconds": seconds, "overrun_seconds": max(0, seconds - self.budget_minutes * 60)})
+        self._event(db, self.session_id, now.isoformat(), "session_ended", {"active_seconds": seconds})
         db.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (now.isoformat(), self.session_id))
         self.state = "ended"
         self.paused_reason = None
         self.check_message = None
-        self.overrun_prompt = False
         self.pending_accept = False
+        self.time_up = None
+        self.debrief = False
 
     def handle(self, message: dict) -> list[dict]:
         now = self.clock()
@@ -302,8 +369,7 @@ class SessionCoordinator:
         payload = message.get("payload", {})
         if kind == "session_get_state":
             return [self._state(now)]
-        if kind == "session_start" and (self.state not in ("idle", "ended") or
-            not isinstance(payload, dict) or type(payload.get("budget_minutes")) is not int or payload["budget_minutes"] <= 0):
+        if kind == "session_start" and (self.state not in ("idle", "ended") or not isinstance(payload, dict) or payload):
             return [{"type": "error", "message": "Invalid session_start"}]
         if kind == "session_pause" and self.state != "active":
             return [{"type": "error", "message": "session_pause requires an active session"}]
@@ -311,12 +377,17 @@ class SessionCoordinator:
             return [{"type": "error", "message": "session_resume requires a paused session"}]
         if kind == "session_end" and self.state not in ("active", "paused"):
             return [{"type": "error", "message": "session_end requires a session"}]
-        if kind == "session_overrun" and (not self.overrun_prompt or not isinstance(payload, dict) or payload.get("choice") not in ("finish", "stop")):
-            return [{"type": "error", "message": "Invalid session_overrun"}]
-        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_done", "session_skip", "tab_closed"}:
+        if kind == "session_time_up" and (self.state != "active" or self.problem is None or self.time_up is None
+                or not isinstance(payload, dict) or payload.get("choice") not in ("extend", "debrief")
+                or (payload.get("choice") == "extend" and (not self.time_up["can_extend"]
+                    or self.problem["slug"] in self.extensions))):
+            return [{"type": "error", "message": "Invalid session_time_up"}]
+        if kind == "session_time_up" and payload["choice"] == "debrief" and self.turn is not None:
+            return [{"type": "error", "message": "The Tutor is still answering. Wait for that reply, then choose the debrief."}]
+        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_time_up", "session_done", "session_skip", "tab_closed"}:
             return [{"type": "error", "message": f"Unknown message type: {kind}"}]
         if kind in ("session_done", "session_skip") and (self.state != "active" or self.problem is None or
-                (kind == "session_done" and not self.accepted)):
+                (kind == "session_done" and not (self.accepted or self.debrief))):
             return [{"type": "error", "message": f"{kind} requires an appropriate active problem"}]
         if kind == "tab_closed" and self.state != "active":
             return [self._state(now)]
@@ -331,11 +402,10 @@ class SessionCoordinator:
                     return [self._state(now)]
                 self._resume(db, now)
             if kind == "session_start":
-                self._reset(now, payload["budget_minutes"])
-                row = db.execute("INSERT INTO sessions (started_at, budget_minutes) VALUES (?, ?)",
-                                 (now.isoformat(), self.budget_minutes))
+                self._reset(now)
+                row = db.execute("INSERT INTO sessions (started_at) VALUES (?)", (now.isoformat(),))
                 self.session_id = row.lastrowid
-                self._event(db, self.session_id, now.isoformat(), "session_started", {"budget_minutes": self.budget_minutes})
+                self._event(db, self.session_id, now.isoformat(), "session_started", {})
             elif kind == "session_pause":
                 self._pause(db, now, "button")
             elif kind == "tab_closed":
@@ -345,16 +415,23 @@ class SessionCoordinator:
             elif kind == "session_end":
                 self._end(db, now)
             elif kind in ("session_done", "session_skip"):
+                self._close_problem(now)
                 self._event(db, self.session_id, now.isoformat(), "problem_left", {"slug": self.problem["slug"], "accepted": self.accepted})
                 self.problem = None
                 self.accepted = False
                 self.pending_accept = False
                 self.attempt_start = None
-            elif kind == "session_overrun":
-                self._event(db, self.session_id, now.isoformat(), "overrun_choice", {"choice": payload["choice"]})
-                self.overrun_prompt = False
-                if payload["choice"] == "stop":
-                    self._end(db, now)
+                self.time_up = None
+                self.debrief = False
+            elif kind == "session_time_up":
+                slug = self.problem["slug"]
+                choice_id = self._event(db, self.session_id, now.isoformat(), "time_up_choice", {"slug": slug, "choice": payload["choice"]})
+                if payload["choice"] == "extend":
+                    self.extensions.add(slug)
+                else:
+                    write_missed(db, session_id=self.session_id, slug=slug, event_id=choice_id, attempt_start=self.attempt_start)
+                    self.debrief = True
+                self.time_up = None
             else:
                 event_id = self._event(db, self.session_id, now.isoformat(), kind, payload)
                 if kind == "focus_changed":
@@ -371,13 +448,17 @@ class SessionCoordinator:
                         self._resume(db, now)
                 elif kind == "problem_opened":
                     if self.problem and self.problem["slug"] != payload["slug"]:
+                        self._close_problem(now)
                         self._event(db, self.session_id, now.isoformat(), "problem_left", {"slug": self.problem["slug"], "accepted": self.accepted})
                         self.accepted = False
                         self.pending_accept = False
+                        self.time_up = None
+                        self.debrief = False
                     if self.problem is None or self.problem["slug"] != payload["slug"]:
                         self.attempt_start = event_id
-                        self.problem_started = self._seconds(now)
+                        self.problem_since = now if self.state == "active" else None
                     self.problem = {"slug": payload["slug"], "title": payload["title"]}
+                    self.problem_times.setdefault(payload["slug"], 0.0)
                     catalog_problem = load_catalog().by_slug(payload["slug"])
                     if catalog_problem and catalog_problem["locked"] and self.state == "active":
                         self._pause(db, now, "check", "This problem is locked on NeetCode.")
@@ -386,30 +467,35 @@ class SessionCoordinator:
                         self.pending_accept = True
                     elif not self.accepted:
                         self.accepted = True
+                        self.time_up = None
                         self._event(db, self.session_id, now.isoformat(), "accept_counted", {"slug": payload["slug"]})
         return [self._state(now)]
 
-    def _reset(self, now, budget):
+    def _reset(self, now):
         self.state = "active"
-        self.budget_minutes = budget
         self.elapsed = 0.0
         self.active_since = now
         self.paused_reason = None
         self.check_message = None
-        self.overrun_prompt = False
-        self.prompted = False
         self.problem = None
         self.accepted = False
         self.pending_accept = False
         self.attempt_start = None
-        self.problem_started = 0.0
+        self.problem_times = {}
+        self.problem_since = None
+        self.time_up = None
+        self.time_up_shows = {}
+        self.extensions = set()
+        self.debrief = False
 
     def begin_turn(self, kind, text=None) -> tuple[list[dict], Turn | None]:
-        """Start a Tutor turn for a press of "I need help" (`help`) or a chat message (`chat`, with its text).
+        """Start a Tutor turn for a press of "I need help" (`help`), a chat message (`chat`, with its text), or
+        the debrief (`debrief`, entered from the time-up card).
 
-        Accepted only while the session is active, on a problem, with no other turn in flight; a refusal is a
-        `tutor_error` with no turn id and logs nothing. An accepted request is logged first, then its prompt is
-        built from this attempt's events; if that fails, the turn is logged failed and nothing is sent.
+        Accepted only while the session is active, on a problem, with no other turn in flight; the debrief also
+        requires debrief mode. A refusal is a `tutor_error` with no turn id and logs nothing. An accepted request
+        is logged first, then its prompt is built from this attempt's events; if that fails, the turn is logged
+        failed and nothing is sent. Every Tutor turn in the debrief is fed the code-built timeline.
         """
         now = self.clock()
         if self.state == "paused":
@@ -418,6 +504,10 @@ class SessionCoordinator:
             return [self._tutor_error(now, None, "Help is available only during a session.")], None
         if self.problem is None:
             return [self._tutor_error(now, None, "Open a problem first, then ask.")], None
+        if kind not in ("help", "chat", "debrief"):
+            return [self._tutor_error(now, None, f"Unknown Tutor request: {kind}")], None
+        if kind == "debrief" and not self.debrief:
+            return [self._tutor_error(now, None, "The debrief begins from the time-up card.")], None
         if self.turn is not None:
             return [self._tutor_error(now, None, "The Tutor is still answering. Wait for that reply, then ask again.")], None
         slug = self.problem["slug"]
@@ -426,16 +516,22 @@ class SessionCoordinator:
             if kind == "help":
                 request = TutorRequest("help", answered_presses(events) + 1, None)
                 turn_id = self._event(db, self.session_id, now.isoformat(), "help_request", {"slug": slug, "press_index": request.press_index})
+            elif kind == "debrief":
+                request = TutorRequest("debrief", None, None)
+                turn_id = self._event(db, self.session_id, now.isoformat(), "debrief_request", {"slug": slug})
             else:
                 request = TutorRequest("chat", None, text)
                 turn_id = self._event(db, self.session_id, now.isoformat(), "chat_message", {"slug": slug, "text": text})
             try:
                 prior_solve = db.execute("SELECT 1 FROM events WHERE type = 'prior_solve' AND json_extract(payload, '$.slug') = ?",
                                          (slug,)).fetchone() is not None
-                seconds = self._seconds(now)
+                problem_seconds = self._problem_seconds(now) or 0.0
+                cap_seconds = self._cap_seconds()
+                seconds_left = max(0, cap_seconds - int(problem_seconds)) if cap_seconds is not None else 0
+                timeline = self._timeline(db) if self.debrief else None
                 messages = build_messages(self.problem, events, reference=load_reference(db, slug), prior_solve=prior_solve,
-                                          problem_seconds=seconds - int(self.problem_started),
-                                          seconds_left=self.budget_minutes * 60 - seconds, request=request)
+                                          problem_seconds=int(problem_seconds), seconds_left=seconds_left,
+                                          request=request, timeline=timeline)
             except Exception as exc:
                 logger.exception("Cannot build the Tutor's context for %s", slug)
                 message = f"Couldn't prepare the Tutor's context: {exc}"
@@ -459,6 +555,127 @@ class SessionCoordinator:
                 events.append((event_id, kind, payload))
         return events
 
+    @staticmethod
+    def _apply_code_diff(code, diff):
+        if code is None:
+            return None
+        lines = code.split("\n")
+        start = diff["start_line"] - 1
+        end = start + len(diff["removed"])
+        if start > len(lines) or lines[start:end] != diff["removed"]:
+            return code
+        return "\n".join(lines[:start] + diff["added"] + lines[end:])
+
+    @staticmethod
+    def _short_diff(old, new):
+        changed = [line for line in difflib.ndiff(old.splitlines(), new.splitlines())
+                   if line.startswith(("+ ", "- "))]
+        return "\n".join(changed[:40])
+
+    def _timeline(self, db) -> list[dict]:
+        """The current problem's compact, code-built timeline for the debrief, oldest first, at most 10 entries."""
+        if self.problem is None:
+            return []
+        slug = self.problem["slug"]
+        rows = db.execute("SELECT ts, type, payload FROM events WHERE session_id = ? ORDER BY id",
+                          (self.session_id,)).fetchall()
+        active = False
+        current = None
+        previous = None
+        target_started = False
+        times = {}
+        code = None
+        code_at = 0
+        first_code = None
+        previous_attempt_code = None
+        last_result = None
+        last_result_code = None
+        entries = []
+        for ts, kind, raw in rows:
+            at = datetime.fromisoformat(ts)
+            payload = json.loads(raw)
+            if previous is None:
+                previous = at
+            if kind != "session_restored" and active and current is not None:
+                times[current] = times.get(current, 0.0) + (at - previous).total_seconds()
+            previous = at
+            if kind == "session_started":
+                active = True
+                continue
+            if kind == "session_restored":
+                active = False
+                continue
+            if kind == "session_paused":
+                active = False
+                continue
+            if kind == "session_resumed":
+                active = True
+                continue
+            if kind == "session_ended":
+                active = False
+                continue
+            if kind == "problem_opened":
+                current = payload["slug"]
+                times.setdefault(current, 0.0)
+                target_started = target_started or current == slug
+                continue
+            if kind == "problem_left":
+                if payload.get("slug") == current:
+                    current = None
+                continue
+            if not target_started or current != slug:
+                continue
+            if kind == "code_snapshot":
+                code = payload["code"]
+                code_at = int(times[slug])
+                continue
+            if kind == "code_changed":
+                code = self._apply_code_diff(code, payload["diff"])
+                code_at = int(times[slug])
+                continue
+            if kind in ("run_result", "submit_result"):
+                if payload.get("slug") != slug:
+                    continue
+                if kind == "run_result":
+                    passed = sum(1 for case in payload["cases"] if case["passed"])
+                    total = len(payload["cases"])
+                else:
+                    passed, total = payload["passed"], payload["total"]
+                entry = {"kind": "run" if kind == "run_result" else "submit",
+                         "at": int(times.get(slug, 0.0)), "passed": passed, "total": total}
+                if first_code is None and code is not None:
+                    entry["code"] = code
+                    first_code = previous_attempt_code = code
+                else:
+                    if previous_attempt_code is not None and code is not None and code != previous_attempt_code:
+                        entry["diff"] = self._short_diff(previous_attempt_code, code)
+                    if code is not None:
+                        previous_attempt_code = code
+                entries.append(entry)
+                last_result, last_result_code = entry, code
+            elif kind == "help_request" and payload.get("slug") == slug:
+                entries.append({"kind": "help", "at": int(times.get(slug, 0.0)), "text": "pressed I need help"})
+            elif kind == "chat_message" and payload.get("slug") == slug:
+                entries.append({"kind": "chat", "at": int(times.get(slug, 0.0)), "text": payload["text"]})
+        if code is not None:
+            if last_result is not None and last_result_code == code:
+                last_result["code"] = code
+            elif first_code != code:
+                entries.append({"kind": "final_code", "at": code_at, "code": code})
+        if len(entries) > TIMELINE_LIMIT:
+            critical = [entry for entry in entries if entry["kind"] in ("run", "submit", "final_code")]
+            rest = [entry for entry in entries if entry["kind"] not in ("run", "submit", "final_code")]
+            if rest:
+                merged = {"kind": "merged", "at": min(entry["at"] for entry in rest),
+                          "gist": [f"{entry['at']}s: {entry.get('text', entry['kind'])}" for entry in rest]}
+                critical.append(merged)
+            entries = critical
+        return sorted(entries, key=lambda entry: entry["at"])
+
+    def debrief_timeline(self) -> list[dict]:
+        with open_store(self.db_path) as db:
+            return self._timeline(db)
+
     def chat_state(self) -> dict:
         """The conversation on the current problem in this session, rebuilt from stored events: the same events
         the Tutor's context uses. Empty outside an active or paused session on a problem. `streaming` is the turn in flight."""
@@ -470,6 +687,8 @@ class SessionCoordinator:
             for event_id, kind, payload in events:
                 if kind == "help_request":
                     turns.append({"turn_id": event_id, "kind": "press", "press_index": payload["press_index"]})
+                elif kind == "debrief_request":
+                    turns.append({"turn_id": event_id, "kind": "debrief"})
                 elif kind == "chat_message":
                     turns.append({"turn_id": event_id, "kind": "chat", "text": payload["text"]})
                 elif kind == "help_turn":
@@ -542,12 +761,21 @@ class SessionCoordinator:
 
     def tick(self) -> list[dict]:
         now = self.clock()
-        if self.state != "active" or self.prompted or self._seconds(now) < self.budget_minutes * 60:
+        if self.state != "active" or self.problem is None or self.accepted or self.debrief or self.time_up is not None:
+            return []
+        slug = self.problem["slug"]
+        cap = self._cap_seconds()
+        if cap is None or (self._problem_seconds(now) or 0) < cap:
+            return []
+        shows = self.time_up_shows.get(slug, 0)
+        extended = slug in self.extensions
+        if (not extended and shows > 0) or (extended and shows > 1):
             return []
         with open_store(self.db_path) as db:
-            self.prompted = True
-            self.overrun_prompt = True
-            self._event(db, self.session_id, now.isoformat(), "overrun_prompted", {})
+            self.time_up = {"can_extend": not extended}
+            self.time_up_shows[slug] = shows + 1
+            self._event(db, self.session_id, now.isoformat(), "time_up_shown",
+                        {"slug": slug, "can_extend": self.time_up["can_extend"]})
         return [self._state(now)]
 
     def on_connect(self) -> list[dict]:

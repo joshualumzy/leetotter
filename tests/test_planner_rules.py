@@ -123,7 +123,7 @@ def imported(db, slug):
 
 
 def new_session(db, started=NOW):
-    return db.execute("INSERT INTO sessions (started_at, budget_minutes) VALUES (?, 60)", (started.isoformat(),)).lastrowid
+    return db.execute("INSERT INTO sessions (started_at) VALUES (?)", (started.isoformat(),)).lastrowid
 
 
 def event(db, session_id, at, kind, payload):

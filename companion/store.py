@@ -51,6 +51,12 @@ MIGRATIONS = (
     (
         "CREATE TABLE reflector_failures (session_id INTEGER PRIMARY KEY REFERENCES sessions(id), message TEXT NOT NULL)",
     ),
+    (
+        "ALTER TABLE sessions DROP COLUMN budget_minutes",
+    ),
+    (
+        "DELETE FROM events WHERE type IN ('overrun_prompted', 'overrun_choice')",
+    ),
 )
 
 

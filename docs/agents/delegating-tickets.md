@@ -37,3 +37,7 @@ codex exec -c 'notify=[]' -c 'plugins."unified-computer-use@openai-bundled".enab
 ## Commits
 
 The coordinator commits each ticket; `git add` specific paths when other work is in the tree, never `commit -a` while a build is running.
+
+## DeepSeek builds (OpenCode)
+
+Guardrails are always on for every OpenCode run, not just ours: `~/.config/opencode/opencode.json` holds the permission rules (nothing outside the working directory; no push, commit, launchctl, security, install.sh) and pins `reasoningEffort: high`; the launcher `opencode-school.sh` points `LEETOTTER_DB_PATH` at a throwaway database. For a ticket, run `~/.config/opencode/ds-run.sh <name> <brief-file>` from inside the repo: it builds in its own worktree (`../leetotter-ds-<name>`, branch `ds/<name>`), backs up the real database first and reports loudly if it changed (the live companion service can cause a false alarm). Afterwards review the worktree diff, merge or cherry-pick from the branch, and remove the worktree and branch.

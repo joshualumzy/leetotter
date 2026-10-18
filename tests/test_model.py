@@ -55,7 +55,7 @@ def message():
 
 def test_every_spec_role_has_model_and_timeout():
     config = load_roles()
-    assert set(config.roles) == {"observer", "tutor", "grader", "planner", "reflector", "reference_writer", "checker"}
+    assert set(config.roles) == {"tutor", "grader", "planner", "reflector", "reference_writer", "checker"}
     for role, models in config.roles.items():
         assert isinstance(models, list) and models and all(isinstance(model, str) and model for model in models)
         keys = ("planner_start", "planner_between") if role == "planner" else (role,)
@@ -181,20 +181,12 @@ def test_429_has_named_error_and_does_not_count(tmp_path, monkeypatch):
     assert [row[-1] for row in rows(path)] == ["error", "error", "unavailable"]
 
 
-def test_role_selection_timeout_and_thinking_option(tmp_path, monkeypatch):
-    instance, calls, _ = model_client(tmp_path, monkeypatch, *(['{"answer":"ok"}'] * 3))
+def test_role_selection_and_timeout(tmp_path, monkeypatch):
+    instance, calls, _ = model_client(tmp_path, monkeypatch, *(['{"answer":"ok"}'] * 2))
     instance.call_role("grader", message(), Reply, model="x-test-2")
     instance.call_role("planner", message(), Reply, planner_phase="between")
-    instance.call_role("observer", message(), Reply)
     assert calls.requests[0]["model"] == "x-test-2"
     assert calls.requests[1]["timeout"] == 30
-    assert calls.requests[2]["timeout"] == 20
-    assert calls.requests[2]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
-
-
-def test_observer_baseline_omits_thinking_request_body(tmp_path, monkeypatch):
-    instance, calls, _ = model_client(tmp_path, monkeypatch, '{"answer":"ok"}')
-    instance.call_role("observer", message(), Reply, thinking_off=False)
     assert "extra_body" not in calls.requests[0]
 
 
