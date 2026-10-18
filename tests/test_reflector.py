@@ -239,3 +239,28 @@ def test_restart_retries_in_background_while_new_session_starts(tmp_path, monkey
     from companion.reflector import recap_state
     asyncio.run(scenario())
     assert recap_state(path, session_id)["status"] == "ready"
+
+
+@pytest.mark.parametrize("text", [
+    "Kept: spam recurred (evs 516-531) with no actions.",
+    "The inverted edit persisted (ev 493) and was never fixed.",
+    "Restore events (493/504/512) were logged after each pause.",
+    "Many session_restored events fired after the pause.",
+    "x" * 161,
+])
+def test_recap_text_with_event_ids_system_names_or_length_is_sent_back_and_corrected(tmp_path, text):
+    path, session_id, event_id = ended(tmp_path)
+    bad = answer(bullets=[{"text": text, "carried_over": False, "cited_event_ids": [event_id]}])
+    good = answer(bullets=[{"text": "You left a broken edit in the editor.", "carried_over": False, "cited_event_ids": [event_id]}])
+    client = RecordedReflector(bad, good)
+    state = reflect_session(client, path, session_id)
+    assert state["bullets"] == ["You left a broken edit in the editor."]
+    assert "Return corrected JSON only" in client.calls[1][1][-1]["content"]
+
+
+def test_rejected_reply_is_logged_whole_so_a_real_failure_can_be_read(tmp_path, caplog):
+    path, session_id, _ = ended(tmp_path)
+    client = RecordedReflector(answer([added([999999])]), answer([added([999999])]))
+    with caplog.at_level("WARNING"), pytest.raises(ValueError):
+        reflect_session(client, path, session_id)
+    assert "Reflector reply rejected" in caplog.text and "Visited marking needs practice" in caplog.text

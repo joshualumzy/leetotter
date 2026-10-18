@@ -1,6 +1,8 @@
 """Evidence-checked session reflection and recap feedback (SPEC §5 and §8)."""
 
 import json
+import logging
+import re
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -9,13 +11,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from companion.catalog import load_catalog
 from companion.store import open_store
 
+logger = logging.getLogger(__name__)
 
+CHANGE_RULES = ("Field rules: use null, never 0 or an empty string, for a field that does not apply. An add "
+                "change has hypothesis_id null and rejected_id null (unless it returns a rejected hypothesis) "
+                "and needs text; a reword or drop change needs the existing hypothesis_id and rejected_id null. "
+                "Wording: every recap_line and bullet is one plain sentence of at most 160 characters, addressed "
+                "to the learner, about what they did or need to practise. Put event ids only in the "
+                "cited_event_ids fields, never in any text; never name logging or system events (restores, "
+                "snapshots, pauses, focus changes).")
 PROMPT = ("Review only the given session. Summarize briefly. Hypotheses and teaching entries need real "
           "event citations. Every hypothesis change needs a one-line recap_line. Carried-over bullets "
           "need new evidence of recurrence or improvement. A smooth session may have no bullets. "
-          "A rejected hypothesis can return only with its rejected_id and later event evidence.")
+          "A rejected hypothesis can return only with its rejected_id and later event evidence. " + CHANGE_RULES)
 FEEDBACK_PROMPT = ("Use the learner's note to add, reword, or drop hypotheses. Cite the note id or "
-                   "existing event ids. Every change needs a one-line recap_line. Drop means rejection.")
+                   "existing event ids. Every change needs a one-line recap_line. Drop means rejection. " + CHANGE_RULES)
 QUIET_LINE = "You finished all 150 problems on your own."
 
 
@@ -62,8 +72,17 @@ class FeedbackChanges(StrictModel):
     changes: list[Change]
 
 
+LINE_LIMIT = 160
+_JARGON = re.compile(r"\bevs?\b\.?\s*\d|\(\d{2,}(?:[/,–-]\d+)+\)|\b[a-z]+_[a-z_]+\b")
+
+
 def _one_line(value):
     return bool(value and value.strip() and "\n" not in value and "\r" not in value)
+
+
+def _plain(value):
+    """A line shown to the learner: one line, short, and free of event ids and system event names."""
+    return _one_line(value) and len(value) <= LINE_LIMIT and not _JARGON.search(value)
 
 
 def _context(db, session_id):
@@ -91,8 +110,8 @@ def _validate_citations(db, change, event_ids, allowed_note_id):
         raise ValueError("Hypothesis cites a missing event id")
     if change.cited_note_id is not None and change.cited_note_id != allowed_note_id:
         raise ValueError("Hypothesis cites an unavailable note id")
-    if not _one_line(change.recap_line):
-        raise ValueError("Hypothesis change needs a one-line recap")
+    if not _plain(change.recap_line):
+        raise ValueError(f"Hypothesis change needs a plain one-line recap of at most {LINE_LIMIT} characters, with no event ids or system event names")
     if change.action == "add":
         if change.hypothesis_id is not None or not (change.text or "").strip():
             raise ValueError("Added hypothesis needs text and no current id")
@@ -122,6 +141,7 @@ def _call_validated(client, db_path, messages, schema, validate):
                 validate(db, reply)
             return reply
         except ValueError as error:
+            logger.warning("Reflector reply rejected (attempt %d): %s; reply: %s", attempt + 1, error, reply.model_dump_json())
             if attempt:
                 raise ValueError(f"Reflector reply invalid after retry: {error}") from error
             messages = [*messages, {"role": "assistant", "content": reply.model_dump_json()},
@@ -205,8 +225,10 @@ def reflect_session(client, db_path, session_id):
             if not any(payload.get("slug") == item.problem_slug for _, _, payload in events):
                 raise ValueError("Teaching names a problem absent from the session")
         for bullet in reply.bullets:
-            if not _one_line(bullet.text) or set(bullet.cited_event_ids) - event_ids:
-                raise ValueError("Recap bullet has invalid text or citation")
+            if not _plain(bullet.text):
+                raise ValueError(f"Recap bullet needs plain one-line text of at most {LINE_LIMIT} characters, with no event ids or system event names")
+            if set(bullet.cited_event_ids) - event_ids:
+                raise ValueError("Recap bullet cites a missing event id")
             if bullet.carried_over and not bullet.cited_event_ids:
                 raise ValueError("Carried-over bullet needs changed evidence")
 
