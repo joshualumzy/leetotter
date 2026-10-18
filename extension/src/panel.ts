@@ -244,8 +244,8 @@ function recapCard(): HTMLElement | null {
   if (recap.status === "preparing") {
     const otterNode = element("figure", "recap-otter"); otterNode.innerHTML = otter("doze");
     card.append(otterNode);
-    appendText(card, "h4", "Preparing notes");
-    appendText(card, "p", "The otter is writing up this session. It will appear here when it's ready.");
+    appendText(card, "h4", "Notes on your last session");
+    appendText(card, "p", "The otter is still writing them up. They will appear here when ready.");
     return card;
   }
   if (recap.status === "failed") {

@@ -695,7 +695,7 @@ describe("panel actions", () => {
     it("shows the otter preparing notes, then the recap bullets and feedback box", () => {
       showStart();
       notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "preparing", bullets: [] } });
-      expect(document.querySelector(".recap-card")?.textContent).toContain("Preparing notes");
+      expect(document.querySelector(".recap-card")?.textContent).toContain("Notes on your last session");
       expect(document.getElementById("recap-refresh")).toBeNull();
       notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
       expect(document.querySelector(".recap-card")?.textContent).toContain("Dropped: visited marking.");
