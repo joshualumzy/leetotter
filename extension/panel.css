@@ -907,6 +907,30 @@ p {
   margin-bottom:4px
 }
 
+.planner-waiting-card {
+  text-align:center
+}
+
+.planner-waiting-otter {
+  margin:0 auto 6px;
+  text-align:center
+}
+
+.planner-waiting-otter .otter {
+  width:96px;
+  height:96px
+}
+
+.planner-waiting-line {
+  color:var(--mute);
+  font-size:12px;
+  margin:0 0 8px
+}
+
+.planner-timeout-card {
+  border-color:#b42318
+}
+
 .cap-line {
   font-size:12px;
   margin:0 0 8px

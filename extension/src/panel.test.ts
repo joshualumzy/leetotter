@@ -608,6 +608,105 @@ describe("panel actions", () => {
       expect(document.getElementById("planner-swap")).toBeTruthy();
       expect(document.getElementById("planner-clear")).toBeTruthy();
     });
+    it("shows the otter choosing a problem, without a composer, until the suggestion arrives", () => {
+      showStart();
+      startSession();
+      const card = document.querySelector(".planner-waiting-card")!;
+      expect(card.textContent).toContain("Choosing a problem for you...");
+      expect(card.textContent).toContain("This can take a minute.");
+      expect(card.querySelector("svg.otter")).toBeTruthy();
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
+      notify({ kind: "suggestion", message: suggestion });
+      expect(document.querySelector(".planner-waiting-card")).toBeNull();
+      expect(document.querySelector(".suggestion-card")?.textContent).toContain("House Robber");
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
+    });
+    it("replaces the wait with an alert after 200 seconds and sends planner_get from Try again", () => {
+      vi.useFakeTimers();
+      try {
+        showStart();
+        startSession();
+        vi.advanceTimersByTime(199_999);
+        expect(document.querySelector(".planner-timeout-card")).toBeNull();
+        vi.advanceTimersByTime(1);
+        const card = document.querySelector(".planner-timeout-card")!;
+        expect(card.getAttribute("role")).toBe("alert");
+        expect(card.textContent).toContain("The Planner is taking too long.");
+        expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
+        sendMessage.mockClear();
+        click("planner-retry");
+        expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_get" });
+        expect(document.querySelector(".planner-waiting-card")).toBeTruthy();
+        expect(document.querySelector(".planner-timeout-card")).toBeNull();
+        vi.advanceTimersByTime(200_000);
+        expect(document.querySelector(".planner-timeout-card")).toBeTruthy();
+      } finally { vi.useRealTimers(); }
+    });
+    it("keeps the old card disabled while Swap chooses, then clears the wait when the next suggestion arrives", () => {
+      vi.useFakeTimers();
+      try {
+        showStart();
+        startSession();
+        notify({ kind: "suggestion", message: suggestion });
+        sendMessage.mockClear();
+        click("planner-swap");
+        expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_swap" });
+        const card = document.querySelector(".suggestion-card")!;
+        expect(card.textContent).toContain("House Robber");
+        expect(card.textContent).toContain("Choosing a problem for you...");
+        expect((document.getElementById("planner-go") as HTMLButtonElement).disabled).toBe(true);
+        expect((document.getElementById("planner-swap") as HTMLButtonElement).disabled).toBe(true);
+        expect((document.getElementById("planner-clear") as HTMLButtonElement).disabled).toBe(true);
+        expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
+        notify({ kind: "suggestion", message: { ...suggestion, slug: "two-sum", title: "Two Sum" } });
+        expect(document.querySelector(".suggestion-card")?.textContent).not.toContain("Choosing a problem for you...");
+        expect((document.getElementById("planner-go") as HTMLButtonElement).disabled).toBe(false);
+        vi.advanceTimersByTime(200_000);
+        expect(document.querySelector(".planner-timeout-card")).toBeNull();
+      } finally { vi.useRealTimers(); }
+    });
+    it("keeps the old card disabled while Clear chooses and times out from that request", () => {
+      vi.useFakeTimers();
+      try {
+        showStart();
+        startSession();
+        notify({ kind: "suggestion", message: suggestion });
+        sendMessage.mockClear();
+        click("planner-clear");
+        expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_clear" });
+        const card = document.querySelector(".suggestion-card")!;
+        expect(card.textContent).toContain("Choosing a problem for you...");
+        expect((document.getElementById("planner-clear") as HTMLButtonElement).disabled).toBe(true);
+        vi.advanceTimersByTime(199_999);
+        expect(document.querySelector(".planner-timeout-card")).toBeNull();
+        vi.advanceTimersByTime(1);
+        expect(document.querySelector(".suggestion-card")).toBeNull();
+        expect(document.querySelector(".planner-timeout-card")?.textContent).toContain("The Planner is taking too long.");
+      } finally { vi.useRealTimers(); }
+    });
+    it("clears the Planner wait when a problem opens, on pause, and on end", () => {
+      vi.useFakeTimers();
+      try {
+        showStart();
+        startSession();
+        notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, problem: { slug: "two-sum", title: "Two Sum" } } });
+        vi.advanceTimersByTime(200_000);
+        expect(document.querySelector(".planner-timeout-card")).toBeNull();
+
+        notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true } });
+        expect(document.querySelector(".planner-waiting-card")).toBeTruthy();
+        vi.advanceTimersByTime(50_000);
+        notify({ kind: "session_state", state: { ...session, state: "paused", mode: "paused", paused_reason: "button" } });
+        vi.advanceTimersByTime(200_000);
+        expect(document.querySelector(".planner-timeout-card")).toBeNull();
+
+        notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true } });
+        notify({ kind: "session_state", state: { ...session, state: "ended", mode: "idle", running: false } });
+        vi.advanceTimersByTime(200_000);
+        expect(document.querySelector(".planner-timeout-card")).toBeNull();
+        expect(document.getElementById("start-session")).toBeTruthy();
+      } finally { vi.useRealTimers(); }
+    });
     it("shows only Start while idle, holding a suggestion until the session starts", () => {
       showStart();
       notify({ kind: "suggestion", message: suggestion });

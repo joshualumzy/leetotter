@@ -42,6 +42,10 @@ let pendingName: { value: string; pool: "name_first" | "name_settings" } | null 
 let nameAcknowledgement = "";
 let acknowledgementTimer: number | undefined;
 let suggestion: Suggestion | undefined;
+const PLANNER_WAIT_MS = 200_000;
+let plannerWaitStartedAt: number | null = null;
+let plannerTimedOut = false;
+let plannerTimer: number | undefined;
 let recap: RecapState | undefined;
 let recapDismissedFor: number | null = null;
 let recapNoted: string = "";
@@ -105,6 +109,24 @@ function clearReaction(): void {
   reactionCaption = null;
   reactionClass = "";
 }
+
+function endPlannerWait(): void {
+  window.clearTimeout(plannerTimer);
+  plannerTimer = undefined;
+  plannerWaitStartedAt = null;
+  plannerTimedOut = false;
+}
+function beginPlannerWait(): void {
+  window.clearTimeout(plannerTimer);
+  plannerWaitStartedAt = Date.now();
+  plannerTimedOut = false;
+  plannerTimer = window.setTimeout(() => {
+    plannerTimer = undefined;
+    plannerTimedOut = true;
+    render();
+  }, PLANNER_WAIT_MS);
+}
+function plannerWaiting(): boolean { return plannerWaitStartedAt !== null; }
 
 function playReaction(reaction: ReaderReaction): void {
   if (session?.mode !== "watching") return;
@@ -220,22 +242,44 @@ function startCard(): HTMLElement {
   if (!onNeetCode()) appendText(card, "p", "Open NeetCode to start.", "quiet");
   return card;
 }
-function suggestionCard(): HTMLElement | null {
+function suggestionCard(waiting = false): HTMLElement | null {
   if (!suggestion) return null;
   const card = element("section", "card suggestion-card");
   appendText(card, "h4", suggestion.title);
+  if (waiting) appendText(card, "p", "Choosing a problem for you...", "planner-waiting-line");
   const cap = capLine(suggestion.difficulty, suggestion.cap_minutes);
   if (cap) appendText(card, "p", cap, "cap-line");
   if (suggestion.message) appendText(card, "p", suggestion.message, "planner-message");
   if (suggestion.steer) {
     const steer = element("div", "steer-line");
     appendText(steer, "span", `Steering: ${suggestion.steer}`);
-    steer.append(button("planner-clear", "Clear", "link"));
+    const clear = button("planner-clear", "Clear", "link");
+    clear.disabled = waiting;
+    steer.append(clear);
     card.append(steer);
   }
   const row = element("div", "row");
-  row.append(button("planner-go", "Go", "btn primary"), button("planner-swap", "Swap", "btn"));
+  const go = button("planner-go", "Go", "btn primary");
+  const swap = button("planner-swap", "Swap", "btn");
+  go.disabled = waiting;
+  swap.disabled = waiting;
+  row.append(go, swap);
   card.append(row);
+  return card;
+}
+function plannerWaitingCard(): HTMLElement {
+  const card = element("section", "card planner-waiting-card");
+  const otterNode = element("figure", "planner-waiting-otter"); otterNode.innerHTML = otter("float");
+  card.append(otterNode);
+  appendText(card, "h4", "Choosing a problem for you...");
+  appendText(card, "p", "This can take a minute.", "quiet");
+  return card;
+}
+function plannerTimeoutCard(): HTMLElement {
+  const card = element("section", "card planner-timeout-card");
+  card.setAttribute("role", "alert");
+  appendText(card, "h4", "The Planner is taking too long.");
+  card.append(button("planner-retry", "Try again", "btn primary"));
   return card;
 }
 function recapCard(): HTMLElement | null {
@@ -486,9 +530,9 @@ function renderChat(): void {
   updateComposer();
 }
 function renderComposer(view: PanelView): void {
-  // Until the session has a problem, the Planner is the only one to talk to.
+  // Until the session has a problem, the Planner is the only one to talk to, and only once it has a card to talk about.
   const plannerMode = view.body === "active" && !session?.problem;
-  const visible = plannerMode || ["active", "paused", "debrief"].includes(view.body);
+  const visible = plannerMode ? Boolean(suggestion) && !plannerTimedOut : ["active", "paused", "debrief"].includes(view.body);
   composer!.hidden = !visible || settingsOpen;
   composerMode = composer!.hidden ? "hidden" : plannerMode ? "planner" : "tutor";
   if (composer!.hidden) { composer!.replaceChildren(); return; }
@@ -653,10 +697,13 @@ function render(): void {
       body!.append(startCard());
     }
     if (view.body === "active" && !session?.problem) {
-      const suggestionNode = suggestionCard();
-      if (suggestionNode) body!.append(suggestionNode);
+      if (plannerWaiting() && plannerTimedOut) body!.append(plannerTimeoutCard());
+      else if (suggestion) {
+        const suggestionNode = suggestionCard(plannerWaiting());
+        if (suggestionNode) body!.append(suggestionNode);
+      } else if (plannerWaiting()) body!.append(plannerWaitingCard());
     }
-    if (view.body === "active" && !chat.turns.length) {
+    if (view.body === "active" && !chat.turns.length && !plannerWaiting()) {
       const node = element("figure", "active-otter");
       node.innerHTML = otter(session?.accepted ? "shell" : "float");
       appendText(node, "figcaption", session?.accepted ? "Accepted! Keep polishing, or move on." : "I'm here to help whenever you need me.");
@@ -783,8 +830,9 @@ body.addEventListener("click", event => {
   if (id === "skip-name") void send({ kind: "skip_name" });
   if (id === "start-session" && onNeetCode()) void send({ kind: "session_command", command: "start", tabId: panelTabId });
   if (id === "planner-go") void send({ kind: "planner_go", tabId: panelTabId });
-  if (id === "planner-swap") void send({ kind: "planner_swap" });
-  if (id === "planner-clear") void send({ kind: "planner_clear" });
+  if (id === "planner-swap") { beginPlannerWait(); render(); void send({ kind: "planner_swap" }); }
+  if (id === "planner-clear") { beginPlannerWait(); render(); void send({ kind: "planner_clear" }); }
+  if (id === "planner-retry") { beginPlannerWait(); render(); void send({ kind: "planner_get" }); }
   if (id === "time-up-extend") void send({ kind: "session_command", command: "time_up_extend" });
   if (id === "time-up-debrief") void send({ kind: "session_command", command: "time_up_debrief" });
   if (id === "time-up-skip" || id === "debrief-skip" || id === "skip-problem") void send({ kind: "session_command", command: "skip" });
@@ -886,6 +934,9 @@ chrome.runtime.onMessage.addListener(message => {
   if (message?.kind === "session_state") {
     session = message.state;
     if (session?.state === "ended" || (session?.state === "active" && session.problem)) suggestion = undefined;
+    if (session?.state === "active" && !session.problem) {
+      if (!suggestion && !plannerWaiting()) beginPlannerWait();
+    } else endPlannerWait();
     const slug = session?.problem?.slug || null;
     if (slug !== chatSlug) { chatSlug = slug; chat = emptyChat(); pacers.clear(); if (slug) requestChatState(); }
     if (startAfterEnd && session?.state === "ended") session = { ...session, state: "idle", mode: "idle" };
@@ -913,8 +964,13 @@ chrome.runtime.onMessage.addListener(message => {
     }
     render();
   }
-  if (message?.kind === "suggestion") { suggestion = message.message || undefined; render(); }
-  if (message?.kind === "planner_open") { suggestion = undefined; render(); }
+  if (message?.kind === "suggestion") {
+    suggestion = message.message || undefined;
+    if (suggestion || session?.state !== "active" || session?.problem) endPlannerWait();
+    else beginPlannerWait();
+    render();
+  }
+  if (message?.kind === "planner_open") { suggestion = undefined; endPlannerWait(); render(); }
   if (message?.kind === "recap_state") {
     const next = message.message as RecapState;
     if (recap?.session_id !== next.session_id) recapNoted = "";
@@ -956,6 +1012,7 @@ void Promise.all([
 ]).then(([status, currentSession, currentSettings, error, importState, binding, currentSuggestion, currentRecap, currentReference]) => {
   transport = status; session = currentSession; settings = currentSettings; readerError = error || "";
   suggestion = currentSuggestion || undefined;
+  if (session?.state === "active" && !session.problem && !suggestion) beginPlannerWait();
   recap = currentRecap || undefined;
   referenceState = currentReference || undefined;
   imported = importState?.imported || false; if (importState?.result) importResult = importState.result.already_imported ? "NeetCode history was already imported." : `Imported ${importState.result.matched} solved problems.`;
