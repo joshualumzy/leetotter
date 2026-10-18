@@ -13,6 +13,7 @@ from companion.catalog import load_catalog, normalize_link
 from companion.grading import grade_pending
 from companion.history import import_history, import_status
 from companion.model import ModelClient
+from companion.planner import Planner, ask_planner
 from companion.reference import write_and_check
 from companion.reflector import pending_sessions, recap_state, reflect_feedback, reflect_session, submit_feedback
 from companion.session import SessionCoordinator
@@ -23,7 +24,7 @@ from companion.tutor import ask_tutor, failure
 EXTENSION_ID = "oohbhndckkkkdngkglilcbpcoekapmgp"
 ALLOWED_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
-SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_get_state", "tab_closed"})
+SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_done", "session_skip", "session_get_state", "tab_closed"})
 # Tutor messages. Client: help_request (a press of "I need help", no payload) and chat_message {text}.
 # Server, each with the turn's id: tutor_start {request, press_index}; tutor_chunk {attempt, text}, reply text
 # as it streams (append chunks of the same attempt; a higher attempt is a retry after an invalid reply and
@@ -36,10 +37,13 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 #   | {turn_id, kind: "reply", text, gap, gap_note, help_kind} | {turn_id, kind: "failed", reason, message}
 # and streaming is the id of the turn whose reply is still coming, or null.
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recap_feedback", "recap_noted"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES
+PLANNER_TYPES = frozenset({"planner_go", "planner_swap", "planner_clear", "planner_chat"})
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recap_feedback", "recap_noted", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
 logger = logging.getLogger(__name__)
 _coordinator = None
+_planner = None
+_planner_tasks = set()
 _models = None
 _clients = set()
 _turns = set()
@@ -167,6 +171,13 @@ def _validate(raw):
         text = payload.get("text") if isinstance(payload, dict) else None
         if not isinstance(text, str) or not text.strip() or len(text.strip()) > CHAT_LIMIT:
             raise ValueError(f"Invalid chat_message payload: text must be 1 to {CHAT_LIMIT} characters")
+    if kind == "planner_chat":
+        payload = message.get("payload")
+        text = payload.get("text") if isinstance(payload, dict) else None
+        if not isinstance(text, str) or not text.strip() or len(text.strip()) > CHAT_LIMIT:
+            raise ValueError(f"Invalid planner_chat payload: text must be 1 to {CHAT_LIMIT} characters")
+    if kind in {"planner_go", "planner_swap", "planner_clear", "planner_get", "session_done", "session_skip"} and "payload" in message:
+        raise ValueError(f"Invalid {kind} payload")
     if kind in ("recap_get", "recap_feedback"):
         payload = message.get("payload")
         if not isinstance(payload, dict) or type(payload.get("session_id")) is not int or payload["session_id"] <= 0:
@@ -194,7 +205,7 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
@@ -205,6 +216,36 @@ async def _handle(connection):
                         ready = db.execute("SELECT id FROM sessions WHERE recap_bullets IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
                     if ready:
                         await connection.send(json.dumps(recap_state(store_path(), ready[0])))
+                    if _planner is not None:
+                        request = _planner.panel_opened(_coordinator.state)
+                        if request:
+                            _schedule_planner(request)
+                        elif _planner.card and _coordinator.state != "paused":
+                            await connection.send(json.dumps(_planner.card))
+                elif kind == "planner_get":
+                    if _planner is not None:
+                        request = _planner.panel_opened(_coordinator.state)
+                        if request:
+                            _schedule_planner(request)
+                        elif _planner.card and _coordinator.state != "paused":
+                            await connection.send(json.dumps(_planner.card))
+                elif kind in PLANNER_TYPES:
+                    if _planner is None:
+                        raise ValueError("Planner unavailable")
+                    if kind == "planner_go":
+                        if _coordinator.state not in ("idle", "ended", "active") or _coordinator.problem:
+                            raise ValueError("No suggestion can be opened now")
+                        problem = _planner.go()
+                        await connection.send(json.dumps({"type": "planner_open", "ts": _timestamp(), **problem}))
+                    elif kind == "planner_swap":
+                        _schedule_planner(_planner.swap(_coordinator.session_id))
+                    elif kind == "planner_clear":
+                        _schedule_planner(_planner.clear_steer(_coordinator.session_id))
+                    else:
+                        request = _planner.chat(_coordinator.session_id, message["payload"]["text"].strip())
+                        if request is None:
+                            raise ValueError("Planner chat requires a suggestion card")
+                        _schedule_planner(request)
                 elif kind == "get_import_status":
                     await connection.send(json.dumps({"type": "import_status", "ts": _timestamp(), "imported": import_status()}))
                 elif kind == "settings_get":
@@ -238,9 +279,18 @@ async def _handle(connection):
                         _turns.add(task)
                         task.add_done_callback(_turns.discard)
                 elif kind != "ping":
+                    before_problem = _coordinator.problem
                     outgoing = _coordinator.handle(message)
                     await _broadcast(outgoing, connection, kind != "session_get_state")
                     if not any(item["type"] == "error" for item in outgoing):
+                        if _planner is not None:
+                            if kind in ("session_done", "session_skip"):
+                                _schedule_planner(_planner.problem_left(_coordinator.session_id))
+                                _schedule_grading("next_problem")
+                            elif kind == "problem_opened" and before_problem and before_problem != _coordinator.problem:
+                                _planner.session_ended()
+                            elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
+                                _planner.session_ended()
                         if kind == "problem_opened":
                             _schedule_grading("next_problem")
                         elif kind == "problem_statement":
@@ -264,7 +314,7 @@ async def _broadcast(outgoing, sender, broadcast=True):
             logger.error("Session request rejected: %s", message["message"])
             message = {**message, "ts": _timestamp()}
         turn_message = message["type"].startswith("tutor_") and message["turn_id"] is not None
-        targets = tuple(_clients) if sender is None or turn_message or (broadcast and message["type"] in ("session_state", "settings_state", "recap_state")) else (sender,)
+        targets = tuple(_clients) if sender is None or turn_message or (broadcast and message["type"] in ("session_state", "settings_state", "recap_state", "suggestion")) else (sender,)
         for target in targets:
             try:
                 await target.send(json.dumps(message))
@@ -331,6 +381,8 @@ async def _ticker():
         await asyncio.sleep(1)
         try:
             await _broadcast(_coordinator.tick(), None)
+            if _planner is not None:
+                await _broadcast(_planner.tick(), None)
         except Exception as exc:
             logger.exception("Session timer failed")
             for client in tuple(_clients):
@@ -338,6 +390,21 @@ async def _ticker():
                     await client.send(json.dumps({"type": "error", "ts": _timestamp(), "message": f"Session timer failed: {exc}"}))
                 except Exception:
                     logger.exception("Could not report session timer failure to client")
+
+
+def _schedule_planner(request):
+    task = asyncio.create_task(_run_planner(request))
+    _planner_tasks.add(task)
+    task.add_done_callback(_planner_tasks.discard)
+
+
+async def _run_planner(request):
+    try:
+        reply = await asyncio.to_thread(ask_planner, _get_models(), request)
+        await _broadcast(_planner.answer(request, reply), None)
+    except Exception as error:
+        logger.exception("Planner request failed")
+        await _broadcast(_planner.fail(request, error), None)
 
 
 def _schedule_grading(trigger="initial"):
@@ -448,8 +515,9 @@ async def _run_grading(trigger="initial"):
 async def serve_companion(port=8765, models=None):
     """Create the loopback-only WebSocket server for use in main and tests. `models` is the ModelClient for the
     Tutor; by default one is made on the first Tutor request, so a missing key fails that request loudly."""
-    global _coordinator, _models, _grading_lock, _reflection_lock
+    global _coordinator, _planner, _models, _grading_lock, _reflection_lock
     _coordinator = SessionCoordinator(store_path(), lambda: datetime.now(timezone.utc))
+    _planner = Planner(store_path(), lambda: datetime.now(timezone.utc))
     _models = models
     _grading_lock = asyncio.Lock()
     _reflection_lock = asyncio.Lock()
@@ -464,6 +532,9 @@ async def serve_companion(port=8765, models=None):
             for task in tuple(_turns):
                 task.cancel()
             await asyncio.gather(*_turns, return_exceptions=True)
+            for task in tuple(_planner_tasks):
+                task.cancel()
+            await asyncio.gather(*_planner_tasks, return_exceptions=True)
             await asyncio.gather(*_grading_tasks, return_exceptions=True)
             await asyncio.gather(*tuple(_reference_tasks.values()), return_exceptions=True)
             await asyncio.gather(*_reflection_tasks, return_exceptions=True)
@@ -473,3 +544,4 @@ async def serve_companion(port=8765, models=None):
             except asyncio.CancelledError:
                 pass
             _coordinator = None
+            _planner = None

@@ -313,8 +313,11 @@ class SessionCoordinator:
             return [{"type": "error", "message": "session_end requires a session"}]
         if kind == "session_overrun" and (not self.overrun_prompt or not isinstance(payload, dict) or payload.get("choice") not in ("finish", "stop")):
             return [{"type": "error", "message": "Invalid session_overrun"}]
-        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "tab_closed"}:
+        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_overrun", "session_done", "session_skip", "tab_closed"}:
             return [{"type": "error", "message": f"Unknown message type: {kind}"}]
+        if kind in ("session_done", "session_skip") and (self.state != "active" or self.problem is None or
+                (kind == "session_done" and not self.accepted)):
+            return [{"type": "error", "message": f"{kind} requires an appropriate active problem"}]
         if kind == "tab_closed" and self.state != "active":
             return [self._state(now)]
         if kind in READER_TYPES and (self.state in ("idle", "ended") or
@@ -341,6 +344,12 @@ class SessionCoordinator:
                 self._resume(db, now)
             elif kind == "session_end":
                 self._end(db, now)
+            elif kind in ("session_done", "session_skip"):
+                self._event(db, self.session_id, now.isoformat(), "problem_left", {"slug": self.problem["slug"], "accepted": self.accepted})
+                self.problem = None
+                self.accepted = False
+                self.pending_accept = False
+                self.attempt_start = None
             elif kind == "session_overrun":
                 self._event(db, self.session_id, now.isoformat(), "overrun_choice", {"choice": payload["choice"]})
                 self.overrun_prompt = False
