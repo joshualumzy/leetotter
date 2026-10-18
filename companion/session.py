@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import datetime
+from companion.grading import write_missed
 from companion.reference import load_reference
 from companion.store import open_store
 from companion.tutor import Turn, TutorRequest, answered_presses, build_messages, reply_schema
@@ -437,10 +438,34 @@ class SessionCoordinator:
         labels = {"gap": reply.gap, "gap_note": reply.gap_note, "help_kind": reply.help_kind}
         try:
             with open_store(self.db_path) as db:
-                self._event(db, turn.session_id, now.isoformat(), "help_turn", {
+                help_event_id = self._event(db, turn.session_id, now.isoformat(), "help_turn", {
                     "turn_id": turn.turn_id, "slug": turn.slug, "request": turn.request.kind,
                     "press_index": turn.request.press_index, **labels, "reply_text": reply.reply_text,
                     "follow_up_question": reply.follow_up_question, "model": model})
+                if reply.help_kind == "full_solution":
+                    events = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id <= ? ORDER BY id",
+                                        (turn.session_id, turn.turn_id)).fetchall()
+                    attempt_start = None
+                    for event_id, kind, raw in events:
+                        payload = json.loads(raw)
+                        if kind == "problem_opened" and payload["slug"] == turn.slug and attempt_start is None:
+                            attempt_start = event_id
+                        elif kind == "problem_left" and payload["slug"] == turn.slug:
+                            attempt_start = None
+                    accepted_before_reply = attempt_start is not None and any(
+                        kind == "submit_result" and json.loads(raw).get("accepted") and json.loads(raw).get("slug") == turn.slug
+                        for event_id, kind, raw in db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id > ? AND id < ?",
+                                                             (turn.session_id, attempt_start, help_event_id)))
+            if reply.help_kind == "full_solution" and attempt_start is not None and not accepted_before_reply:
+                try:
+                    with open_store(self.db_path) as db:
+                        write_missed(db, session_id=turn.session_id, slug=turn.slug, event_id=help_event_id,
+                                     attempt_start=attempt_start)
+                except Exception as error:
+                    logger.exception("Could not record full-solution miss for turn %s", turn.turn_id)
+                    return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id,
+                             "reply_text": reply.reply_text, **labels, "follow_up_question": reply.follow_up_question},
+                            {"type": "error", "ts": now.isoformat(), "message": f"Could not record the missed attempt: {error}"}]
         finally:
             self._release(turn)
         return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id, "reply_text": reply.reply_text,

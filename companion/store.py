@@ -21,6 +21,24 @@ MIGRATIONS = (
         'CREATE TABLE "references" (id INTEGER PRIMARY KEY, problem_key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, status TEXT NOT NULL)',
         "CREATE TABLE model_calls (id INTEGER PRIMARY KEY, session_id INTEGER REFERENCES sessions(id), role TEXT NOT NULL, model TEXT NOT NULL, latency_ms INTEGER NOT NULL, prompt_tokens INTEGER, completion_tokens INTEGER, validation_result TEXT NOT NULL, prompt_text TEXT, created_at TEXT NOT NULL)",
     ),
+    (
+        "CREATE TABLE reviews_v2 (id INTEGER PRIMARY KEY, session_id INTEGER REFERENCES sessions(id), event_id INTEGER REFERENCES events(id), item_type TEXT NOT NULL, item_key TEXT NOT NULL, grade TEXT, meets_expected INTEGER, first_attempt INTEGER NOT NULL, difficulty TEXT, grader_disagreement INTEGER NOT NULL DEFAULT 0, reviewed_at TEXT NOT NULL, failed_grader TEXT)",
+        "INSERT INTO reviews_v2 (id, session_id, event_id, item_type, item_key, grade, meets_expected, first_attempt, difficulty, grader_disagreement, reviewed_at) SELECT id, session_id, event_id, item_type, item_key, grade, meets_expected, first_attempt, difficulty, grader_disagreement, reviewed_at FROM reviews",
+        "DROP TABLE reviews",
+        "ALTER TABLE reviews_v2 RENAME TO reviews",
+        "CREATE TABLE handled_attempts (start_event_id INTEGER PRIMARY KEY REFERENCES events(id))",
+        "CREATE TABLE grader_retries (start_event_id INTEGER PRIMARY KEY REFERENCES events(id), failed_tries INTEGER NOT NULL)",
+    ),
+    (
+        "CREATE TABLE grading_failures (start_event_id INTEGER PRIMARY KEY REFERENCES events(id), message TEXT NOT NULL)",
+    ),
+    (
+        "DELETE FROM reviews WHERE event_id IS NOT NULL AND id IN ("
+        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY event_id, item_type "
+        "ORDER BY (grade IS NOT NULL) DESC, id) AS rank FROM reviews WHERE event_id IS NOT NULL) "
+        "WHERE rank > 1)",
+        "CREATE UNIQUE INDEX reviews_event_item_unique ON reviews(event_id, item_type)",
+    ),
 )
 
 

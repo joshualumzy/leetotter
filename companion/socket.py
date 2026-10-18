@@ -3,12 +3,14 @@
 import json
 import logging
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 from companion.catalog import normalize_link
+from companion.grading import grade_pending
 from companion.history import import_history, import_status
 from companion.model import ModelClient
 from companion.session import SessionCoordinator
@@ -39,10 +41,21 @@ _coordinator = None
 _models = None
 _clients = set()
 _turns = set()
+_grading_tasks = set()
+_grading_lock = None
+_model_lock = threading.Lock()
 
 
 def _timestamp():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _get_models():
+    global _models
+    with _model_lock:
+        if _models is None:
+            _models = ModelClient()
+        return _models
 
 
 def _settings_state():
@@ -202,6 +215,11 @@ async def _handle(connection):
                 elif kind != "ping":
                     outgoing = _coordinator.handle(message)
                     await _broadcast(outgoing, connection, kind != "session_get_state")
+                    if not any(item["type"] == "error" for item in outgoing):
+                        if kind == "problem_opened":
+                            _schedule_grading("next_problem")
+                        elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
+                            _schedule_grading("initial")
             except Exception as exc:
                 logger.exception("WebSocket request failed: %s", exc)
                 await connection.send(json.dumps({"type": "error", "ts": _timestamp(), "message": str(exc)}))
@@ -239,12 +257,10 @@ async def _run_turn(turn, started):
             pass  # the loop has closed: the companion stopped, and the turn was logged as failed (shutdown)
 
     def work():
-        global _models
         try:
-            if _models is None:
-                _models = ModelClient()
-            reply = ask_tutor(_models, turn.messages, turn.schema, lambda attempt, text: post(("chunk", attempt, text)))
-            post(("done", reply, _models.config.roles["tutor"][0]))
+            models = _get_models()
+            reply = ask_tutor(models, turn.messages, turn.schema, lambda attempt, text: post(("chunk", attempt, text)))
+            post(("done", reply, models.config.roles["tutor"][0]))
         except Exception as exc:
             post(("failed", exc))
 
@@ -295,21 +311,56 @@ async def _ticker():
                     logger.exception("Could not report session timer failure to client")
 
 
+def _schedule_grading(trigger="initial"):
+    task = asyncio.create_task(_run_grading(trigger))
+    _grading_tasks.add(task)
+    task.add_done_callback(_grading_tasks.discard)
+
+
+async def _run_grading(trigger="initial"):
+    async with _grading_lock:
+        def work():
+            class GraderClient:
+                @property
+                def config(self):
+                    return _get_models().config
+
+                def call_role(self, *args, **kwargs):
+                    return _get_models().call_role(*args, **kwargs)
+
+            return grade_pending(GraderClient(), db_path=store_path(), trigger=trigger)
+
+        try:
+            outcome = await asyncio.to_thread(work)
+            if outcome.failed:
+                for client in tuple(_clients):
+                    for attempt_id in outcome.failed:
+                        message = outcome.failures.get(attempt_id, "Grading is delayed; an attempt remains ungraded.")
+                        await client.send(json.dumps({"type": "error", "ts": _timestamp(), "message": message}))
+        except Exception as error:
+            logger.exception("Pending grading failed")
+            for client in tuple(_clients):
+                await client.send(json.dumps({"type": "error", "ts": _timestamp(), "message": f"Grading failed: {error}"}))
+
+
 @asynccontextmanager
 async def serve_companion(port=8765, models=None):
     """Create the loopback-only WebSocket server for use in main and tests. `models` is the ModelClient for the
     Tutor; by default one is made on the first Tutor request, so a missing key fails that request loudly."""
-    global _coordinator, _models
+    global _coordinator, _models, _grading_lock
     _coordinator = SessionCoordinator(store_path(), lambda: datetime.now(timezone.utc))
     _models = models
+    _grading_lock = asyncio.Lock()
     async with serve(_handle, "127.0.0.1", port, origins=[ALLOWED_ORIGIN]) as server:
         tick_task = asyncio.create_task(_ticker())
+        _schedule_grading("next_start")
         try:
             yield server
         finally:
             for task in tuple(_turns):
                 task.cancel()
             await asyncio.gather(*_turns, return_exceptions=True)
+            await asyncio.gather(*_grading_tasks, return_exceptions=True)
             tick_task.cancel()
             try:
                 await tick_task

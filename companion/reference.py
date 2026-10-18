@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from companion.model import ModelClient
 from companion.store import open_store
+
+logger = logging.getLogger(__name__)
 
 LABELS = ("complexity", "interview_expected", "trick")
 FIELDS_OF = {"complexity": ("time", "space"), "interview_expected": ("interview_expected",), "trick": ("trick",)}
@@ -158,6 +161,12 @@ def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str 
         db.execute('INSERT INTO "references" (problem_key, content, status) VALUES (?, ?, ?) '
                    "ON CONFLICT(problem_key) DO UPDATE SET content = excluded.content, status = excluded.status",
                    (slug, content, result.status))
+    if result.status == "checked":
+        from companion.grading import grade_pending
+        try:
+            grade_pending(models, db_path=db_path, only_slug=slug)
+        except Exception:
+            logger.exception("Reference %s was saved, but pending grading failed", slug)
     return result
 
 
