@@ -39,6 +39,18 @@ MIGRATIONS = (
         "WHERE rank > 1)",
         "CREATE UNIQUE INDEX reviews_event_item_unique ON reviews(event_id, item_type)",
     ),
+    (
+        "ALTER TABLE hypotheses ADD COLUMN rejected_note_id INTEGER REFERENCES notes(id)",
+        "ALTER TABLE hypotheses ADD COLUMN cited_note_id INTEGER REFERENCES notes(id)",
+        "ALTER TABLE teaching ADD COLUMN problem_slug TEXT",
+        "ALTER TABLE teaching ADD COLUMN cited_event_ids TEXT",
+        "ALTER TABLE teaching ADD COLUMN idea TEXT",
+        "ALTER TABLE notes ADD COLUMN session_id INTEGER REFERENCES sessions(id)",
+        "ALTER TABLE hypotheses ADD COLUMN rejected_after_event_id INTEGER",
+    ),
+    (
+        "CREATE TABLE reflector_failures (session_id INTEGER PRIMARY KEY REFERENCES sessions(id), message TEXT NOT NULL)",
+    ),
 )
 
 

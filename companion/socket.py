@@ -13,6 +13,7 @@ from companion.catalog import normalize_link
 from companion.grading import grade_pending
 from companion.history import import_history, import_status
 from companion.model import ModelClient
+from companion.reflector import pending_sessions, recap_state, reflect_feedback, reflect_session, submit_feedback
 from companion.session import SessionCoordinator
 from companion.store import open_store, store_path
 from companion.tutor import ask_tutor, failure
@@ -34,7 +35,7 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 #   | {turn_id, kind: "reply", text, gap, gap_note, help_kind} | {turn_id, kind: "failed", reason, message}
 # and streaming is the id of the turn whose reply is still coming, or null.
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recap_feedback", "recap_noted"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
 logger = logging.getLogger(__name__)
 _coordinator = None
@@ -43,6 +44,8 @@ _clients = set()
 _turns = set()
 _grading_tasks = set()
 _grading_lock = None
+_reflection_tasks = set()
+_reflection_lock = None
 _model_lock = threading.Lock()
 
 
@@ -162,6 +165,12 @@ def _validate(raw):
         text = payload.get("text") if isinstance(payload, dict) else None
         if not isinstance(text, str) or not text.strip() or len(text.strip()) > CHAT_LIMIT:
             raise ValueError(f"Invalid chat_message payload: text must be 1 to {CHAT_LIMIT} characters")
+    if kind in ("recap_get", "recap_feedback"):
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or type(payload.get("session_id")) is not int or payload["session_id"] <= 0:
+            raise ValueError(f"Invalid {kind} payload")
+        if kind == "recap_feedback" and (not isinstance(payload.get("text"), str) or not payload["text"].strip()):
+            raise ValueError("Invalid recap_feedback text")
     if kind == "import_history":
         payload = message.get("payload")
         urls = payload.get("urls") if isinstance(payload, dict) else None
@@ -183,11 +192,17 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
                     await _broadcast(_coordinator.on_connect(), connection)
+                    for session_id in pending_sessions(store_path()):
+                        await connection.send(json.dumps(recap_state(store_path(), session_id)))
+                    with open_store() as db:
+                        ready = db.execute("SELECT id FROM sessions WHERE recap_bullets IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+                    if ready:
+                        await connection.send(json.dumps(recap_state(store_path(), ready[0])))
                 elif kind == "get_import_status":
                     await connection.send(json.dumps({"type": "import_status", "ts": _timestamp(), "imported": import_status()}))
                 elif kind == "settings_get":
@@ -203,6 +218,14 @@ async def _handle(connection):
                     await connection.send(json.dumps({"type": "import_result", "ts": _timestamp(), "result": result}))
                 elif kind == "chat_get":
                     await connection.send(json.dumps(_coordinator.chat_state()))
+                elif kind == "recap_get":
+                    await connection.send(json.dumps(recap_state(store_path(), message["payload"]["session_id"])))
+                elif kind == "recap_feedback":
+                    session_id = message["payload"]["session_id"]
+                    note_id = submit_feedback(None, store_path(), session_id, message["payload"]["text"])
+                    await connection.send(json.dumps({"type": "recap_noted", "session_id": session_id, "note_id": note_id,
+                                                      "message": "Noted. For a grade correction, use Progress."}))
+                    _schedule_feedback(session_id, note_id)
                 elif kind in TUTOR_TYPES:
                     text = message["payload"]["text"].strip() if kind == "chat_message" else None
                     outgoing, turn = _coordinator.begin_turn("chat" if kind == "chat_message" else "help", text)
@@ -220,6 +243,8 @@ async def _handle(connection):
                             _schedule_grading("next_problem")
                         elif kind == "session_end" or (kind == "session_overrun" and message["payload"]["choice"] == "stop"):
                             _schedule_grading("initial")
+                            await _broadcast([recap_state(store_path(), _coordinator.session_id)], connection)
+                            _schedule_reflection(_coordinator.session_id)
             except Exception as exc:
                 logger.exception("WebSocket request failed: %s", exc)
                 await connection.send(json.dumps({"type": "error", "ts": _timestamp(), "message": str(exc)}))
@@ -235,7 +260,7 @@ async def _broadcast(outgoing, sender, broadcast=True):
             logger.error("Session request rejected: %s", message["message"])
             message = {**message, "ts": _timestamp()}
         turn_message = message["type"].startswith("tutor_") and message["turn_id"] is not None
-        targets = tuple(_clients) if turn_message or (broadcast and message["type"] in ("session_state", "settings_state")) else (sender,)
+        targets = tuple(_clients) if turn_message or (broadcast and message["type"] in ("session_state", "settings_state", "recap_state")) else (sender,)
         for target in targets:
             try:
                 await target.send(json.dumps(message))
@@ -317,6 +342,46 @@ def _schedule_grading(trigger="initial"):
     task.add_done_callback(_grading_tasks.discard)
 
 
+def _schedule_reflection(session_id):
+    task = asyncio.create_task(_run_reflection(session_id))
+    _reflection_tasks.add(task)
+    task.add_done_callback(_reflection_tasks.discard)
+
+
+async def _run_reflection(session_id):
+    async with _reflection_lock:
+        try:
+            if _grading_tasks:
+                await asyncio.gather(*tuple(_grading_tasks))
+            state = await asyncio.to_thread(reflect_session, _get_models(), store_path(), session_id)
+            await _broadcast([state], None)
+        except Exception as error:
+            logger.exception("Reflector failed for session %s", session_id)
+            with open_store() as db:
+                db.execute("INSERT INTO reflector_failures (session_id, message) VALUES (?, ?) "
+                           "ON CONFLICT(session_id) DO UPDATE SET message = excluded.message",
+                           (session_id, f"Session review is missing: {error}"))
+            await _broadcast([recap_state(store_path(), session_id)], None)
+
+
+def _schedule_feedback(session_id, note_id):
+    task = asyncio.create_task(_run_feedback(session_id, note_id))
+    _reflection_tasks.add(task)
+    task.add_done_callback(_reflection_tasks.discard)
+
+
+async def _run_feedback(session_id, note_id):
+    async with _reflection_lock:
+        try:
+            state = await asyncio.to_thread(reflect_feedback, _get_models(), store_path(), session_id, note_id)
+            await _broadcast([state], None)
+        except Exception as error:
+            logger.exception("Reflector feedback failed for note %s", note_id)
+            await _broadcast([{"type": "recap_state", "session_id": session_id, "status": "feedback_failed",
+                               "bullets": recap_state(store_path(), session_id)["bullets"],
+                               "message": f"Feedback review failed; your note was saved: {error}"}], None)
+
+
 async def _run_grading(trigger="initial"):
     async with _grading_lock:
         def work():
@@ -347,13 +412,16 @@ async def _run_grading(trigger="initial"):
 async def serve_companion(port=8765, models=None):
     """Create the loopback-only WebSocket server for use in main and tests. `models` is the ModelClient for the
     Tutor; by default one is made on the first Tutor request, so a missing key fails that request loudly."""
-    global _coordinator, _models, _grading_lock
+    global _coordinator, _models, _grading_lock, _reflection_lock
     _coordinator = SessionCoordinator(store_path(), lambda: datetime.now(timezone.utc))
     _models = models
     _grading_lock = asyncio.Lock()
+    _reflection_lock = asyncio.Lock()
     async with serve(_handle, "127.0.0.1", port, origins=[ALLOWED_ORIGIN]) as server:
         tick_task = asyncio.create_task(_ticker())
         _schedule_grading("next_start")
+        for session_id in pending_sessions(store_path()):
+            _schedule_reflection(session_id)
         try:
             yield server
         finally:
@@ -361,6 +429,7 @@ async def serve_companion(port=8765, models=None):
                 task.cancel()
             await asyncio.gather(*_turns, return_exceptions=True)
             await asyncio.gather(*_grading_tasks, return_exceptions=True)
+            await asyncio.gather(*_reflection_tasks, return_exceptions=True)
             tick_task.cancel()
             try:
                 await tick_task
