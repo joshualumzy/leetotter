@@ -306,6 +306,9 @@ def reflect_feedback(client, db_path, session_id, note_id):
 
 
 def pending_sessions(db_path):
+    """The last session's recap, when it is still owed. Older sessions whose review failed are left as they are, so a
+    start never queues a backlog of slow calls ahead of the Planner (SPEC §13)."""
     with open_store(db_path) as db:
         return [id_ for (id_,) in db.execute(
-            "SELECT id FROM sessions WHERE ended_at IS NOT NULL AND summary IS NULL ORDER BY id")]
+            "SELECT id FROM (SELECT id, summary FROM sessions WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT 1) "
+            "WHERE summary IS NULL")]

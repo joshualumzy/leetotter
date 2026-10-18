@@ -264,3 +264,14 @@ def test_rejected_reply_is_logged_whole_so_a_real_failure_can_be_read(tmp_path, 
     with caplog.at_level("WARNING"), pytest.raises(ValueError):
         reflect_session(client, path, session_id)
     assert "Reflector reply rejected" in caplog.text and "Visited marking needs practice" in caplog.text
+
+
+def test_only_the_last_session_can_be_pending(tmp_path):
+    from companion.reflector import pending_sessions
+    path, first, _ = ended(tmp_path)
+    with open_store(path) as db:
+        db.execute("INSERT INTO sessions (started_at, ended_at) VALUES ('2026-01-01T00:00:00+00:00', '2026-01-01T00:10:00+00:00')")
+        newest = db.execute("SELECT max(id) FROM sessions").fetchone()[0]
+    assert pending_sessions(path) == [newest]
+    reflect_session(RecordedReflector(answer()), path, newest)
+    assert pending_sessions(path) == []
