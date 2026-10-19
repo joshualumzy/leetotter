@@ -9,11 +9,12 @@ from datetime import datetime, timezone
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
-from companion.catalog import load_catalog, normalize_link
-from companion.grading import grade_pending
+from companion.catalog import CATEGORIES, load_catalog, normalize_link
+from companion.grading import GRADES, grade_pending
 from companion.history import import_history, import_status
 from companion.model import ModelClient
 from companion.planner import Planner, ask_planner
+from companion.progress import category_state, correct_grade, exclude_session, progress_state
 from companion.reference import write_and_check
 from companion.reference_review import apply_verdict, flag_tutor_message, review_state
 from companion.reflector import pending_sessions, recap_state, recaps_state, reflect_feedback, reflect_session, submit_feedback
@@ -39,9 +40,10 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 # and streaming is the id of the turn whose reply is still coming, or null.
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
 PLANNER_TYPES = frozenset({"planner_go", "planner_swap", "planner_clear", "planner_chat"})
+PROGRESS_TYPES = frozenset({"progress_get", "progress_category", "grade_correct", "session_exclude"})
 MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "reset_progress", "reset_done", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recaps_get", "recaps_state", "recap_feedback", "recap_noted", "recap_seen", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
 REFERENCE_TYPES = frozenset({"reference_get", "reference_flag", "reference_apply"})
-MESSAGE_TYPES |= REFERENCE_TYPES | {"reference_state", "reference_flagged", "reference_verdict"}
+MESSAGE_TYPES |= REFERENCE_TYPES | PROGRESS_TYPES | {"reference_state", "reference_flagged", "reference_verdict", "progress_state", "progress_category_state"}
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
 logger = logging.getLogger(__name__)
 _coordinator = None
@@ -192,6 +194,26 @@ def _validate(raw):
         if (not isinstance(payload, dict) or not _nonempty(payload.get("slug")) or
                 not _nonempty(payload.get("reply"))):
             raise ValueError("Invalid reference_apply payload")
+    if kind == "progress_get" and "payload" in message:
+        raise ValueError("Invalid progress_get payload")
+    if kind == "progress_category":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or payload.get("category") not in CATEGORIES:
+            raise ValueError("Invalid progress_category payload")
+    if kind == "grade_correct":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or payload.get("grade") not in set(GRADES) | {"solid", "shaky", "missed"}:
+            raise ValueError("Invalid grade_correct grade")
+        review_id, problem, attempt = payload.get("review_id"), payload.get("problem"), payload.get("attempt")
+        by_review = _integer(review_id) and review_id > 0 and problem is None and attempt is None
+        by_attempt = (_nonempty(problem) and attempt is not None and _integer(attempt) and attempt > 0
+                      and review_id is None)
+        if not (by_review or by_attempt):
+            raise ValueError("Invalid grade_correct payload")
+    if kind == "session_exclude":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or type(payload.get("session_id")) is not int or payload["session_id"] <= 0:
+            raise ValueError("Invalid session_exclude payload")
     if kind == "planner_chat":
         payload = message.get("payload")
         text = payload.get("text") if isinstance(payload, dict) else None
@@ -232,7 +254,7 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "reset_progress", "chat_get", "recap_get", "recaps_get", "recap_feedback", "recap_seen", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "reset_progress", "chat_get", "recap_get", "recaps_get", "recap_feedback", "recap_seen", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES | PROGRESS_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
@@ -326,6 +348,18 @@ async def _handle(connection):
                                                       "slug": slug, **result}))
                 elif kind == "recaps_get":
                     await connection.send(json.dumps(_recaps_message()))
+                elif kind == "progress_get":
+                    await connection.send(json.dumps(progress_state(store_path())))
+                elif kind == "progress_category":
+                    await connection.send(json.dumps(category_state(store_path(), message["payload"]["category"])))
+                elif kind == "grade_correct":
+                    payload = message["payload"]
+                    correct_grade(store_path(), grade=payload["grade"], review_id=payload.get("review_id"),
+                                  problem=payload.get("problem"), attempt=payload.get("attempt"))
+                    await _broadcast([progress_state(store_path())], None)
+                elif kind == "session_exclude":
+                    exclude_session(store_path(), message["payload"]["session_id"])
+                    await _broadcast([progress_state(store_path())], None)
                 elif kind == "recap_get":
                     await connection.send(json.dumps(recap_state(store_path(), message["payload"]["session_id"])))
                 elif kind == "recap_feedback":

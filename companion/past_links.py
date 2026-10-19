@@ -91,9 +91,6 @@ class _Attempt:
 
 
 def _excluded_sessions(db) -> set[int]:
-    columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
-    if "excluded" not in columns:
-        return set()
     return {row[0] for row in db.execute("SELECT id FROM sessions WHERE excluded = 1")}
 
 
