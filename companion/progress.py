@@ -380,12 +380,14 @@ def correct_grade(db_path, *, grade, review_id=None, problem=None, attempt=None)
         review_id, event_id, _, _, old_grade, _, difficulty = row
         if old_grade is None:
             raise ValueError("This attempt has no grade yet")
-        meets = int(grade in ("good", "hard"))
-        db.execute("UPDATE reviews SET grade = ?, meets_expected = ? WHERE id = ?", (grade, meets, review_id))
+        # Hard keeps the grader's own verdict: a worse approach is Hard with meets_expected false.
+        meets = None if grade == "hard" else int(grade == "good")
+        db.execute("UPDATE reviews SET grade = ?, meets_expected = COALESCE(?, meets_expected) WHERE id = ?",
+                   (grade, meets, review_id))
         category = db.execute("SELECT id, difficulty FROM reviews WHERE event_id = ? AND item_type = 'category:solve'",
                               (event_id,)).fetchone()
         if category is not None:
-            db.execute("UPDATE reviews SET grade = ?, meets_expected = ? WHERE id = ?",
+            db.execute("UPDATE reviews SET grade = ?, meets_expected = COALESCE(?, meets_expected) WHERE id = ?",
                        (category_grade(grade, category[1] or difficulty), meets, category[0]))
         return review_id
 
@@ -401,8 +403,6 @@ def exclude_session(db_path, session_id):
             raise ValueError("A session must be ended before it can be excluded")
         db.execute("UPDATE sessions SET excluded = 1 WHERE id = ?", (session_id,))
         db.execute("DELETE FROM reviews WHERE session_id = ?", (session_id,))
-        db.execute("INSERT OR IGNORE INTO handled_attempts (start_event_id) "
-                   "SELECT id FROM events WHERE session_id = ? AND type = 'problem_opened'", (session_id,))
         db.execute("DELETE FROM grading_failures WHERE start_event_id IN "
                    "(SELECT id FROM events WHERE session_id = ?)", (session_id,))
         db.execute("DELETE FROM grader_retries WHERE start_event_id IN "
