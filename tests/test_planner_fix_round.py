@@ -147,6 +147,8 @@ def test_the_request_made_at_start_falls_back_after_the_wait(tmp_path):
     coordinator.handle(start_msg())
     planner.session_started(coordinator.session_id)
     clock.advance(31)
+    assert planner.tick() == []
+    clock.advance(30)
     out = planner.tick()
     assert [card["type"] for card in out] == ["suggestion"] and out[0]["source"] == "fallback"
 

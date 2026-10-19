@@ -117,9 +117,18 @@ function endPlannerWait(): void {
   plannerWaitStartedAt = null;
   plannerTimedOut = false;
 }
+const PLANNER_WAIT_LINES = [
+  "Paddling through the problem list...",
+  "Sniffing out a good one...",
+  "Diving for a problem...",
+  "Checking what you've been practicing...",
+  "Juggling a few pebbles to choose from...",
+];
+let plannerWaitLine = PLANNER_WAIT_LINES[0];
 function beginPlannerWait(): void {
   window.clearTimeout(plannerTimer);
   plannerWaitStartedAt = Date.now();
+  plannerWaitLine = PLANNER_WAIT_LINES[Math.floor(Math.random() * PLANNER_WAIT_LINES.length)]!;
   plannerTimedOut = false;
   plannerTimer = window.setTimeout(() => {
     plannerTimer = undefined;
@@ -243,11 +252,10 @@ function startCard(): HTMLElement {
   if (!onNeetCode()) appendText(card, "p", "Open NeetCode to start.", "quiet");
   return card;
 }
-function suggestionCard(waiting = false): HTMLElement | null {
+function suggestionCard(): HTMLElement | null {
   if (!suggestion) return null;
   const card = element("section", "card suggestion-card");
   appendText(card, "h4", suggestion.title);
-  if (waiting) appendText(card, "p", "Choosing a problem for you...", "planner-waiting-line");
   const cap = capLine(suggestion.difficulty, suggestion.cap_minutes);
   if (cap) appendText(card, "p", cap, "cap-line");
   if (suggestion.message) appendText(card, "p", suggestion.message, "planner-message");
@@ -255,15 +263,12 @@ function suggestionCard(waiting = false): HTMLElement | null {
     const steer = element("div", "steer-line");
     appendText(steer, "span", `Steering: ${suggestion.steer}`);
     const clear = button("planner-clear", "Clear", "link");
-    clear.disabled = waiting;
     steer.append(clear);
     card.append(steer);
   }
   const row = element("div", "row");
   const go = button("planner-go", "Go", "btn primary");
   const swap = button("planner-swap", "Swap", "btn");
-  go.disabled = waiting;
-  swap.disabled = waiting;
   row.append(go, swap);
   card.append(row);
   return card;
@@ -273,7 +278,10 @@ function plannerWaitingCard(): HTMLElement {
   const otterNode = element("figure", "planner-waiting-otter"); otterNode.innerHTML = otter("float");
   card.append(otterNode);
   appendText(card, "h4", "Choosing a problem for you...");
-  appendText(card, "p", "This can take a minute.", "quiet");
+  const line = element("p", "planner-waiting-line");
+  line.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+  line.append(document.createTextNode(plannerWaitLine));
+  card.append(line);
   return card;
 }
 function plannerTimeoutCard(): HTMLElement {
@@ -700,10 +708,11 @@ function render(): void {
     if (view.body === "active" && !session?.problem) {
       for (const said of plannerSaid) appendText(body!, "div", said, "chat-line chat-you");
       if (plannerWaiting() && plannerTimedOut) body!.append(plannerTimeoutCard());
+      else if (plannerWaiting()) body!.append(plannerWaitingCard());
       else if (suggestion) {
-        const suggestionNode = suggestionCard(plannerWaiting());
+        const suggestionNode = suggestionCard();
         if (suggestionNode) body!.append(suggestionNode);
-      } else if (plannerWaiting()) body!.append(plannerWaitingCard());
+      }
     }
     if (view.body === "active" && !chat.turns.length && !plannerWaiting()) {
       const node = element("figure", "active-otter");

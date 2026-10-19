@@ -3,7 +3,7 @@ Planner row, §8 "Steering", §12, §13). The Planner's replies are recorded; th
 
 Interface (companion/planner.py) used by this file, beyond tests/test_planner_rules.py:
 
-    PLANNER_WAIT = 30  # seconds without an answer before the code-ranked pick is shown (start and between)
+    PLANNER_WAIT = 60  # seconds without an answer before the code-ranked pick is shown (start and between)
 
     PlannerReply (pydantic, strict): {slug, reason, reading, ask, steer, understood, named_by_you}; see
         tests/test_planner_steer.py. `reason` is internal and never sent to the panel.
@@ -170,11 +170,11 @@ def test_the_answer_becomes_a_card_by_title_with_its_cap_and_never_its_reason_or
     assert planner.card == shown
 
 
-def test_after_30_s_without_an_answer_the_code_ranked_pick_is_shown_and_a_late_answer_is_discarded(tmp_path):
+def test_after_60_s_without_an_answer_the_code_ranked_pick_is_shown_and_a_late_answer_is_discarded(tmp_path):
     _, clock, _, planner = setup(tmp_path)
-    assert PLANNER_WAIT == 30
+    assert PLANNER_WAIT == 60
     request = planner.panel_opened("idle")
-    clock.advance(29)
+    clock.advance(59)
     assert planner.tick() == []
     clock.advance(1)
     shown = card(planner.tick())
@@ -303,3 +303,9 @@ def test_a_second_sessions_suggestions_reflect_the_first(tmp_path):
     request = planner.panel_opened("ended")
     assert MEDIUM not in {candidate["slug"] for candidate in request.allowed}
     assert context(request)["learner_summary"]["Arrays & Hashing"]["recent"]["Medium"] == ["good"]
+
+
+def test_swap_with_no_card_asks_again_instead_of_failing(tmp_path):
+    _, _, _, planner = setup(tmp_path)
+    request = planner.swap(None)
+    assert request is not None and request.trigger == "swap"

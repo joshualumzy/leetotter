@@ -613,7 +613,7 @@ describe("panel actions", () => {
       startSession();
       const card = document.querySelector(".planner-waiting-card")!;
       expect(card.textContent).toContain("Choosing a problem for you...");
-      expect(card.textContent).toContain("This can take a minute.");
+      expect(card.querySelector(".dots")).toBeTruthy();
       expect(card.querySelector("svg.otter")).toBeTruthy();
       expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
       notify({ kind: "suggestion", message: suggestion });
@@ -655,7 +655,7 @@ describe("panel actions", () => {
         expect(document.querySelector(".planner-timeout-card")).toBeTruthy();
       } finally { vi.useRealTimers(); }
     });
-    it("keeps the old card disabled while Swap chooses, then clears the wait when the next suggestion arrives", () => {
+    it("replaces the old card with the choosing otter while Swap chooses, then clears the wait when the next suggestion arrives", () => {
       vi.useFakeTimers();
       try {
         showStart();
@@ -664,21 +664,17 @@ describe("panel actions", () => {
         sendMessage.mockClear();
         click("planner-swap");
         expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_swap" });
-        const card = document.querySelector(".suggestion-card")!;
-        expect(card.textContent).toContain("House Robber");
-        expect(card.textContent).toContain("Choosing a problem for you...");
-        expect((document.getElementById("planner-go") as HTMLButtonElement).disabled).toBe(true);
-        expect((document.getElementById("planner-swap") as HTMLButtonElement).disabled).toBe(true);
-        expect((document.getElementById("planner-clear") as HTMLButtonElement).disabled).toBe(true);
+        expect(document.querySelector(".suggestion-card")).toBeNull();
+        expect(document.querySelector(".planner-waiting-card")?.textContent).toContain("Choosing a problem for you...");
         expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
         notify({ kind: "suggestion", message: { ...suggestion, slug: "two-sum", title: "Two Sum" } });
-        expect(document.querySelector(".suggestion-card")?.textContent).not.toContain("Choosing a problem for you...");
+        expect(document.querySelector(".planner-waiting-card")).toBeNull();
         expect((document.getElementById("planner-go") as HTMLButtonElement).disabled).toBe(false);
         vi.advanceTimersByTime(200_000);
         expect(document.querySelector(".planner-timeout-card")).toBeNull();
       } finally { vi.useRealTimers(); }
     });
-    it("keeps the old card disabled while Clear chooses and times out from that request", () => {
+    it("replaces the old card with the choosing otter while Clear chooses and times out from that request", () => {
       vi.useFakeTimers();
       try {
         showStart();
@@ -687,9 +683,8 @@ describe("panel actions", () => {
         sendMessage.mockClear();
         click("planner-clear");
         expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_clear" });
-        const card = document.querySelector(".suggestion-card")!;
-        expect(card.textContent).toContain("Choosing a problem for you...");
-        expect((document.getElementById("planner-clear") as HTMLButtonElement).disabled).toBe(true);
+        expect(document.querySelector(".suggestion-card")).toBeNull();
+        expect(document.querySelector(".planner-waiting-card")?.textContent).toContain("Choosing a problem for you...");
         vi.advanceTimersByTime(199_999);
         expect(document.querySelector(".planner-timeout-card")).toBeNull();
         vi.advanceTimersByTime(1);
