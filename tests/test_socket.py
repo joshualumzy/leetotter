@@ -133,13 +133,15 @@ def test_hello_sends_pending_recaps_and_only_unseen_ready_recaps(tmp_path, monke
     asyncio.run(scenario())
 
 
-def test_recap_seen_marks_an_ended_session_without_a_reply(tmp_path, monkeypatch):
+def test_recap_seen_marks_an_ended_session_and_broadcasts_the_recaps_state(tmp_path, monkeypatch):
     async def scenario():
         path = recap_store(tmp_path, monkeypatch)
         session_id = add_session(path, recap=["Kept: two pointers."])
         connection = Connection([msg("recap_seen", {"session_id": session_id})])
         await socket._handle(connection)
-        assert connection.sent == []
+        assert [item["type"] for item in connection.sent] == ["recaps_state"]
+        assert connection.sent[0]["unread"] is False
+        assert connection.sent[0]["recaps"][0]["seen"] is True
         with open_store(path) as db:
             assert db.execute("SELECT recap_seen FROM sessions WHERE id = ?", (session_id,)).fetchone() == (1,)
 

@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from companion.catalog import load_catalog
 from companion.store import open_store
@@ -44,6 +44,21 @@ class Change(StrictModel):
     cited_event_ids: list[int]
     cited_note_id: int | None
     recap_line: str = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_unused_fields(cls, value):
+        """A strict schema makes the model fill every field; unused ids arrive as 0 and unused text as ""."""
+        if not isinstance(value, dict):
+            return value
+        normalised = dict(value)
+        for key in ("hypothesis_id", "rejected_id", "cited_note_id"):
+            if normalised.get(key) == 0:
+                normalised[key] = None
+        for key in ("text", "category", "skill"):
+            if normalised.get(key) == "":
+                normalised[key] = None
+        return normalised
 
 
 class Teaching(StrictModel):
@@ -134,7 +149,24 @@ def _validate_citations(db, change, event_ids, allowed_note_id):
             raise ValueError("Reworded hypothesis needs text")
 
 
-def _call_validated(client, db_path, messages, schema, validate):
+def _record_rejected_reply(client, db_path, session_id, reply):
+    config = getattr(client, "config", None)
+    try:
+        model = config.roles["reflector"][0]
+    except (AttributeError, KeyError, IndexError, TypeError):
+        model = "reflector"
+    raw = reply.model_dump_json()
+    with open_store(db_path) as db:
+        latest = db.execute("SELECT id FROM model_calls WHERE role = 'reflector' ORDER BY id DESC LIMIT 1").fetchone()
+        if latest is not None:
+            db.execute("UPDATE model_calls SET prompt_text = ? WHERE id = ?", (raw, latest[0]))
+        else:
+            db.execute("INSERT INTO model_calls (session_id, role, model, latency_ms, validation_result, prompt_text, created_at) "
+                       "VALUES (?, 'reflector', ?, 0, 'invalid', ?, ?)",
+                       (session_id, model, raw, datetime.now(timezone.utc).isoformat()))
+
+
+def _call_validated(client, db_path, messages, schema, validate, session_id=None):
     for attempt in range(2):
         reply = client.call_role("reflector", messages, schema)
         try:
@@ -143,6 +175,7 @@ def _call_validated(client, db_path, messages, schema, validate):
             return reply
         except ValueError as error:
             logger.warning("Reflector reply rejected (attempt %d): %s; reply: %s", attempt + 1, error, reply.model_dump_json())
+            _record_rejected_reply(client, db_path, session_id, reply)
             if attempt:
                 raise ValueError(f"Reflector reply invalid after retry: {error}") from error
             messages = [*messages, {"role": "assistant", "content": reply.model_dump_json()},
@@ -161,18 +194,20 @@ def _effective_changes(db, changes):
     return effective
 
 
-def _apply_changes(db, changes, note_id=None):
+def _apply_changes(db, changes, note_id=None, session_id=None):
     for change in changes:
         if change.action == "add":
-            db.execute("INSERT INTO hypotheses (text, category, skill, status, cited_event_ids, cited_note_id) "
-                       "VALUES (?, ?, ?, 'open', ?, ?)",
-                       (change.text, change.category, change.skill, json.dumps(change.cited_event_ids), change.cited_note_id))
+            db.execute("INSERT INTO hypotheses (text, category, skill, status, cited_event_ids, cited_note_id, recap_session_id) "
+                       "VALUES (?, ?, ?, 'open', ?, ?, ?)",
+                       (change.text, change.category, change.skill, json.dumps(change.cited_event_ids),
+                        change.cited_note_id, session_id))
         elif change.action == "reword":
             earlier = json.loads(db.execute("SELECT cited_event_ids FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()[0])
-            db.execute("UPDATE hypotheses SET text = ?, category = ?, skill = ?, cited_event_ids = ?, cited_note_id = ? WHERE id = ?",
+            db.execute("UPDATE hypotheses SET text = ?, category = ?, skill = ?, cited_event_ids = ?, cited_note_id = ?, "
+                       "recap_session_id = ? WHERE id = ?",
                        (change.text, change.category, change.skill,
                         json.dumps(sorted(set(earlier) | set(change.cited_event_ids))),
-                        change.cited_note_id, change.hypothesis_id))
+                        change.cited_note_id, session_id, change.hypothesis_id))
         else:
             floor = db.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0] if note_id else None
             db.execute("UPDATE hypotheses SET status = ?, rejected_note_id = ?, rejected_after_event_id = ? WHERE id = ?",
@@ -233,13 +268,16 @@ def reflect_session(client, db_path, session_id):
             if bullet.carried_over and not bullet.cited_event_ids:
                 raise ValueError("Carried-over bullet needs changed evidence")
 
-    reply = _call_validated(client, db_path, messages, Reflection, validate)
+    reply = _call_validated(client, db_path, messages, Reflection, validate, session_id)
     with open_store(db_path) as db:
-        if db.execute("SELECT summary FROM sessions WHERE id = ?", (session_id,)).fetchone()[0] is not None:
+        row = db.execute("SELECT summary, recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if row is None:
+            raise ValueError("Session was reset before its recap could be saved")
+        if row[0] is not None:
             return {"type": "recap_state", "session_id": session_id, "status": "ready",
-                    "bullets": json.loads(db.execute("SELECT recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])}
+                    "bullets": json.loads(row[1])}
         effective = _effective_changes(db, reply.changes)
-        _apply_changes(db, effective)
+        _apply_changes(db, effective, session_id=session_id)
         for item in reply.teaching:
             db.execute("INSERT INTO teaching (problem_slug, cited_event_ids, idea, category, framing, help_kind, outcome) "
                        "VALUES (?, ?, ?, ?, ?, ?, ?)", (item.problem_slug, json.dumps(item.cited_event_ids),
@@ -263,6 +301,26 @@ def recap_state(db_path, session_id):
             "status": "ready" if row[1] is not None else "failed" if failure else "preparing",
             "bullets": json.loads(row[1]) if row[1] is not None else [],
             **({"message": failure[0]} if failure and row[1] is None else {})}
+
+
+def recaps_state(db_path):
+    """Every ended session's recap, newest first, with its own seen flag and whether one is still unread."""
+    with open_store(db_path) as db:
+        rows = db.execute(
+            "SELECT s.id, s.started_at, s.recap_bullets, s.recap_seen, r.message, f.message "
+            "FROM sessions s LEFT JOIN reflector_failures r ON r.session_id = s.id "
+            "LEFT JOIN recap_feedback_failures f ON f.session_id = s.id "
+            "WHERE s.ended_at IS NOT NULL ORDER BY s.id DESC").fetchall()
+    recaps = []
+    for session_id, started_at, raw_bullets, seen, failure, feedback_failure in rows:
+        bullets = json.loads(raw_bullets) if raw_bullets is not None else []
+        status = ("feedback_failed" if feedback_failure else "ready" if raw_bullets is not None
+                  else "failed" if failure else "preparing")
+        recaps.append({"session_id": session_id, "date": started_at, "status": status,
+                       "bullets": bullets, "has_bullets": bool(bullets), "seen": bool(seen),
+                       "message": feedback_failure if feedback_failure else failure if raw_bullets is None else None})
+    return {"type": "recaps_state", "recaps": recaps,
+            "unread": any(item["status"] == "ready" and not item["seen"] for item in recaps)}
 
 
 def submit_feedback(client, db_path, session_id, text):
@@ -295,13 +353,19 @@ def reflect_feedback(client, db_path, session_id, note_id):
         for change in reply.changes:
             _validate_citations(db, change, known_events, note_id)
 
-    reply = _call_validated(client, db_path, messages, FeedbackChanges, validate)
+    reply = _call_validated(client, db_path, messages, FeedbackChanges, validate, session_id)
     with open_store(db_path) as db:
+        note = db.execute("SELECT 1 FROM notes WHERE id = ? AND session_id = ? AND kind = 'recap_feedback'",
+                          (note_id, session_id)).fetchone()
+        row = db.execute("SELECT recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if note is None or row is None:
+            raise ValueError("Session or feedback note was reset before the review was saved")
         effective = _effective_changes(db, reply.changes)
-        _apply_changes(db, effective, note_id)
-        bullets = json.loads(db.execute("SELECT recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
+        _apply_changes(db, effective, note_id, session_id)
+        bullets = json.loads(row[0])
         bullets += [change.recap_line for change in effective]
         db.execute("UPDATE sessions SET recap_bullets = ? WHERE id = ?", (json.dumps(bullets), session_id))
+        db.execute("DELETE FROM recap_feedback_failures WHERE session_id = ?", (session_id,))
     return recap_state(db_path, session_id)
 
 

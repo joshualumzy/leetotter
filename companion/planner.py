@@ -396,7 +396,10 @@ class Planner:
             summary = learner_summary(db, now=now)
             steer = active_steer(db, session_id=session_id)
             imported = [json.loads(raw) for (raw,) in db.execute("SELECT payload FROM events WHERE type = 'prior_solve'")]
-            hypotheses = [dict(text=t, category=c, skill=s) for t, c, s in db.execute("SELECT text, category, skill FROM hypotheses WHERE status = 'open'")]
+            hypotheses = [dict(text=t, category=c, skill=s) for t, c, s in db.execute(
+                "SELECT h.text, h.category, h.skill FROM hypotheses h WHERE h.status = 'open' "
+                "AND (h.recap_session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s "
+                "WHERE s.id = h.recap_session_id AND s.recap_seen = 1))")]
             preferences = [t for (t,) in db.execute("SELECT text FROM notes WHERE kind = 'preference' ORDER BY id DESC LIMIT 20")]
             attempts = _session_attempts(db, session_id)
             unfinished = _unfinished(db)

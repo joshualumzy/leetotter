@@ -61,6 +61,15 @@ MIGRATIONS = (
         "ALTER TABLE sessions ADD COLUMN recap_seen INTEGER NOT NULL DEFAULT 0",
         "UPDATE sessions SET recap_seen = 1 WHERE recap_bullets IS NOT NULL",
     ),
+    (
+        "ALTER TABLE hypotheses ADD COLUMN recap_session_id INTEGER REFERENCES sessions(id)",
+        "CREATE TABLE recap_feedback_failures (session_id INTEGER PRIMARY KEY REFERENCES sessions(id), message TEXT NOT NULL)",
+    ),
+)
+
+PERSONAL_TABLES = (
+    "grading_failures", "grader_retries", "handled_attempts", "reviews", "hypotheses", "teaching",
+    "model_calls", "reflector_failures", "recap_feedback_failures", "events", "notes", "sessions", "settings",
 )
 
 
@@ -90,3 +99,11 @@ def open_store(path: str | Path | None = None):
         db.commit()
     finally:
         db.close()
+
+
+def reset_progress(path: str | Path | None = None):
+    """Erase everything personal in one transaction; references, fsrs and the catalog stay (SPEC §2)."""
+    with open_store(path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        for table in PERSONAL_TABLES:
+            db.execute(f"DELETE FROM {table}")

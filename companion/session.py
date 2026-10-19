@@ -81,6 +81,26 @@ class SessionCoordinator:
                     self.paused_reason = "restart"
                     self._event(db, session_id, clock().isoformat(), "session_restored", {"active_seconds": int(self.elapsed)})
 
+    def reset(self):
+        """Forget the session in memory, after its store rows were erased."""
+        self.state = "idle"
+        self.session_id = None
+        self.elapsed = 0.0
+        self.active_since = None
+        self.paused_reason = None
+        self.check_message = None
+        self.problem = None
+        self.accepted = False
+        self.pending_accept = False
+        self.attempt_start = None
+        self.problem_times = {}
+        self.problem_since = None
+        self.time_up = None
+        self.time_up_shows = {}
+        self.extensions = set()
+        self.debrief = False
+        self.turn = None
+
     def _close_open_turns(self, db, session_id, history, now):
         """A Tutor turn still open when the companion died is logged as failed, never left open."""
         open_turns = {}
