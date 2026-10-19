@@ -659,7 +659,7 @@ describe("worker startup and storage failures", () => {
 
   it("opens the socket only after the saved state and panel setup finish loading", async () => {
     let resolveGet!: (value: any) => void;
-    vi.mocked(chrome.storage.session.get).mockReturnValueOnce(new Promise(resolve => { resolveGet = resolve; }));
+    vi.mocked(chrome.storage.session.get).mockReturnValueOnce(new Promise<any>(resolve => { resolveGet = resolve; }) as any);
     socket = undefined as any;
     vi.resetModules();
     await import("./worker");
