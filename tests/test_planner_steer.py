@@ -6,17 +6,17 @@ Interface (companion/planner.py) used by this file, beyond tests/test_planner_ru
 tests/test_planner_flow.py:
 
     PlannerReply (pydantic, strict, extra fields forbidden):
-        slug: str                     the suggested problem
-        reason: str                   internal, never shown
+        slug: str | None              the suggested problem; None for unrelated and unreadable (no pick)
+        reason: str | None            internal, never shown; None with no pick
         reading: "none" | "ask" | "steer" | "clear" | "unreadable" | "unrelated"
             none: no words to read (start, between, swap, clear); the others answer a chat message:
             ask: a request for the next problem only, never stored; steer: a focus to store; clear: back to
             normal; unreadable: words it couldn't read or that name nothing in the catalog; unrelated: not
-            about practice, ignored
+            about practice
         ask: list[Focus] | None       required for "ask" (empty only when named_by_you), else None
         steer: SteerReading | None    required for "steer", else None
-        understood: str | None        the one line it says to you; required for ask, steer, clear and
-                                      unreadable, None for none and unrelated
+        understood: str | None        the one line it says to you; required for ask, steer, clear,
+                                      unreadable and unrelated, None for none
         named_by_you: bool            you named this problem yourself; only with reading "ask"
     Focus: {categories: [catalog category names], patterns: [pattern ids from stored references],
             difficulties: ["Easy" | "Medium" | "Hard"], direction: "more" | "fewer"}, naming at least one
@@ -36,8 +36,8 @@ tests/test_planner_flow.py:
         (kind "steer"), never in reviews.
 
     Planner.answer on a chat request: "steer" stores the reading (replacing any active steer), "clear"
-    clears it, "ask" and "unreadable" store nothing; each shows a card whose message is the understood
-    line. "unrelated" re-sends the card as it was, so the panel stops waiting. Every card carries the active steer's label.
+    clears it, "ask" stores nothing and shows a card whose message is the understood line. "unreadable" and
+    "unrelated" pick no problem: they re-send the current card with the understood line as its message. Every card carries the active steer's label.
     Planner.clear_steer(session_id): the card's Clear; removes the steer and plans an unsteered suggestion,
     not logged as a swap. Planner.fail on a chat request says the steer wasn't saved.
 """
@@ -284,11 +284,29 @@ def test_different_intents_store_what_was_read(tmp_path, text, reading):
     assert shown.steer()["focus"] == reading["focus"]
 
 
-def test_a_message_that_is_not_about_practice_is_ignored(tmp_path):
+def talk(reading, line):
+    return {**reply(None, reading, understood=line), "reason": None}
+
+
+def test_a_message_that_is_not_about_practice_gets_a_line_and_keeps_the_card(tmp_path):
     shown = Shown(tmp_path)
-    assert shown.say("ha, my cat just walked on the keyboard", reply(COIN_CHANGE, "unrelated")) == [shown.card]
-    assert shown.planner.card == shown.card
+    before = dict(shown.card)
+    out = shown.say("Hey, what's up?", talk("unrelated", "Just paddling about, you?"))
+    assert out == [{**before, "message": "Just paddling about, you?"}]
+    assert (shown.planner.card["slug"], shown.planner.card["title"]) == (before["slug"], before["title"])
     assert shown.steer() is None
+
+
+def test_unreadable_words_ask_without_picking_a_new_problem(tmp_path):
+    shown = Shown(tmp_path)
+    slug = shown.card["slug"]
+    out = shown.say("more of the thingy", talk("unreadable", "Which thingy do you mean?"))
+    assert (card(out)["slug"], card(out)["message"]) == (slug, "Which thingy do you mean?")
+
+
+def test_a_reading_that_picks_a_problem_needs_a_slug():
+    with pytest.raises(ValueError):
+        PlannerReply.model_validate_json(json.dumps({**talk("steer", None), "steer": steering("x", focus(DP))}))
 
 
 def test_unreadable_words_store_no_steer_and_say_so(tmp_path):
