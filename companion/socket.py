@@ -16,9 +16,9 @@ from companion.model import ModelClient
 from companion.planner import Planner, ask_planner
 from companion.reference import write_and_check
 from companion.reference_review import apply_verdict, flag_tutor_message, review_state
-from companion.reflector import pending_sessions, recap_state, reflect_feedback, reflect_session, submit_feedback
+from companion.reflector import pending_sessions, recap_state, recaps_state, reflect_feedback, reflect_session, submit_feedback
 from companion.session import SessionCoordinator
-from companion.store import open_store, store_path
+from companion.store import open_store, reset_progress, store_path
 from companion.tutor import ask_tutor, failure
 
 
@@ -39,7 +39,7 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 # and streaming is the id of the turn whose reply is still coming, or null.
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
 PLANNER_TYPES = frozenset({"planner_go", "planner_swap", "planner_clear", "planner_chat"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "reset_progress", "reset_done", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recaps_get", "recaps_state", "recap_feedback", "recap_noted", "recap_seen", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
 REFERENCE_TYPES = frozenset({"reference_get", "reference_flag", "reference_apply"})
 MESSAGE_TYPES |= REFERENCE_TYPES | {"reference_state", "reference_flagged", "reference_verdict"}
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
@@ -75,6 +75,10 @@ def _settings_state():
     with open_store() as db:
         values = dict(db.execute("SELECT key, value FROM settings WHERE key IN ('name', 'theme')"))
     return {"type": "settings_state", "ts": _timestamp(), "name": values.get("name"), "theme": values.get("theme", "match")}
+
+
+def _recaps_message():
+    return {"ts": _timestamp(), **recaps_state(store_path())}
 
 
 def _string(value):
@@ -201,6 +205,12 @@ def _validate(raw):
             raise ValueError(f"Invalid {kind} payload")
         if kind == "recap_feedback" and (not isinstance(payload.get("text"), str) or not payload["text"].strip()):
             raise ValueError("Invalid recap_feedback text")
+    if kind == "recaps_get" and "payload" in message:
+        raise ValueError("Invalid recaps_get payload")
+    if kind == "reset_progress":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or payload.get("confirm") != "RESET":
+            raise ValueError("Invalid reset_progress payload: type RESET to confirm")
     if kind == "import_history":
         payload = message.get("payload")
         urls = payload.get("urls") if isinstance(payload, dict) else None
@@ -222,7 +232,7 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "chat_get", "recap_get", "recap_feedback", "recap_seen", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "reset_progress", "chat_get", "recap_get", "recaps_get", "recap_feedback", "recap_seen", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
@@ -270,6 +280,16 @@ async def _handle(connection):
                         _schedule_planner(request)
                 elif kind == "get_import_status":
                     await connection.send(json.dumps({"type": "import_status", "ts": _timestamp(), "imported": import_status()}))
+                elif kind == "reset_progress":
+                    if _coordinator.state in ("active", "paused"):
+                        _coordinator.handle({"type": "session_end", "ts": _timestamp()})
+                    await _cancel_background_tasks()
+                    reset_progress(store_path())
+                    _reference_statements.clear()
+                    _coordinator.reset()
+                    if _planner is not None:
+                        _planner.session_ended()
+                    await _broadcast([{"type": "reset_done", "ts": _timestamp()}, _settings_state()], None)
                 elif kind == "settings_get":
                     await connection.send(json.dumps(_settings_state()))
                 elif kind == "settings_set":
@@ -304,6 +324,8 @@ async def _handle(connection):
                         await _broadcast([{"type": "reference_state", "ts": _timestamp(), **review_state(store_path())}], None)
                     await connection.send(json.dumps({"type": "reference_verdict", "ts": _timestamp(),
                                                       "slug": slug, **result}))
+                elif kind == "recaps_get":
+                    await connection.send(json.dumps(_recaps_message()))
                 elif kind == "recap_get":
                     await connection.send(json.dumps(recap_state(store_path(), message["payload"]["session_id"])))
                 elif kind == "recap_feedback":
@@ -319,6 +341,7 @@ async def _handle(connection):
                         if ended is None or ended[0] is None:
                             raise ValueError("No ended session for recap")
                         db.execute("UPDATE sessions SET recap_seen = 1 WHERE id = ?", (session_id,))
+                    await _broadcast([_recaps_message()], None)
                 elif kind in TUTOR_TYPES:
                     text = message["payload"]["text"].strip() if kind == "chat_message" else None
                     outgoing, turn = _coordinator.begin_turn("chat" if kind == "chat_message" else "help", text)
@@ -374,6 +397,19 @@ async def _handle(connection):
         _clients.discard(connection)
         if not _clients and _coordinator is not None:
             await _broadcast(_coordinator.on_disconnect(), connection)
+
+
+async def _cancel_background_tasks():
+    tasks = set(_turns) | set(_planner_tasks) | set(_grading_tasks) | set(_reflection_tasks) | set(_reference_tasks.values())
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _turns.clear()
+    _planner_tasks.clear()
+    _grading_tasks.clear()
+    _reflection_tasks.clear()
+    _reference_tasks.clear()
 
 
 async def _broadcast(outgoing, sender, broadcast=True):
@@ -548,6 +584,8 @@ async def _run_reflection(session_id):
         except Exception as error:
             logger.exception("Reflector failed for session %s", session_id)
             with open_store() as db:
+                if db.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is None:
+                    return
                 db.execute("INSERT INTO reflector_failures (session_id, message) VALUES (?, ?) "
                            "ON CONFLICT(session_id) DO UPDATE SET message = excluded.message",
                            (session_id, f"Session review is missing: {error}"))
@@ -567,9 +605,16 @@ async def _run_feedback(session_id, note_id):
             await _broadcast([state], None)
         except Exception as error:
             logger.exception("Reflector feedback failed for note %s", note_id)
+            message = f"Feedback review failed; your note was saved: {error}"
+            with open_store() as db:
+                if db.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is None:
+                    return
+                db.execute("INSERT INTO recap_feedback_failures (session_id, message) VALUES (?, ?) "
+                           "ON CONFLICT(session_id) DO UPDATE SET message = excluded.message",
+                           (session_id, message))
+                bullets = json.loads(db.execute("SELECT recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
             await _broadcast([{"type": "recap_state", "session_id": session_id, "status": "feedback_failed",
-                               "bullets": recap_state(store_path(), session_id)["bullets"],
-                               "message": f"Feedback review failed; your note was saved: {error}"}], None)
+                               "bullets": bullets, "message": message}], None)
 
 
 async def _run_grading(trigger="initial", only_slug=None):
