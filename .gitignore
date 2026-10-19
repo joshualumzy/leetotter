@@ -34,3 +34,6 @@ dist/
 # OS / editor
 .DS_Store
 .vscode/
+
+# Journey transcripts
+journeys/out/
