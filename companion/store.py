@@ -3,6 +3,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -81,6 +82,30 @@ def store_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get("LEETOTTER_DB_PATH") or DEFAULT_DB_PATH).expanduser()
 
 
+SNAPSHOTS_KEPT = 10
+
+
+def snapshot_store(path: str | Path | None, reason: str) -> Path | None:
+    """Copy the store into a snapshots folder beside it, keeping the newest SNAPSHOTS_KEPT; None if there is no store yet."""
+    path = store_path(path)
+    if not path.exists():
+        return None
+    folder = path.parent / f"{path.stem}-snapshots"
+    folder.mkdir(exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = folder / f"{stamp}-{reason}.sqlite3"
+    source = sqlite3.connect(path)
+    copy = sqlite3.connect(target)
+    try:
+        source.backup(copy)
+    finally:
+        copy.close()
+        source.close()
+    for old in sorted(folder.glob("*.sqlite3"))[:-SNAPSHOTS_KEPT]:
+        old.unlink()
+    return target
+
+
 @contextmanager
 def open_store(path: str | Path | None = None):
     """Open the store, creating and migrating it on first use."""
@@ -89,23 +114,35 @@ def open_store(path: str | Path | None = None):
     db = sqlite3.connect(path)
     try:
         db.execute("PRAGMA foreign_keys = ON")
-        with db:
-            db.execute("BEGIN IMMEDIATE")
-            version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > len(MIGRATIONS):
-                raise RuntimeError(f"Database schema version {version} is newer than this companion supports")
-            for index in range(version, len(MIGRATIONS)):
-                for statement in MIGRATIONS[index]:
-                    db.execute(statement)
-                db.execute(f"PRAGMA user_version = {index + 1}")
+        stored = db.execute("PRAGMA user_version").fetchone()[0]
+        snapshot = snapshot_store(path, "before-migration") if 0 < stored < len(MIGRATIONS) else None
+        try:
+            _migrate(db)
+        except Exception as error:
+            if snapshot:
+                raise RuntimeError(f"Migration failed ({error}); the store before it is saved at {snapshot}") from error
+            raise
         yield db
         db.commit()
     finally:
         db.close()
 
 
+def _migrate(db):
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version > len(MIGRATIONS):
+            raise RuntimeError(f"Database schema version {version} is newer than this companion supports")
+        for index in range(version, len(MIGRATIONS)):
+            for statement in MIGRATIONS[index]:
+                db.execute(statement)
+            db.execute(f"PRAGMA user_version = {index + 1}")
+
+
 def reset_progress(path: str | Path | None = None):
-    """Erase everything personal in one transaction; references, fsrs and the catalog stay (SPEC §2)."""
+    """Erase everything personal in one transaction; references, fsrs and the catalog stay (SPEC §2). Snapshots first."""
+    snapshot_store(path, "before-reset")
     with open_store(path) as db:
         db.execute("BEGIN IMMEDIATE")
         for table in PERSONAL_TABLES:

@@ -75,3 +75,59 @@ def test_retired_overrun_events_are_removed_from_an_existing_store(tmp_path):
     with open_store(path) as db:
         kinds = [row[0] for row in db.execute("SELECT type FROM events ORDER BY id")]
     assert kinds == ["session_started", "focus_changed"]
+
+
+def test_snapshot_keeps_the_newest_ten_and_none_without_a_store(tmp_path):
+    from companion.store import snapshot_store
+
+    path = tmp_path / "companion.sqlite3"
+    assert snapshot_store(path, "start") is None
+    with open_store(path) as db:
+        db.execute("INSERT INTO notes (ts, kind, text) VALUES ('2026-01-01', 'preference', 'quiet')")
+    for _ in range(12):
+        last = snapshot_store(path, "start")
+
+    kept = sorted((tmp_path / "companion-snapshots").glob("*.sqlite3"))
+    assert len(kept) == 10 and kept[-1] == last
+    with open_store(last) as db:
+        assert db.execute("SELECT text FROM notes").fetchone()[0] == "quiet"
+
+
+def test_reset_snapshots_first(tmp_path):
+    from companion.store import reset_progress
+
+    path = tmp_path / "companion.sqlite3"
+    with open_store(path) as db:
+        db.execute("INSERT INTO notes (ts, kind, text) VALUES ('2026-01-01', 'preference', 'quiet')")
+    reset_progress(path)
+
+    (snap,) = (tmp_path / "companion-snapshots").glob("*-before-reset.sqlite3")
+    with open_store(snap) as db:
+        assert db.execute("SELECT text FROM notes").fetchone()[0] == "quiet"
+    with open_store(path) as db:
+        assert db.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 0
+
+
+def test_failed_migration_names_the_snapshot_and_leaves_the_store_intact(tmp_path, monkeypatch):
+    import sqlite3
+
+    from companion import store
+
+    path = tmp_path / "companion.sqlite3"
+    with open_store(path) as db:
+        db.execute("INSERT INTO notes (ts, kind, text) VALUES ('2026-01-01', 'preference', 'quiet')")
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA user_version = 10")
+    db.commit()
+    db.close()
+    monkeypatch.setattr(store, "MIGRATIONS", store.MIGRATIONS[:10] + (("SELECT * FROM missing_table",),))
+
+    try:
+        open_store(path).__enter__()
+        raise AssertionError("migration should have failed")
+    except RuntimeError as error:
+        assert "before-migration" in str(error)
+
+    (snap,) = (tmp_path / "companion-snapshots").glob("*-before-migration.sqlite3")
+    assert sqlite3.connect(snap).execute("PRAGMA user_version").fetchone()[0] == 10
+    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == 10

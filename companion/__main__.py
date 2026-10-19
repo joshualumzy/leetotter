@@ -4,11 +4,12 @@ import asyncio
 import os
 
 from companion.socket import serve_companion
-from companion.store import open_store, store_path
+from companion.store import open_store, snapshot_store, store_path
 
 
 def main():
     path = store_path()
+    snapshot_store(path, "start")
     with open_store(path) as db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
     port = int(os.environ.get("LEETOTTER_PORT", "8765"))
