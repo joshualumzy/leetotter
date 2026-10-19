@@ -611,7 +611,7 @@ class SessionCoordinator:
                     catalog_problem = load_catalog().by_slug(slug) or {}
                     solve = {
                         "complexity_due": complexity_question_due(db, session_id=self.session_id, slug=slug),
-                        "followups_forbidden": reference is not None and reference.status == "needs_review",
+                        "followups_forbidden": reference is not None and reference.status == "needs_review" and bool(reference.uncertain),
                         "difficulty": (reference.reference.difficulty if reference is not None
                                        else catalog_problem.get("difficulty")),
                     }
@@ -810,8 +810,9 @@ class SessionCoordinator:
                     "turn_id": turn.turn_id, "slug": turn.slug, "request": turn.request.kind,
                     "press_index": turn.request.press_index, **labels, "reply_text": reply.reply_text,
                     "follow_up_question": reply.follow_up_question, "model": model})
-                if turn.request.kind == "solve":
-                    self._record_solve_followup(db, turn, reply, now)
+                follow_up = reply.follow_up_question
+                if turn.request.kind == "solve" and not self._record_solve_followup(db, turn, reply, now):
+                    follow_up = None
                 if reply.help_kind == "full_solution":
                     events = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id <= ? ORDER BY id",
                                         (turn.session_id, turn.turn_id)).fetchall()
@@ -834,28 +835,31 @@ class SessionCoordinator:
                 except Exception as error:
                     logger.exception("Could not record full-solution miss for turn %s", turn.turn_id)
                     return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id,
-                             "reply_text": reply.reply_text, **labels, "follow_up_question": reply.follow_up_question},
+                             "reply_text": reply.reply_text, **labels, "follow_up_question": follow_up},
                             {"type": "error", "ts": now.isoformat(), "message": f"Could not record the missed attempt: {error}"}]
         finally:
             self._release(turn)
         return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id, "reply_text": reply.reply_text,
-                 **labels, "follow_up_question": reply.follow_up_question}]
+                 **labels, "follow_up_question": follow_up}]
 
     def _record_solve_followup(self, db, turn: Turn, reply, now):
-        """Record the Tutor's follow-up decision, unless the accept was left or the reference is disputed."""
+        """Record the Tutor's follow-up decision, unless the accept was left or disputed labels forbid it.
+        Returns whether a question was recorded, so the panel never shows one the companion doesn't track."""
         if (self.problem is None or self.problem["slug"] != turn.slug or not self.accepted
                 or self.attempt_start is None or turn.turn_id < self.attempt_start):
-            return
-        status = db.execute('SELECT status FROM "references" WHERE problem_key = ?', (turn.slug,)).fetchone()
-        if status is not None and status[0] == "needs_review":
-            return
+            return False
+        stored = load_reference(db, turn.slug)
+        if stored is not None and stored.status == "needs_review" and stored.uncertain:
+            return False
         ts = now.isoformat()
         if reply.follow_up_question:
             ask_followup(db, session_id=turn.session_id, slug=turn.slug, ts=ts,
                          question=reply.follow_up_question, complexity=reply.follow_up_complexity)
-        elif reply.postpone_reason:
+            return True
+        if reply.postpone_reason:
             postpone_complexity(db, session_id=turn.session_id, slug=turn.slug, ts=ts,
                                 reason=reply.postpone_reason)
+        return False
 
     def fail_turn(self, turn: Turn, reason: str, message: str) -> list[dict]:
         """Log a turn that ended without a valid reply and tell the panel; nothing if it already ended."""
