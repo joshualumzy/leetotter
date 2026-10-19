@@ -160,6 +160,25 @@ def test_a_needs_review_reference_forbids_the_faster_line_and_every_follow_up(tm
     assert "make it faster" not in user.lower()
 
 
+def test_a_flagged_reference_with_no_disputed_label_keeps_follow_ups(tmp_path, monkeypatch):
+    path = tmp_path / "db.sqlite3"
+    put_reference(path)
+    with open_store(path) as db:
+        db.execute('UPDATE "references" SET status = ? WHERE problem_key = ?', ("needs_review", MEDIUM))
+    client, _ = models(monkeypatch, path, chunks(json.dumps(solve_reply())))
+
+    async def body(ws):
+        await in_session(ws)
+        await accept(ws)
+        await until(ws, "tutor_start")
+        done, _ = await until(ws, "tutor_done")
+        assert done["follow_up_question"] == QUESTION
+        await followup_state(ws)
+
+    run(path, monkeypatch, client, body)
+    assert len(of_type(path, "followup_asked")) == 1
+
+
 def test_a_postponement_moves_the_complexity_question_to_the_next_first_attempt(tmp_path, monkeypatch):
     path = tmp_path / "db.sqlite3"
     postponed = solve_reply(reply_text="That works.", follow_up_question=None, follow_up_complexity=False,
@@ -287,7 +306,8 @@ def test_a_stale_solve_reply_after_done_does_not_open_a_question(tmp_path, monke
         await ws.send(wire("session_done"))
         await until(ws, "session_state")
         gate.set()
-        await until(ws, "tutor_done")
+        done, _ = await until(ws, "tutor_done")
+        assert done["follow_up_question"] is None
         await until(ws, "session_state")
 
     run(path, monkeypatch, client, body)
