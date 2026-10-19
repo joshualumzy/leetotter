@@ -9,7 +9,7 @@ import pytest
 from websockets.asyncio.client import connect
 
 from companion.model import ModelClient
-from companion.planner import SYSTEM_PROMPT as PLANNER_PROMPT
+from companion.planner import PICKER_PROMPT as PLANNER_PROMPT
 from companion.socket import ALLOWED_ORIGIN, serve_companion
 from tests.test_session import of_type
 

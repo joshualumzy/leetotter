@@ -33,6 +33,7 @@ class RoleConfig:
     roles: dict[str, list[str]]
     timeouts: dict[str, int]
     streaming: dict[str, bool]
+    reasoning_effort: dict[str, str]
     display_names: dict[str, str]
 
 
@@ -58,7 +59,7 @@ def load_roles(path: str | Path = ROLES_PATH) -> RoleConfig:
     for model in {m for models in roles.values() for m in models}:
         if not names.get(model):
             raise ValueError(f"missing display_name for model {model}")
-    return RoleConfig(roles, timeouts, data.get("streaming", {}), names)
+    return RoleConfig(roles, timeouts, data.get("streaming", {}), data.get("reasoning_effort", {}), names)
 
 
 class ModelUnavailable(RuntimeError):
@@ -225,6 +226,8 @@ class ModelClient:
                     "name": schema_class.__name__.lower(), "strict": True, "schema": schema_class.model_json_schema()}}
             elif response_mode == "json_object":
                 kwargs["response_format"] = {"type": "json_object"}
+            if role in self.config.reasoning_effort:
+                kwargs["reasoning_effort"] = self.config.reasoning_effort[role]
             streamed = self.config.streaming.get(role, False)
             if streamed:
                 kwargs.update(stream=True, stream_options={"include_usage": True})
@@ -290,7 +293,7 @@ class ModelClient:
             except ValidationError as error:
                 self._record(role, model, latency_ms, usage, "invalid")
                 if attempt:
-                    raise ValueError(f"{role} reply invalid after retry: {error}") from error
+                    raise ValueError(f"{role} reply invalid after retry: {error}; reply: {content[:500]}") from error
                 request_messages = [*request_messages, {"role": "assistant", "content": content},
                                     {"role": "user", "content": f"Your previous reply failed schema validation. Error: {error}. Return corrected JSON only."}]
                 continue

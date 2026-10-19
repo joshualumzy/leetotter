@@ -1,5 +1,6 @@
 """Planner eligibility, learner context, validated choices, and suggestion lifecycle."""
 
+import difflib
 import json
 import logging
 from dataclasses import dataclass
@@ -17,14 +18,24 @@ logger = logging.getLogger(__name__)
 PLANNER_WAIT = 60
 SHORTLIST_PER_CATEGORY = 3
 
-SYSTEM_PROMPT = """You are Leetotter's Planner. Suggest exactly one eligible problem, by title only, except when the reading is unrelated or unreadable: then pick no problem (slug and reason null) and only talk. Keep your reason internal: never name the suggested problem's category, pattern, or approach before the learner solves it, unless they asked for that category or pattern themselves. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, allowed list, current card, chat, and active steer. Sample categories while evidence is thin, starting with imported history; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Read steering words in context, including the current card and active steer; do not use a phrase table. Decide whether they ask for the next problem, set or extend one steer, clear it, or say something unrelated. A steer has catalog focus ids, direction and a session or until-cleared horizon, and may also carry difficulty levels (Easy, Medium, Hard) and a short note holding the learner's own words; take the shorter session reading if ambiguous. Turn two kinds of difficulty request. A relative one (easier, harder, a bit tougher) is not turned into levels: put no difficulty in the focus, keep their words in the note, and at every pick judge the note against the problem you just gave or the current card, so harder keeps meaning harder than the last one; a topic they also named still goes in the focus (for harder dynamic programming, the focus is dynamic programming and the note says harder). An absolute one puts the level in the focus' difficulties: "only mediums" is Medium with direction more, "no hards" or "no more hards" is Hard with direction fewer (never the other two levels), "more easies" is Easy with direction more; name only topics the learner named (a request about difficulty alone leaves categories and patterns empty), spell topics correctly; anything the parameters cannot express (length, style, taste) goes in the note and the steer is still saved. Always write the reply in English. Reply to the learner in the otter's voice: one or two short, warm sentences that name their topic in their own words so they can see you understood, react to it the way a friendly study buddy would, and lead into the problem you picked. Speak to the learner directly as "you", never about them in the third person. Vary the phrasing every time and never use a fixed template such as "Focusing on X this session". Keep it to two short sentences at most. Do not name the suggested problem (the card already shows it), do not give study advice or lessons, and never repeat the learner's message back word for word. Never reveal a pattern or approach they did not ask for. "Focus on X" or "more X" means direction more; "less X" or "no X" means fewer. The steer label is a short plain name of that focus, such as \"Tries\"; it is the plain restatement, so the reply need not be one. A word you cannot match to a topic, difficulty or problem must be reading unreadable, quoting the word and asking what they meant; never guess it into a steer, even when you have a good guess (offer the guess in the question). If an ask or steer cannot be met within eligibility, say so plainly once and offer the nearest eligible alternative. Reading none is only for requests that are not a chat message; a chat message that is not about practice is unrelated, never none. Set understood to null when reading is none (never the word \"none\"), and to that reply for ask, steer, clear, unreadable or unrelated. For unrelated, just answer the learner as a friendly otter would in one or two short sentences, and do not lead into a problem. Fill ask only when reading is ask (otherwise null), steer only when reading is steer (otherwise null), and named_by_you true only when reading is ask and they named a specific problem (otherwise false). Return structured JSON only."""
+PICKER_PROMPT = """You are Leetotter's Planner. Pick exactly one problem from `allowed`, by slug. Keep the reason short; it is internal and never shown. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, the card, the chat and message, and the active steer. A steer's note holds the learner's own words: honour it, and read a relative word such as harder or easier against the card or the problem they just had. When the learner's words ask for a kind of problem (for example depth-first search), prefer an allowed problem whose patterns fit. Sample categories while evidence is thin, starting with imported history; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Return JSON only: {"slug", "reason"}."""
+
+READER_PROMPT = """You read one chat message from a learner practising coding problems with Leetotter, a friendly study-buddy otter. A problem card may be showing. Return JSON only. You never pick a problem and never say which one comes next.
+reading: ask = they want a kind of problem or the next one, once (a topic, a difficulty, a named problem, or just "another"); steer = they want future suggestions shaped, as a standing preference (more or less of something, a difficulty, a style); clear = back to normal, drop the steer; unreadable = a word you cannot match to a category, difficulty or problem (never guess it, even when you have a good guess: offer the guess in the question); unrelated = nothing to do with practice (greeting, small talk, a question about you).
+reply: always, in English: one or two short, warm sentences in the otter's voice, to "you", varied every time. For ask, steer and clear, name their topic in their own words so they see you understood, and say you'll find something; for unreadable, quote the word and ask what they meant; for unrelated, answer them like a friendly buddy in a line or two; if they ask to be taught something, say the Tutor helps with that while they work on a problem. Never mention a pattern or approach they did not name, give no lessons, and never repeat their message word for word.
+more_categories, fewer_categories: only the catalog categories they named or clearly meant ("DFS" is Graphs and Trees; "dynamic programming" is both dynamic programming categories). A request combining both ("more trees, fewer arrays") fills both groups. more_difficulties, fewer_difficulties: levels they named: "only mediums" is more Medium; "no hards" or "no more hards" is fewer Hard; "more easies" is more Easy. A difficulty request alone leaves the categories empty. A relative word (easier, harder, a bit tougher) for an ask becomes a concrete level using the card's difficulty; for a steer it gets no level and stays in the note.
+note: for a steer, the learner's own words for anything the fields cannot express (length, style, taste, a relative word); otherwise "". A wish about length, style or taste ("something short", "a quick one") is a steer saved with that note, never unreadable. label: for a steer, a short plain name such as "Tries"; otherwise "". horizon: for a steer, "session" unless they say it should last (always, until I say, from now on); take "session" when unsure; otherwise "session". named_title: for an ask that names one specific problem, its title as they said it; otherwise "". An ask with no category, difficulty or title is only for plain "next one" or "another" requests; if it holds a word you cannot map, it is unreadable."""
+
+
+Category = Literal[CATEGORIES]
+Difficulty = Literal["Easy", "Medium", "Hard"]
 
 
 class Focus(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     categories: list[str]
     patterns: list[str]
-    difficulties: list[Literal["Easy", "Medium", "Hard"]]
+    difficulties: list[Difficulty]
     direction: Literal["more", "fewer"]
 
     @model_validator(mode="after")
@@ -48,45 +59,53 @@ class SteerReading(BaseModel):
         return self
 
 
+class Reading(BaseModel):
+    """What the Reader model returns for a chat message: flat, every field always present, nothing that must agree."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    reading: Literal["ask", "steer", "clear", "unreadable", "unrelated"]
+    reply: str = Field(min_length=1)
+    more_categories: list[Category]
+    more_difficulties: list[Difficulty]
+    fewer_categories: list[Category]
+    fewer_difficulties: list[Difficulty]
+    horizon: Literal["session", "until_cleared"]
+    label: str
+    note: str
+    named_title: str
+
+
+class Pick(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    slug: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 # Readings that only talk: no problem is picked and the current card stays.
 TALK_ONLY = {"unreadable", "unrelated"}
 
 
-class PlannerReply(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    slug: str | None
-    reason: str | None
+@dataclass(frozen=True)
+class PlannerReply:
+    """The decision ask_planner hands to Planner.answer, assembled by code from the Reader and Picker replies."""
     reading: Literal["none", "ask", "steer", "clear", "unreadable", "unrelated"]
-    ask: list[Focus] | None
-    steer: SteerReading | None
-    understood: str | None
-    named_by_you: bool
-
-    @model_validator(mode="after")
-    def consistent(self):
-        if self.reading not in TALK_ONLY and not (self.slug and self.reason):
-            raise ValueError("a reading that picks a problem needs a slug and a reason")
-        if self.reading == "ask":
-            if self.ask is None or (not self.ask and not self.named_by_you):
-                raise ValueError("ask needs a focus or named problem")
-        elif self.ask is not None or self.named_by_you:
-            raise ValueError("ask fields only apply to an ask")
-        if (self.reading == "steer") != (self.steer is not None):
-            raise ValueError("steer reading needs steer data")
-        if (self.reading in {"ask", "steer", "clear", "unreadable", "unrelated"}) != bool(self.understood):
-            raise ValueError("reading needs the appropriate understood line")
-        return self
+    understood: str | None = None
+    slug: str | None = None
+    steer: SteerReading | None = None
 
 
 @dataclass(frozen=True)
 class PlannerRequest:
+    """Everything a Planner call reads, snapshotted when the request is made: ask_planner runs on another thread."""
     trigger: str
     session_id: int | None
     started: datetime
     allowed: list[dict]
-    messages: list[dict]
-    known_patterns: frozenset[str]
-    learner_text: str = ""
+    context: dict
+    summary: dict
+    card: dict | None
+    chat: tuple[str, ...]
+    steer: dict | None
+    message: str | None = None
 
 
 def _reviews(db):
@@ -263,59 +282,102 @@ def active_steer(db, *, session_id):
     return None
 
 
-def _validate_reply(reply, request):
-    if request.trigger == "chat" and reply.reading == "none" or request.trigger != "chat" and reply.reading != "none":
-        raise ValueError("Reading does not match request: a chat message is ask, steer, clear, unreadable or unrelated, never none; any other request is none")
-    catalog = load_catalog()
-    known_patterns = request.known_patterns
-    for focus in (reply.ask or []) + (reply.steer.focus if reply.steer else []):
-        if any(c not in CATEGORIES for c in focus.categories) or any(p not in known_patterns for p in focus.patterns):
-            raise ValueError("Unknown focus id")
-    if reply.reading in TALK_ONLY:
-        return
-    allowed = {c["slug"]: c for c in request.allowed}
-    entry = catalog.by_slug(reply.slug)
-    if reply.slug not in allowed and not (request.trigger == "chat" and reply.named_by_you and entry and not entry["locked"]):
-        raise ValueError("Suggested problem is not eligible")
-    if reply.reading == "ask" and reply.ask and reply.slug in allowed:
-        satisfying = [c for c in request.allowed if all(_matches(c, f.model_dump()) for f in reply.ask)]
-        if satisfying and reply.slug not in {c["slug"] for c in satisfying}:
-            raise ValueError("Direct ask has an eligible match")
+def _focuses(reading):
+    return [{"categories": list(categories), "patterns": [], "difficulties": list(difficulties), "direction": direction}
+            for direction, categories, difficulties in (
+                ("more", reading.more_categories, reading.more_difficulties),
+                ("fewer", reading.fewer_categories, reading.fewer_difficulties))
+            if categories or difficulties]
 
 
-def _reveal(reply, request):
-    entry = load_catalog().by_slug(reply.slug)
-    if not (reply.understood and entry):
-        return None
-    allowed = {c["slug"]: c for c in request.allowed}
-    volunteered = [entry["category"], *allowed.get(reply.slug, {}).get("patterns", [])]
-    requested = [name for f in (reply.ask or []) + (reply.steer.focus if reply.steer else [])
-                 for name in [*f.categories, *f.patterns]]
-    learner = request.learner_text.lower().replace("-", " ")
-    for name in volunteered:
-        spoken = name.lower().replace("-", " ")
-        if spoken not in [r.lower().replace("-", " ") for r in requested] and spoken in reply.understood.lower() and spoken not in learner:
-            return f"Understood line names '{name}', which the learner did not ask for; rewrite it without that word"
+def _pool(allowed, focuses):
+    """The eligible problems meeting every focus, and whether any did; with none, the whole eligible list."""
+    matched = [c for c in allowed if all(_matches(c, f) for f in focuses)]
+    return (matched, True) if matched or not focuses else (allowed, False)
+
+
+def _spoken(title):
+    return "".join(ch for ch in title.lower() if ch.isalnum())
+
+
+def _named(title):
+    """The unlocked catalog problem the learner named, or the closest titles to ask about."""
+    entries = [e for e in load_catalog().entries if not e["locked"]]
+    spoken = _spoken(title)
+    for entry in entries:
+        if _spoken(entry["title"]) == spoken:
+            return entry, []
+    close = difflib.get_close_matches(spoken, [_spoken(e["title"]) for e in entries], n=1, cutoff=.6)
+    return None, [e["title"] for e in entries if _spoken(e["title"]) in close]
+
+
+def _pick_messages(request, pool, steer):
+    content = {**request.context, "allowed": shortlist(pool, request.summary, None), "card": request.card,
+               "chat": list(request.chat), "steer": steer, "message": request.message}
+    return [{"role": "system", "content": PICKER_PROMPT}, {"role": "user", "content": json.dumps(content)}]
+
+
+def _pick(client, request, pool, steer, valid):
+    """The Picker's slug, offered `pool` and accepted from `valid`; None when it can't produce one."""
+    messages = _pick_messages(request, pool, steer)
+    slugs = {c["slug"] for c in valid}
+    for _ in range(2):
+        pick = client.call_role("planner", messages, Pick)
+        if pick.slug in slugs:
+            return pick.slug
+        messages = [*messages, {"role": "assistant", "content": pick.model_dump_json()},
+                    {"role": "user", "content": f"{pick.slug} is not in allowed. Choose one slug from allowed."}]
     return None
 
 
+def _read(client, request):
+    content = {"today": request.started.date().isoformat(), "message": request.message, "earlier_chat": list(request.chat[:-1]),
+               "card": {"title": request.card["title"], "difficulty": request.card["difficulty"]} if request.card else None,
+               "steer": request.steer, "categories": list(CATEGORIES)}
+    return client.call_role("planner", [{"role": "system", "content": READER_PROMPT},
+                                        {"role": "user", "content": json.dumps(content)}], Reading)
+
+
 def ask_planner(client, request):
-    messages = request.messages
-    for attempt in range(2):
-        reply = client.call_role("planner", messages, PlannerReply)
-        try:
-            _validate_reply(reply, request)
-        except ValueError as exc:
-            if attempt:
-                raise ValueError(f"Planner reply invalid after retry: {exc}") from exc
-            problem = str(exc)
-        else:
-            problem = _reveal(reply, request)
-            if not problem or attempt:
-                return reply
-        messages = [*messages, {"role": "assistant", "content": reply.model_dump_json()},
-                    {"role": "user", "content": f"Invalid reply: {problem}. Correct it."}]
-    raise AssertionError("unreachable")
+    if request.trigger != "chat":
+        pool, _ = _pool(request.allowed, request.steer["focus"] if request.steer else [])
+        slug = _pick(client, request, pool, request.steer, request.allowed)
+        if slug is None:
+            raise ValueError("Planner picked a problem that is not eligible, twice")
+        return PlannerReply("none", slug=slug)
+    reading = _read(client, request)
+    line = reading.reply.strip()
+    if reading.reading in TALK_ONLY:
+        return PlannerReply(reading.reading, line)
+    steer, focuses = request.steer, _focuses(reading)
+    if reading.reading == "steer":
+        note = reading.note.strip()
+        if not focuses and not note:
+            return PlannerReply("unreadable", line)
+        steer = {"focus": focuses, "horizon": reading.horizon, "label": reading.label.strip() or note[:40] or "Your focus", "note": note}
+    elif reading.reading == "clear":
+        steer, focuses = None, []
+    elif reading.named_title.strip():
+        entry, close = _named(reading.named_title.strip())
+        if entry:
+            return PlannerReply("ask", line, entry["slug"])
+        guess = f" Did you mean {close[0]}?" if close else ""
+        return PlannerReply("unreadable", f"I couldn't find a problem called \"{reading.named_title.strip()}\".{guess}")
+    elif not focuses and steer:
+        focuses = steer["focus"]
+    pool, fits = _pool(request.allowed, focuses)
+    if not fits:
+        line += " Nothing eligible fits that right now, so this is the closest I have."
+    try:
+        # A direct ask for something eligible must be met; otherwise a due retry outside the focus stays pickable.
+        slug = _pick(client, request, pool, steer, pool if reading.reading == "ask" and focuses and fits else request.allowed)
+    except Exception:
+        logger.exception("Planner picker failed after a valid reading; falling back to the code ranking")
+        slug = None
+    if slug is None:
+        slug = code_ranked(pool, request.summary)["slug"]
+        line += " I couldn't choose myself, so this is the top match from my list."
+    return PlannerReply(reading.reading, line, slug, SteerReading.model_validate(steer) if reading.reading == "steer" else None)
 
 
 class Planner:
@@ -338,7 +400,6 @@ class Planner:
             preferences = [t for (t,) in db.execute("SELECT text FROM notes WHERE kind = 'preference' ORDER BY id DESC LIMIT 20")]
             attempts = _session_attempts(db, session_id)
             unfinished = _unfinished(db)
-            known_patterns = frozenset(p for patterns in _patterns(db).values() for p in patterns)
         catalog = load_catalog()
         session_problems = []
         for a in attempts:
@@ -352,14 +413,10 @@ class Planner:
                                "recent": v["recent"], "recent_dated": v["recent_dated"],
                                "done": v["done"], "imported": v["imported"]}
                     for category, v in summary.items()}
-        offered = allowed if trigger == "chat" else shortlist(allowed, summary, steer) if allowed else []
-        content = {"today": now.date().isoformat(), "allowed": offered, "learner_summary": rendered,
-                   "session_problems": session_problems, "imported_history": imported, "hypotheses": hypotheses,
-                   "preferences": preferences, "unfinished": unfinished,
-                   "card": self.card, "chat": self._chat, "steer": steer, "message": text}
-        request = PlannerRequest(trigger, session_id, now, allowed,
-                                 [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": json.dumps(content)}],
-                                 known_patterns, learner_text=" ".join(self._chat))
+        context = {"today": now.date().isoformat(), "learner_summary": rendered, "session_problems": session_problems,
+                   "imported_history": imported, "hypotheses": hypotheses, "preferences": preferences, "unfinished": unfinished}
+        request = PlannerRequest(trigger, session_id, now, allowed, context, summary, dict(self.card) if self.card else None,
+                                 tuple(self._chat), steer, text)
         self._waiting = request
         return request
 

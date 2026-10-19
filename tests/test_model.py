@@ -83,8 +83,9 @@ def test_invalid_and_empty_reply_retry_with_error_and_log_every_attempt(tmp_path
 
 def test_final_invalid_reply_is_loud_and_logged(tmp_path, monkeypatch):
     instance, _, path = model_client(tmp_path, monkeypatch, "{}", "{}")
-    with pytest.raises(ValueError, match="answer"):
+    with pytest.raises(ValueError, match="answer") as raised:
         instance.call_role("tutor", message(), Reply)
+    assert "reply: {}" in str(raised.value)  # the raw reply is kept so a failure can be diagnosed
     assert [row[-1] for row in rows(path)] == ["invalid", "invalid"]
 
 

@@ -5,14 +5,11 @@ Interface (companion/planner.py) used by this file, beyond tests/test_planner_ru
 
     PLANNER_WAIT = 60  # seconds without an answer before the code-ranked pick is shown (start and between)
 
-    PlannerReply (pydantic, strict): {slug, reason, reading, ask, steer, understood, named_by_you}; see
-        tests/test_planner_steer.py. `reason` is internal and never sent to the panel.
-
     ask_planner(client, request) -> PlannerReply
-        One blocking Planner call: client.call_role("planner", request.messages, PlannerReply, ...), then
-        code's checks against the request (slug allowed or named by you, focus ids in the catalog, never naming
-        the suggested problem's category or pattern unless you asked for it). A failed check is retried once
-        with the error shown to the model; a second failure raises ValueError.
+        Blocking Planner calls on a worker thread: the Picker alone (client.call_role("planner", messages,
+        Pick)) for start, between, swap and clear; for chat, the Reader first (Reading), then the Picker over the
+        eligible problems that fit what it read. See tests/test_planner_steer.py. `reason` is internal and never
+        sent to the panel.
 
     class Planner(db_path, clock)
         One per companion; the socket calls it and runs ask_planner in a worker thread.
@@ -32,8 +29,9 @@ Interface (companion/planner.py) used by this file, beyond tests/test_planner_ru
         tick() -> list[dict]                           the code-ranked card once PLANNER_WAIT has passed
 
     PlannerRequest: trigger ("start" | "between" | "swap" | "chat" | "clear"), session_id, started (the clock
-        when planning began), allowed (allowed_next's list at that moment), messages (the last one's content
-        is JSON with at least "allowed", "session_problems", "learner_summary" and "steer").
+        when planning began), allowed (allowed_next's list at that moment), context (the Picker's JSON: session_problems,
+        learner_summary and the rest), summary, card, chat, steer and message (a chat message's text), all
+        snapshotted when the request is made because ask_planner runs on another thread.
 
     A card is {"type": "suggestion", "ts", "slug", "title", "difficulty", "cap_minutes", "steer" (the active
     steer's label or None), "message" (a line for you, or None), "source" ("planner" | "fallback")}: by title
@@ -46,7 +44,8 @@ import logging
 import pytest
 
 from companion.grading import grade_pending
-from companion.planner import PLANNER_WAIT, SHORTLIST_PER_CATEGORY, Planner, allowed_next, ask_planner
+from companion.planner import (PLANNER_WAIT, SHORTLIST_PER_CATEGORY, Pick, Planner, Reading, _pick_messages, _pool,
+                               allowed_next, ask_planner)
 from companion.store import open_store
 from companion.tutor import SYSTEM_PROMPT
 from tests.test_grading import MEDIUM, FakeGraders, Run, put_reference
@@ -58,27 +57,61 @@ REASON = "Little evidence on this category yet; sample it."
 
 
 class RecordedPlanner:
-    """Stands in for ModelClient: recorded Planner replies (or failures), validated like the real client."""
+    """Stands in for ModelClient. Each recorded reply (from reply(), or an exception) describes what the model decides for one
+    request: its reading, the steer or ask it read, and the problem(s) it picks, one per Picker call. The stand-in serves it as
+    the Reader's reply and then as the Picker's, each validated against that call's own schema like the real client."""
 
     def __init__(self, *replies):
         self.replies = list(replies)
         self.calls = []
+        self.current = None
+        self.picked = 0
+        self.last_pick = None
 
     def call_role(self, role, messages, schema_class, **kwargs):
         self.calls.append((role, messages))
-        reply = self.replies.pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        return schema_class.model_validate_json(json.dumps(reply))
+        retry = self.last_pick is not None and len(messages) > len(self.last_pick) and messages[:len(self.last_pick)] == self.last_pick
+        if schema_class is Reading or self.current is None or (schema_class is Pick and not retry and self.picked):
+            self.current, self.picked = self.replies.pop(0), 0
+        decided = self.current
+        if isinstance(decided, Exception):
+            self.current = None
+            raise decided
+        if schema_class is Pick:
+            picks = decided["picks"]
+            wire = {"slug": picks[min(self.picked, len(picks) - 1)], "reason": decided["reason"]}
+            self.picked += 1
+            self.last_pick = messages
+        else:
+            wire = reading_wire(decided)
+        return schema_class.model_validate_json(json.dumps(wire))
 
 
-def reply(slug, reading="none", *, ask=None, steer=None, understood=None, named=False):
-    return {"slug": slug, "reason": REASON, "reading": reading, "ask": ask, "steer": steer,
-            "understood": understood, "named_by_you": named}
+def focus_groups(focuses):
+    groups = {"more_categories": [], "more_difficulties": [], "fewer_categories": [], "fewer_difficulties": []}
+    for focus in focuses:
+        groups[f"{focus['direction']}_categories"] += focus["categories"]
+        groups[f"{focus['direction']}_difficulties"] += focus["difficulties"]
+    return groups
+
+
+def reading_wire(decided):
+    steer = decided["steer"]
+    focuses = steer["focus"] if steer else decided["ask"] or []
+    return {"reading": decided["reading"], "reply": decided["understood"] or "Sure.", **focus_groups(focuses),
+            "horizon": steer["horizon"] if steer else "session", "label": steer["label"] if steer else "",
+            "note": steer["note"] if steer else "", "named_title": decided.get("named_title", "")}
+
+
+def reply(slug, reading="none", *, ask=None, steer=None, understood=None, named_title="", picks=None):
+    return {"picks": picks or [slug], "reason": REASON, "reading": reading, "ask": ask, "steer": steer,
+            "understood": understood, "named_title": named_title}
 
 
 def context(request):
-    return json.loads(request.messages[-1]["content"])
+    """What the Picker reads for this request (a chat request: as if the Reader found no focus)."""
+    pool, _ = _pool(request.allowed, request.steer["focus"] if request.steer else [])
+    return json.loads(_pick_messages(request, pool, request.steer)[-1]["content"])
 
 
 def cards(out):
@@ -259,7 +292,7 @@ def test_chat_goes_to_the_planner_while_a_card_is_shown_or_being_chosen(tmp_path
     shown = card(answered(planner, steered, reply(HOUSE_ROBBER, "ask", ask=[{"categories": ["1-D Dynamic Programming"], "patterns": [], "difficulties": [], "direction": "more"}], understood="A dynamic programming problem next.")))
     talk = planner.chat(coord.session_id, "more dynamic programming")
     assert talk.trigger == "chat" and talk.session_id == coord.session_id
-    assert "more dynamic programming" in talk.messages[-1]["content"]
+    assert talk.message == "more dynamic programming"
     assert planner.card == shown  # the card stays up while the Planner reads the words
     planner.go()
     assert planner.chat(coord.session_id, "more dynamic programming") is None
@@ -270,7 +303,7 @@ def test_mid_problem_the_tutor_says_it_will_take_steering_at_the_next_suggestion
     assert "next suggestion" in SYSTEM_PROMPT.lower()
 
 
-def test_the_planner_never_names_the_suggested_problems_pattern_unless_you_asked_for_it(tmp_path):
+def test_the_reader_never_sees_the_problems_so_its_line_cannot_name_the_pick(tmp_path):
     coord, _, path, planner = setup(tmp_path)
     with open_store(path) as db:
         reference(db, PERMUTATION, ["sliding-window"])
@@ -278,14 +311,11 @@ def test_the_planner_never_names_the_suggested_problems_pattern_unless_you_asked
     coord.handle(start_msg())
     answered(planner, request, reply(HOUSE_ROBBER))
     talk = planner.chat(coord.session_id, "something different please")
-    blurted = reply(PERMUTATION, "unreadable", understood="Not sure what you meant; here's a sliding window one.")
-    clean = reply(PERMUTATION, "unreadable", understood="Not sure what you meant; can you say it another way?")
-    client = RecordedPlanner(blurted, clean)
-    assert ask_planner(client, talk).understood == clean["understood"]
-    assert len(client.calls) == 2
-    asked = reply(PERMUTATION, "ask", ask=[{"categories": [], "patterns": ["sliding-window"], "difficulties": [], "direction": "more"}],
-                  understood="A sliding window problem next.")
-    assert ask_planner(RecordedPlanner(asked), talk).slug == PERMUTATION
+    client = RecordedPlanner(reply(PERMUTATION, "ask", understood="Sure, another one coming up."))
+    ask_planner(client, talk)
+    reader = json.loads(client.calls[0][1][-1]["content"])
+    assert set(reader) == {"today", "message", "earlier_chat", "card", "steer", "categories"}
+    assert set(reader["card"]) == {"title", "difficulty"}
 
 
 # --- across sessions --------------------------------------------------------------------------------

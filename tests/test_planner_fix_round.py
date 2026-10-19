@@ -52,19 +52,6 @@ def test_imported_same_pattern_problem_does_not_hold_back_retry(tmp_path):
     assert LONGEST_SUB in allowed
 
 
-def test_real_pattern_is_valid_focus_when_no_problem_with_it_is_eligible(tmp_path):
-    def prepare(db):
-        reference(db, PERMUTATION, ["sliding-window"])
-        review(db, PERMUTATION, "good", NOW - timedelta(days=10))
-    shown = Shown(tmp_path, prepare)
-    request = shown.planner.chat(shown.session_id, "more sliding window")
-    raw = reply(COIN_CHANGE, "steer", steer=steering("more sliding window", focus(patterns=["sliding-window"])),
-                understood="No sliding window problem is eligible now, so here is a nearby one.")
-    result = ask_planner(RecordedPlanner(raw), request)
-    shown.planner.answer(request, result)
-    assert shown.steer()["focus"][0]["patterns"] == ["sliding-window"]
-
-
 def test_start_card_steer_belongs_to_new_session_after_swap_and_chat(tmp_path):
     coordinator, clock, path = make(tmp_path)
     planner = Planner(path, clock)

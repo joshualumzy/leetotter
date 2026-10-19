@@ -8,6 +8,7 @@ import companion.socket as socket
 from companion.planner import Planner
 from companion.session import SessionCoordinator
 from companion.store import open_store
+from tests.test_planner_flow import RecordedPlanner, reply
 from tests.test_session import msg, opened, submit
 
 
@@ -31,20 +32,16 @@ class Connection:
         self.sent.append(json.loads(raw))
 
 
-class RecordedModels:
+class RecordedModels(RecordedPlanner):
+    """Scripted Planner decisions: a slug string is a plain pick, a dict a reply() description."""
+
     def __init__(self, replies):
-        self.replies = iter(replies)
+        super().__init__(*[reply(r) if isinstance(r, str) else r for r in replies])
 
     def call_role(self, role, messages, schema, **kwargs):
         assert role == "planner"
         json.loads(messages[-1]["content"])
-        reply = next(self.replies)
-        if isinstance(reply, Exception):
-            raise reply
-        if isinstance(reply, str):
-            reply = {"slug": reply, "reading": "none", "ask": None, "steer": None,
-                     "understood": None, "named_by_you": False}
-        return schema.model_validate({"reason": "internal category reason", **reply})
+        return super().call_role(role, messages, schema, **kwargs)
 
 
 def setup(tmp_path, monkeypatch, slugs):
@@ -98,11 +95,10 @@ def test_swap_and_clear_are_routed_to_planner(tmp_path, monkeypatch):
 
 def test_card_chat_stores_steer_and_clear_replaces_without_swap(tmp_path, monkeypatch):
     async def scenario():
-        setup(tmp_path, monkeypatch, ["house-robber", {
-            "slug": "coin-change", "reading": "steer", "ask": None,
-            "steer": {"label": "more dynamic programming", "horizon": "session", "focus": [{
-                "categories": ["1-D Dynamic Programming"], "patterns": [], "difficulties": [], "direction": "more"}], "note": ""},
-            "understood": "More dynamic programming this session.", "named_by_you": False}, "climbing-stairs"])
+        dp = {"categories": ["1-D Dynamic Programming"], "patterns": [], "difficulties": [], "direction": "more"}
+        setup(tmp_path, monkeypatch, ["house-robber", reply(
+            "coin-change", "steer", understood="More dynamic programming this session.",
+            steer={"label": "more dynamic programming", "horizon": "session", "focus": [dp], "note": ""}), "climbing-stairs"])
         connection = Connection([msg("hello"), msg("session_start"),
                                  msg("planner_chat", {"text": "more DP"}), msg("planner_clear")])
         await socket._handle(connection)

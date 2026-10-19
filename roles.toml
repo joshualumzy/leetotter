@@ -15,6 +15,9 @@ reflector = 180
 reference_writer = 180
 checker = 180
 
+[reasoning_effort]
+planner = "low"
+
 [streaming]
 tutor = true
 

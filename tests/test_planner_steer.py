@@ -5,30 +5,22 @@ readings: what code does follows the reading, never keywords in the text.
 Interface (companion/planner.py) used by this file, beyond tests/test_planner_rules.py and
 tests/test_planner_flow.py:
 
-    PlannerReply (pydantic, strict, extra fields forbidden):
-        slug: str | None              the suggested problem; None for unrelated and unreadable (no pick)
-        reason: str | None            internal, never shown; None with no pick
-        reading: "none" | "ask" | "steer" | "clear" | "unreadable" | "unrelated"
-            none: no words to read (start, between, swap, clear); the others answer a chat message:
-            ask: a request for the next problem only, never stored; steer: a focus to store; clear: back to
-            normal; unreadable: words it couldn't read or that name nothing in the catalog; unrelated: not
-            about practice
-        ask: list[Focus] | None       required for "ask" (empty only when named_by_you), else None
-        steer: SteerReading | None    required for "steer", else None
-        understood: str | None        the one line it says to you; required for ask, steer, clear,
-                                      unreadable and unrelated, None for none
-        named_by_you: bool            you named this problem yourself; only with reading "ask"
-    Focus: {categories: [catalog category names], patterns: [pattern ids from stored references],
-            difficulties: ["Easy" | "Medium" | "Hard"], direction: "more" | "fewer"}, naming at least one
-        category, pattern or difficulty
-    SteerReading: {focus: [Focus, ...] (at least one), horizon: "session" | "until_cleared", label: str,
-            note: str}
-
-    Checks in ask_planner beyond the schema: categories are catalog categories and patterns are known
-    pattern ids; the slug is in request.allowed unless named_by_you on a chat request (then any unlocked
-    catalog problem); a reading other than "none" only on a chat request, "none" never on one; for an ask
-    that some allowed problem meets, the slug meets it; the understood line never names the suggested
-    problem's category or pattern (an id's hyphens read as spaces) unless the ask or steer names it.
+    A chat message takes two small model calls with code between them (ask_planner):
+      1. the Reader: Reading (pydantic, strict, flat, every field always present): reading ("ask" | "steer" |
+         "clear" | "unreadable" | "unrelated"), reply (the otter's line, always), more_categories,
+         more_difficulties, fewer_categories, fewer_difficulties, horizon, label, note, named_title. Only the
+         schema is checked (catalog categories, levels, a non-empty reply); code normalises the rest and never
+         rejects on how fields agree: no focus and no note on a steer is "unreadable"; an empty label gets one.
+         It never sees the problem list, so its line cannot name the pick.
+      2. code filters the eligible problems to the focus (a named_title is resolved by code against catalog
+         titles, no Picker needed; a near miss asks "did you mean"; nothing fitting adds one plain sentence),
+         then the Picker (Pick: slug, reason) chooses from that pool. A slug outside the allowed set is retried
+         once; if the Picker still fails after a good reading, code ranks the pool and says so.
+      Other triggers (start, between, swap, clear) are the Picker alone.
+    ask_planner returns PlannerReply (a plain dataclass assembled by code): reading, understood, slug, steer.
+    SteerReading: {focus: [Focus, ...], horizon: "session" | "until_cleared", label: str (non-empty),
+            note: str}; a steer needs a focus or a note. Focus: {categories, patterns (always empty now; old
+            stored steers may have them), difficulties, direction: "more" | "fewer"}.
 
     active_steer(db, *, session_id) -> dict | None
         The one active steer: {"label", "focus" (Focus dicts), "horizon", ...}. A "session" steer is active
@@ -48,7 +40,8 @@ from datetime import timedelta
 import pytest
 from pydantic import ValidationError
 
-from companion.planner import Planner, PlannerReply, active_steer, allowed_next, ask_planner, code_ranked, learner_summary, shortlist
+from companion.planner import (Pick, Planner, _pick_messages, active_steer, allowed_next, ask_planner, code_ranked,
+                               learner_summary, shortlist)
 from companion.store import open_store
 from tests.test_planner_flow import RecordedPlanner, answered, card, context, notes, reply
 from tests.test_planner_rules import (CATALOG, CLIMBING, COIN_CHANGE, GOOD_NODES, HOUSE_ROBBER, ISLANDS, LEVEL_ORDER,
@@ -102,66 +95,19 @@ class Shown:
         return request, card(answered(self.planner, request, reply(slug)))
 
 
-# --- schema -----------------------------------------------------------------------------------------
-
-@pytest.mark.parametrize("bad", [
-    reply(COIN_CHANGE, "steer", understood="More DP."),                                  # steer missing
-    reply(COIN_CHANGE, "steer", steer=MORE_DP),                                          # says nothing
-    reply(COIN_CHANGE, "none", understood="Here you go."),                               # a line with no words read
-    reply(COIN_CHANGE, "ask", understood="A DP one next."),                              # ask missing
-    reply(COIN_CHANGE, "ask", ask=[], understood="A DP one next."),                      # empty ask, not named
-    reply(COIN_CHANGE, "none", named=True),                                              # named outside an ask
-    reply(COIN_CHANGE, "clear", steer=MORE_DP, understood="Back to normal."),            # clear carrying a steer
-    reply(COIN_CHANGE, "steer", steer=steering("nothing", focus()), understood="Hm."),   # focus names nothing
-    reply(COIN_CHANGE, "steer", steer=steering("x", focus(difficulties=["Expert"])), understood="x"),
-    reply(COIN_CHANGE, "steer", steer=steering("x", focus(DP), horizon="week"), understood="x"),
-    {**reply(COIN_CHANGE), "extra": 1},
-])
-def test_the_planners_reply_is_checked_against_its_schema(bad):
-    with pytest.raises(ValidationError):
-        PlannerReply.model_validate_json(json.dumps(bad))
-
-
 # --- code validates the reading ---------------------------------------------------------------------
 
 def rejected(shown, text, bad):
+    """The model's decision is refused: the Reader's reply fails its schema, or no pick is ever eligible."""
     request = shown.planner.chat(shown.session_id, text)
-    client = RecordedPlanner(bad, bad)
     with pytest.raises(ValueError):
-        ask_planner(client, request)
-    assert len(client.calls) == 2  # one retry with the error shown, then a loud failure
-    assert len(client.calls[1][1]) > len(client.calls[0][1])
+        ask_planner(RecordedPlanner(bad, bad), request)
 
 
 def test_a_focus_must_name_catalog_categories(tmp_path):
     shown = Shown(tmp_path)
     rejected(shown, "more DP", reply(COIN_CHANGE, "steer", understood="More dynamic programming.",
                                      steer=steering("more dynamic programming", focus("Dynamic Programming"))))
-
-
-def test_a_focus_must_name_known_patterns(tmp_path):
-    shown = Shown(tmp_path, lambda db: reference(db, PERMUTATION, ["sliding-window"]))
-    rejected(shown, "more memo stuff", reply(COIN_CHANGE, "steer", understood="More memoisation.",
-                                             steer=steering("more memoisation", focus(patterns=["memoisation"]))))
-
-
-def test_a_pattern_the_learner_named_is_not_a_reveal(tmp_path):
-    shown = Shown(tmp_path, lambda db: reference(db, COIN_CHANGE, ["dynamic programming"]))
-    out = shown.say("can I do harder dynamic programming",
-                    reply(COIN_CHANGE, "steer", steer=steering("harder dynamic programming", focus(DP, difficulties=["Hard"])),
-                          understood="A dynamic programming problem it is."))
-    assert card(out)["message"] == "A dynamic programming problem it is."
-
-
-def test_a_pattern_the_learner_did_not_name_is_a_reveal_naming_the_word(tmp_path):
-    shown = Shown(tmp_path, lambda db: reference(db, COIN_CHANGE, ["dynamic programming"]))
-    request = shown.planner.chat(shown.session_id, "can I do harder DP")
-    bad = reply(COIN_CHANGE, "steer", steer=steering("harder DP", focus(DP, difficulties=["Hard"])),
-                understood="A dynamic programming problem it is.")
-    client = RecordedPlanner(bad, bad)
-    assert ask_planner(client, request).understood == "A dynamic programming problem it is."
-    assert len(client.calls) == 2
-    assert "Understood line names 'dynamic programming'" in client.calls[1][1][-1]["content"]
 
 
 def test_a_normal_understood_line_is_accepted(tmp_path):
@@ -216,31 +162,29 @@ def test_a_steer_never_makes_an_ineligible_problem_eligible(tmp_path):
         review(db, LEVEL_ORDER, "good", NOW - timedelta(days=30), first=True)  # done on your own
         steady(db, "Trees")
     shown = Shown(tmp_path, prepare)
-    rejected(shown, "focus on trees", reply(LEVEL_ORDER, "steer", understood="More trees.",
-                                            steer=steering("more trees", focus("Trees"))))
+    out = shown.say("focus on trees", reply(LEVEL_ORDER, "steer", understood="More trees.",
+                                            steer=steering("more trees", focus("Trees"))), reply(LEVEL_ORDER))
+    assert card(out)["slug"] != LEVEL_ORDER
+    assert "couldn't choose myself" in card(out)["message"]
+    assert shown.steer()["label"] == "more trees"
 
 
-def test_steering_words_are_read_only_on_a_chat_message(tmp_path):
-    coord, clock, path = make(tmp_path)
-    request = Planner(path, clock).panel_opened("idle")
-    bad = reply(COIN_CHANGE, "steer", steer=MORE_DP, understood="More dynamic programming.")
-    with pytest.raises(ValueError):
-        ask_planner(RecordedPlanner(bad, bad), request)
-
-
-def test_a_chat_message_always_gets_a_reading(tmp_path):
-    shown = Shown(tmp_path)
-    rejected(shown, "more DP please", reply(COIN_CHANGE))
-
-
-def test_an_invalid_reading_is_retried_once_with_the_error(tmp_path):
+def test_an_ineligible_pick_is_retried_once_with_the_error(tmp_path):
     shown = Shown(tmp_path)
     request = shown.planner.chat(shown.session_id, "more DP")
-    bad = reply(COIN_CHANGE, "steer", understood="More DP.", steer=steering("more DP", focus("DP")))
-    good = reply(COIN_CHANGE, "steer", understood="More dynamic programming, this session.", steer=MORE_DP)
-    client = RecordedPlanner(bad, good)
-    assert ask_planner(client, request).steer.label == "more dynamic programming"
-    assert len(client.calls) == 2
+    steer = reply(COIN_CHANGE, "steer", understood="More dynamic programming.", steer=MORE_DP, picks=[LOCKED_SLUG, COIN_CHANGE])
+    client = RecordedPlanner(steer)
+    assert ask_planner(client, request).slug == COIN_CHANGE
+    assert [role for role, _ in client.calls] == ["planner"] * 3  # the Reader, then the Picker twice
+    assert "not in allowed" in client.calls[2][1][-1]["content"]
+
+
+def test_a_reply_that_fails_its_schema_fails_the_request_loudly(tmp_path):
+    shown = Shown(tmp_path)
+    request = shown.planner.chat(shown.session_id, "more DP")
+    bad = reply(COIN_CHANGE, "steer", understood="More DP.", steer=steering("more DP", focus("Dynamic Programming")))
+    with pytest.raises(ValidationError):
+        ask_planner(RecordedPlanner(bad), request)
 
 
 # --- readings: the words don't decide, the reading does ---------------------------------------------
@@ -297,16 +241,77 @@ def test_a_message_that_is_not_about_practice_gets_a_line_and_keeps_the_card(tmp
     assert shown.steer() is None
 
 
+def reading_of(shown, text, decided):
+    request = shown.planner.chat(shown.session_id, text)
+    return request, ask_planner(RecordedPlanner(decided), request)
+
+
+def test_a_steer_with_only_a_note_is_still_saved_and_keeps_the_learners_words(tmp_path):
+    shown = Shown(tmp_path)
+    out = shown.say("shorter problems please", reply(COIN_CHANGE, "steer", understood="Shorter ones, got it.",
+                                                     steer=steering("Shorter problems", note="shorter problems please")))
+    assert shown.steer()["note"] == "shorter problems please" and shown.steer()["focus"] == []
+    assert card(out)["steer"] == "Shorter problems"
+
+
+def test_a_steer_with_no_focus_and_no_note_is_read_as_unreadable_and_not_saved(tmp_path):
+    shown = Shown(tmp_path)
+    _, result = reading_of(shown, "hmm", reply(COIN_CHANGE, "steer", understood="Which kind did you mean?", steer=steering("x")))
+    assert (result.reading, result.understood, result.slug, result.steer) == ("unreadable", "Which kind did you mean?", None, None)
+
+
+def test_a_difficulty_only_steer_without_a_label_gets_one(tmp_path):
+    shown = Shown(tmp_path)
+    shown.say("no more hards", reply(COIN_CHANGE, "steer", understood="No more hards.",
+                                     steer=steering("", focus(difficulties=["Hard"], direction="fewer"))))
+    assert shown.steer()["label"] == "Your focus"
+
+
+def test_one_steer_can_ask_for_more_of_one_thing_and_fewer_of_another(tmp_path):
+    shown = Shown(tmp_path)
+    both = steering("trees over arrays", focus("Trees"), focus("Arrays & Hashing", direction="fewer"))
+    shown.say("more trees, fewer arrays", reply(ISLANDS, "steer", steer=both, understood="Trees over arrays."))
+    assert shown.steer()["focus"] == both["focus"]
+
+
+def test_an_ask_with_no_focus_is_just_the_next_problem_and_keeps_the_active_steer(tmp_path):
+    shown = Shown(tmp_path)
+    shown.say("more DP", reply(COIN_CHANGE, "steer", steer=MORE_DP, understood="More DP."))
+    request, result = reading_of(shown, "another one", reply(COIN_CHANGE, "ask", ask=[], understood="Another one coming."))
+    assert result.reading == "ask" and result.steer is None
+    assert json.loads(_pick_messages(request, request.allowed, request.steer)[-1]["content"])["steer"]["label"] == MORE_DP["label"]
+
+
+def test_the_pick_after_a_valid_reading_falls_back_to_code_when_the_picker_crashes(tmp_path):
+    shown = Shown(tmp_path)
+    decided = reply(COIN_CHANGE, "steer", steer=MORE_DP, understood="More DP.")
+    request = shown.planner.chat(shown.session_id, "more DP")
+
+    class Crashing(RecordedPlanner):
+        def call_role(self, role, messages, schema_class, **kwargs):
+            if schema_class is Pick:
+                raise TimeoutError("provider stalled")
+            return super().call_role(role, messages, schema_class, **kwargs)
+
+    result = ask_planner(Crashing(decided), request)
+    assert CATALOG.by_slug(result.slug)["category"] == DP and result.steer.label == MORE_DP["label"]
+    assert "couldn't choose myself" in result.understood
+
+
+def test_a_dfs_ask_offers_the_picker_only_graph_and_tree_problems(tmp_path):
+    shown = Shown(tmp_path)
+    request = shown.planner.chat(shown.session_id, "a DFS problem")
+    client = RecordedPlanner(reply(ISLANDS, "ask", ask=[focus("Graphs", "Trees")], understood="A DFS one coming."))
+    assert ask_planner(client, request).slug == ISLANDS
+    offered = json.loads(client.calls[1][1][-1]["content"])["allowed"]
+    assert offered and {c["category"] for c in offered} <= {"Graphs", "Trees"}
+
+
 def test_unreadable_words_ask_without_picking_a_new_problem(tmp_path):
     shown = Shown(tmp_path)
     slug = shown.card["slug"]
     out = shown.say("more of the thingy", talk("unreadable", "Which thingy do you mean?"))
     assert (card(out)["slug"], card(out)["message"]) == (slug, "Which thingy do you mean?")
-
-
-def test_a_reading_that_picks_a_problem_needs_a_slug():
-    with pytest.raises(ValueError):
-        PlannerReply.model_validate_json(json.dumps({**talk("steer", None), "steer": steering("x", focus(DP))}))
 
 
 def test_unreadable_words_store_no_steer_and_say_so(tmp_path):
@@ -414,7 +419,9 @@ def test_a_direct_ask_is_honoured_at_once_and_not_stored(tmp_path):
 
 def test_an_ask_that_an_allowed_problem_meets_must_be_honoured(tmp_path):
     shown = Shown(tmp_path)
-    rejected(shown, "a DP one next", reply(ISLANDS, "ask", ask=[focus(DP)], understood="A dynamic programming one."))
+    out = shown.say("a DP one next", reply(ISLANDS, "ask", ask=[focus(DP)], understood="A dynamic programming one."))
+    assert CATALOG.by_slug(card(out)["slug"])["category"] == DP  # the model's pick missed the ask; code ranks within it
+    assert "couldn't choose myself" in card(out)["message"]
 
 
 def all_tries_done(db):
@@ -427,7 +434,8 @@ def test_an_ask_nothing_eligible_meets_is_answered_plainly_with_the_nearest_alte
     shown = Shown(tmp_path, all_tries_done)
     line = "Every trie problem is done on your own and none is new, so here's a graph one instead."
     out = shown.say("a trie one next", reply(ISLANDS, "ask", ask=[focus("Tries")], understood=line))
-    assert (card(out)["slug"], card(out)["message"]) == (ISLANDS, line)
+    assert card(out)["slug"] == ISLANDS and card(out)["message"].startswith(line)
+    assert "Nothing eligible fits that right now" in card(out)["message"]
     assert shown.steer() is None
 
 
@@ -436,7 +444,8 @@ def test_a_steer_nothing_eligible_meets_is_kept_and_stays_on_the_card(tmp_path):
     tries = steering("more tries", focus("Tries"))
     line = "Nothing new or due in tries right now, so I'll suggest others until there is."
     out = shown.say("more tries", reply(ISLANDS, "steer", steer=tries, understood=line))
-    assert (card(out)["slug"], card(out)["steer"], card(out)["message"]) == (ISLANDS, "more tries", line)
+    assert (card(out)["slug"], card(out)["steer"]) == (ISLANDS, "more tries")
+    assert card(out)["message"].startswith(line) and "Nothing eligible fits that right now" in card(out)["message"]
     _, between = shown.between(HOUSE_ROBBER)
     assert between["steer"] == "more tries"
 
@@ -446,20 +455,21 @@ def test_a_problem_you_name_yourself_is_always_allowed(tmp_path):
                                         steady(db, "Trees")))
     request = shown.planner.chat(shown.session_id, "the level order one from yesterday")
     assert LEVEL_ORDER not in {c["slug"] for c in request.allowed}
-    named = reply(LEVEL_ORDER, "ask", ask=[], named=True, understood="Binary Tree Level Order Traversal again.")
-    out = shown.planner.answer(request, ask_planner(RecordedPlanner(named), request))
+    named = reply(LEVEL_ORDER, "ask", named_title="Binary Tree Level Order Traversal", understood="That one again.")
+    client = RecordedPlanner(named)
+    out = shown.planner.answer(request, ask_planner(client, request))
     assert card(out)["slug"] == LEVEL_ORDER
+    assert len(client.calls) == 1  # a named problem needs no Picker
     assert shown.steer() is None
 
 
-def test_a_named_problem_must_be_free_and_named_in_chat(tmp_path):
+def test_a_named_problem_that_is_locked_or_missing_is_asked_about_and_the_card_stays(tmp_path):
     shown = Shown(tmp_path)
-    rejected(shown, "the locked one", reply(LOCKED_SLUG, "ask", ask=[], named=True, understood="That one."))
-    coord, clock, path = make(tmp_path / "other")
-    request = Planner(path, clock).panel_opened("idle")
-    bad = reply(LEVEL_ORDER, "ask", ask=[], named=True, understood="That one.")
-    with pytest.raises(ValueError):
-        ask_planner(RecordedPlanner(bad, bad), request)
+    locked = CATALOG.by_slug(LOCKED_SLUG)["title"]
+    out = shown.say("the locked one", reply(LOCKED_SLUG, "ask", named_title=locked, understood="That one."))
+    assert card(out)["slug"] == shown.card["slug"] and "couldn't find a problem called" in card(out)["message"]
+    out = shown.say("level order", reply(LEVEL_ORDER, "ask", named_title="Binary Tree Level Order Traversel", understood="That one."))
+    assert "Did you mean Binary Tree Level Order Traversal?" in card(out)["message"]
 
 
 # --- a steer shifts suggestions only ------------------------------------------------------------------
