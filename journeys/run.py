@@ -515,9 +515,9 @@ async def abandon(j):
     await j.step("recap", "recap_state(ready)", _recap(j))
 
 
-async def multi_problem(j):
+async def multi_problem(j, count=3):
     await j.step("session_start", "session_state(active)", _start(j))
-    for index in range(3):
+    for index in range(count):
         suggestion = await j.step(f"suggestion({index + 1})", "suggestion", _suggestion(j))
         assert suggestion["slug"] and suggestion["title"], suggestion
         opened = await j.step(f"planner_go({index + 1})", "planner_open", _go(j))
@@ -528,6 +528,17 @@ async def multi_problem(j):
         await j.step(f"session_done({index + 1})", "session_state(between)", _done_problem(j))
     await j.step("session_end", "session_state(ended)", _end(j))
     await j.step("recap", "recap_state(ready)", _recap(j))
+
+
+async def long_session(j):
+    await multi_problem(j, count=8)
+    with open_store(j.db_path) as db:
+        rows = db.execute(
+            "SELECT role, COUNT(*), AVG(latency_ms), MAX(latency_ms), SUM(prompt_tokens), SUM(completion_tokens) "
+            "FROM model_calls GROUP BY role ORDER BY role"
+        ).fetchall()
+    for role, calls, mean, worst, prompt, completion in rows:
+        print(f"[long-session] {role}: {calls} calls, mean {mean / 1000:.1f}s, max {worst / 1000:.1f}s, tokens {prompt}/{completion}")
 
 
 async def pause_resume(j):
@@ -722,6 +733,7 @@ JOURNEYS = {
     "give-up": give_up,
     "abandon": abandon,
     "multi-problem": multi_problem,
+    "long-session": long_session,
     "pause-resume": pause_resume,
     "reset-mid-session": reset_mid_session,
     "reconnect": reconnect,
