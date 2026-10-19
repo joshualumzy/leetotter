@@ -7,10 +7,10 @@ tests/test_planner_flow.py:
 
     A chat message takes two small model calls with code between them (ask_planner):
       1. the Reader: Reading (pydantic, strict, flat, every field always present): reading ("ask" | "steer" |
-         "clear" | "unreadable" | "unrelated"), reply (the otter's line, always), more_categories,
+         "clear" | "cannot" | "unrelated"), reply (the otter's line, always), more_categories,
          more_difficulties, fewer_categories, fewer_difficulties, horizon, label, note, named_title. Only the
          schema is checked (catalog categories, levels, a non-empty reply); code normalises the rest and never
-         rejects on how fields agree: no focus and no note on a steer is "unreadable"; an empty label gets one.
+         rejects on how fields agree: no focus and no note on a steer is "cannot"; an empty label gets one.
          It never sees the problem list, so its line cannot name the pick.
       2. code filters the eligible problems to the focus (a named_title is resolved by code against catalog
          titles, no Picker needed; a near miss asks "did you mean"; nothing fitting adds one plain sentence),
@@ -28,7 +28,7 @@ tests/test_planner_flow.py:
         (kind "steer"), never in reviews.
 
     Planner.answer on a chat request: "steer" stores the reading (replacing any active steer), "clear"
-    clears it, "ask" stores nothing and shows a card whose message is the understood line. "unreadable" and
+    clears it, "ask" stores nothing and shows a card whose message is the understood line. "cannot" and
     "unrelated" pick no problem: they re-send the current card with the understood line as its message. Every card carries the active steer's label.
     Planner.clear_steer(session_id): the card's Clear; removes the steer and plans an unsteered suggestion,
     not logged as a swap. Planner.fail on a chat request says the steer wasn't saved.
@@ -207,7 +207,7 @@ def test_varied_words_with_the_same_reading_store_the_same_steer(tmp_path, text)
     (reply(COIN_CHANGE, "ask", ask=[focus(DP)], understood="A dynamic programming one next."), None),
     (reply(COIN_CHANGE, "steer", steer=steering("more dynamic programming", focus(DP), horizon="until_cleared"),
            understood="More dynamic programming until you clear it."), "until_cleared"),
-    (reply(CLIMBING, "unreadable", understood="Sorry, I didn't catch that. What would you like more of?"), None),
+    (reply(CLIMBING, "cannot", understood="Sorry, I didn't catch that. What would you like more of?"), None),
 ])
 def test_the_same_words_follow_whatever_the_planner_read(tmp_path, reading, stored):
     shown = Shown(tmp_path)
@@ -254,10 +254,10 @@ def test_a_steer_with_only_a_note_is_still_saved_and_keeps_the_learners_words(tm
     assert card(out)["steer"] == "Shorter problems"
 
 
-def test_a_steer_with_no_focus_and_no_note_is_read_as_unreadable_and_not_saved(tmp_path):
+def test_a_steer_with_no_focus_and_no_note_is_read_as_cannot_and_not_saved(tmp_path):
     shown = Shown(tmp_path)
     _, result = reading_of(shown, "hmm", reply(COIN_CHANGE, "steer", understood="Which kind did you mean?", steer=steering("x")))
-    assert (result.reading, result.understood, result.slug, result.steer) == ("unreadable", "Which kind did you mean?", None, None)
+    assert (result.reading, result.understood, result.slug, result.steer) == ("cannot", "Which kind did you mean?", None, None)
 
 
 def test_a_difficulty_only_steer_without_a_label_gets_one(tmp_path):
@@ -307,16 +307,16 @@ def test_a_dfs_ask_offers_the_picker_only_graph_and_tree_problems(tmp_path):
     assert offered and {c["category"] for c in offered} <= {"Graphs", "Trees"}
 
 
-def test_unreadable_words_ask_without_picking_a_new_problem(tmp_path):
+def test_cannot_words_ask_without_picking_a_new_problem(tmp_path):
     shown = Shown(tmp_path)
     slug = shown.card["slug"]
-    out = shown.say("more of the thingy", talk("unreadable", "Which thingy do you mean?"))
+    out = shown.say("more of the thingy", talk("cannot", "Which thingy do you mean?"))
     assert (card(out)["slug"], card(out)["message"]) == (slug, "Which thingy do you mean?")
 
 
-def test_unreadable_words_store_no_steer_and_say_so(tmp_path):
+def test_cannot_words_store_no_steer_and_say_so(tmp_path):
     shown = Shown(tmp_path)
-    shown.say("more of the thingy", reply(CLIMBING, "unreadable", understood="I didn't catch which kind you meant."))
+    shown.say("more of the thingy", reply(CLIMBING, "cannot", understood="I didn't catch which kind you meant."))
     assert shown.steer() is None
     assert notes(shown.path, "steer") == []
 

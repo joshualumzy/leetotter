@@ -21,10 +21,10 @@ SHORTLIST_PER_CATEGORY = 3
 PICKER_PROMPT = """You are Leetotter's Planner. Pick exactly one problem from `allowed`, by slug. Keep the reason short; it is internal and never shown. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, the card, the chat and message, and the active steer. A steer's note holds the learner's own words: honour it, and read a relative word such as harder or easier against the card or the problem they just had. When the learner's words ask for a kind of problem (for example depth-first search), prefer an allowed problem whose patterns fit. Sample categories while evidence is thin, starting with imported history; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Return JSON only: {"slug", "reason"}."""
 
 READER_PROMPT = """You read one chat message from a learner practising coding problems with Leetotter, a friendly study-buddy otter. A problem card may be showing. Return JSON only. You never pick a problem and never say which one comes next.
-reading: ask = they want a kind of problem or the next one, once (a topic, a difficulty, a named problem, or just "another"); steer = they want future suggestions shaped, as a standing preference (more or less of something, a difficulty, a style); clear = back to normal, drop the steer; unreadable = a word you cannot match to a category, difficulty or problem (never guess it, even when you have a good guess: offer the guess in the question); unrelated = nothing to do with practice (greeting, small talk, a question about you).
-reply: always, in English: one or two short, warm sentences in the otter's voice, to "you", varied every time. For ask, steer and clear, name their topic in their own words so they see you understood, and say you'll find something; for unreadable, quote the word and ask what they meant; for unrelated, answer them like a friendly buddy in a line or two; if they ask to be taught something, say the Tutor helps with that while they work on a problem. Never mention a pattern or approach they did not name, give no lessons, and never repeat their message word for word.
+reading: ask = they want a kind of problem or the next one, once (a topic, a difficulty, a named problem, or just "another"); steer = they want future suggestions shaped, as a standing preference (more or less of something, a difficulty, a style); clear = back to normal, drop the steer; cannot = you cannot act on it by picking a problem, for a true reason: a word you cannot match to a category, difficulty or problem (never guess it, even when you have a good guess: offer the guess in the question), or a request that needs something you cannot see or do. You see only: this message, the chat since the card appeared, the card's title and difficulty, the active steer and the category names. You do not see past sessions or days, scores, history, or the problem list. unrelated = nothing to do with practice (greeting, small talk, a question about you).
+reply: always, in English: one or two short, warm sentences in the otter's voice, to "you", varied every time. For ask, steer and clear, name their topic in their own words so they see you understood, and say you'll find something; for cannot, say the real reason plainly and never blame the wrong cause (a request about something you have no record of is missing information, not a word you failed to understand; an unknown word is quoted and asked about), then offer what you can do instead; for unrelated, answer them like a friendly buddy in a line or two; if they ask to be taught something, say the Tutor helps with that while they work on a problem. Never mention a pattern or approach they did not name, give no lessons, and never repeat their message word for word.
 more_categories, fewer_categories: only the catalog categories they named or clearly meant ("DFS" is Graphs and Trees; "dynamic programming" is both dynamic programming categories). A request combining both ("more trees, fewer arrays") fills both groups. more_difficulties, fewer_difficulties: levels they named: "only mediums" is more Medium; "no hards" or "no more hards" is fewer Hard; "more easies" is more Easy. A difficulty request alone leaves the categories empty. A relative word (easier, harder, a bit tougher) for an ask becomes a concrete level using the card's difficulty; for a steer it gets no level and stays in the note.
-note: for a steer, the learner's own words for anything the fields cannot express (length, style, taste, a relative word); otherwise "". A wish about length, style or taste ("something short", "a quick one") is a steer saved with that note, never unreadable. label: for a steer, a short plain name such as "Tries"; otherwise "". horizon: for a steer, "session" unless they say it should last (always, until I say, from now on); take "session" when unsure; otherwise "session". named_title: for an ask that names one specific problem, its title as they said it; otherwise "". An ask with no category, difficulty or title is only for plain "next one" or "another" requests; if it holds a word you cannot map, it is unreadable."""
+note: for a steer, the learner's own words for anything the fields cannot express (length, style, taste, a relative word); otherwise "". A wish about length, style or taste ("something short", "a quick one") is a steer saved with that note, never cannot. label: for a steer, a short plain name such as "Tries"; otherwise "". horizon: for a steer, "session" unless they say it should last (always, until I say, from now on); take "session" when unsure; otherwise "session". named_title: for an ask that names one specific problem, its title as they said it; otherwise "". An ask with no category, difficulty or title is only for plain "next one" or "another" requests; if it holds a word you cannot map, it is cannot."""
 
 
 Category = Literal[CATEGORIES]
@@ -62,7 +62,7 @@ class SteerReading(BaseModel):
 class Reading(BaseModel):
     """What the Reader model returns for a chat message: flat, every field always present, nothing that must agree."""
     model_config = ConfigDict(extra="forbid", strict=True)
-    reading: Literal["ask", "steer", "clear", "unreadable", "unrelated"]
+    reading: Literal["ask", "steer", "clear", "cannot", "unrelated"]
     reply: str = Field(min_length=1)
     more_categories: list[Category]
     more_difficulties: list[Difficulty]
@@ -81,13 +81,13 @@ class Pick(BaseModel):
 
 
 # Readings that only talk: no problem is picked and the current card stays.
-TALK_ONLY = {"unreadable", "unrelated"}
+TALK_ONLY = {"cannot", "unrelated"}
 
 
 @dataclass(frozen=True)
 class PlannerReply:
     """The decision ask_planner hands to Planner.answer, assembled by code from the Reader and Picker replies."""
-    reading: Literal["none", "ask", "steer", "clear", "unreadable", "unrelated"]
+    reading: Literal["none", "ask", "steer", "clear", "cannot", "unrelated"]
     understood: str | None = None
     slug: str | None = None
     steer: SteerReading | None = None
@@ -353,7 +353,7 @@ def ask_planner(client, request):
     if reading.reading == "steer":
         note = reading.note.strip()
         if not focuses and not note:
-            return PlannerReply("unreadable", line)
+            return PlannerReply("cannot", line)
         steer = {"focus": focuses, "horizon": reading.horizon, "label": reading.label.strip() or note[:40] or "Your focus", "note": note}
     elif reading.reading == "clear":
         steer, focuses = None, []
@@ -362,7 +362,7 @@ def ask_planner(client, request):
         if entry:
             return PlannerReply("ask", line, entry["slug"])
         guess = f" Did you mean {close[0]}?" if close else ""
-        return PlannerReply("unreadable", f"I couldn't find a problem called \"{reading.named_title.strip()}\".{guess}")
+        return PlannerReply("cannot", f"I couldn't find a problem called \"{reading.named_title.strip()}\".{guess}")
     elif not focuses and steer:
         focuses = steer["focus"]
     pool, fits = _pool(request.allowed, focuses)
