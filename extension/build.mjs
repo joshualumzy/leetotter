@@ -12,4 +12,5 @@ await build({
   target: "chrome120",
   define: { __LEETOTTER_PORT__: String(port) },
 });
-await Promise.all([cp("manifest.json", "dist/manifest.json"), cp("panel.html", "dist/panel.html"), cp("panel.css", "dist/panel.css")]);
+await Promise.all([cp("manifest.json", "dist/manifest.json"), cp("panel.html", "dist/panel.html"), cp("panel.css", "dist/panel.css"),
+  ...[16, 32, 48, 128].map(async (size) => { await mkdir("dist/icons", { recursive: true }); await cp(`icons/icon-${size}.png`, `dist/icons/icon-${size}.png`); })]);
