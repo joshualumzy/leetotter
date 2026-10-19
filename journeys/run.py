@@ -80,6 +80,18 @@ class FakeHTTPError(Exception):
         self.status_code = status_code
 
 
+SOLVE_REPLY = {
+    "gap": "none", "gap_note": None, "help_kind": "none", "reply_text": "That works.",
+    "follow_up_question": "What are the time and space complexity of your solution?",
+    "follow_up_complexity": True, "postpone_reason": None, "linked": [],
+}
+ANSWER_REPLY = {
+    "gap": "none", "gap_note": None, "help_kind": "none", "reply_text": "Right, one pass with a set.",
+    "has_reasoning": True, "follow_up_question": None, "linked": [],
+}
+FOLLOWUP_ANSWER = "O(n) time and O(n) space, because one pass with a set stores each value once."
+
+
 def _completion(content):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))], usage=None)
 
@@ -133,7 +145,11 @@ class FakeProvider:
             return _completion(json.dumps({"verdicts": []}))
         if system == TUTOR_PROMPT:
             user = messages[1]["content"]
-            if "The learner wrote:" in user:
+            if "## After the accept" in user:
+                reply = SOLVE_REPLY
+            elif "answering the follow-up question" in user:
+                reply = ANSWER_REPLY
+            elif "The learner wrote:" in user:
                 reply = TUTOR_REPLIES[3]
             elif "press 3 on this problem" in user:
                 reply = TUTOR_REPLIES[2]
@@ -305,6 +321,13 @@ class Journey:
             if attempt["left_id"] not in accepted and attempt["start"] not in recorded:
                 problems.append(
                     f"accepted submission in attempt {attempt['start']}..{attempt['left_id']} has no review or grading failure")
+        closed = {payload["question_id"] for _, _, _, kind, payload in parsed
+                  if kind in ("followup_skipped",) or (kind == "followup_answered" and payload["has_reasoning"])}
+        closed |= {payload["question_id"] for _, _, _, kind, payload in parsed
+                   if kind == "followup_answered" and not payload["has_reasoning"]}
+        for id_, _, _, kind, _ in parsed:
+            if kind == "followup_asked" and id_ not in closed:
+                problems.append(f"follow-up question {id_} was never answered or skipped")
         reflected = {session for (session,) in reflector_failures}
         for session, summary, bullets in ended:
             if summary is None and bullets is None and session not in reflected:
@@ -406,16 +429,18 @@ async def _chat(j, text):
 
 async def _done_problem(j):
     await j.send("session_done")
-    state = await j.expect("session_state")
-    assert state["problem"] is None, state
-    return state
+    while True:  # a closing follow-up question can broadcast one more state first
+        state = await j.expect("session_state")
+        if state["problem"] is None:
+            return state
 
 
 async def _end(j):
     await j.send("session_end")
-    state = await j.expect("session_state")
-    assert state["state"] == "ended", state
-    return state
+    while True:  # an open follow-up question or a late solve turn can broadcast a state first
+        state = await j.expect("session_state")
+        if state["state"] == "ended":
+            return state
 
 
 async def _recap(j, status="ready"):
@@ -539,6 +564,46 @@ async def long_session(j):
         ).fetchall()
     for role, calls, mean, worst, prompt, completion in rows:
         print(f"[long-session] {role}: {calls} calls, mean {mean / 1000:.1f}s, max {worst / 1000:.1f}s, tokens {prompt}/{completion}")
+
+
+async def _accept_and_followup(j, slug, title):
+    """Accept a problem and return the open follow-up question, or None when the Tutor postponed or didn't ask."""
+    await j.step("problem_opened", "session_state(active)", _open(j, slug, title))
+    await j.step("problem_statement", "session_state", _statement(j, slug))
+    await j.send("submit_result", {"slug": slug, "accepted": True, "error_type": None, "error_message": "",
+                                   "runtime": "0.032", "memory": 14184, "passed": 34, "total": 34, "failing_case": None})
+    start = await j.expect("tutor_start", timeout=LONG_TIMEOUT)
+    assert start["request"] == "solve", start
+    done = await j.expect("tutor_done", timeout=LONG_TIMEOUT)
+    if not done["follow_up_question"]:
+        return done, None
+    while True:
+        state = await j.expect("session_state", timeout=LONG_TIMEOUT)
+        if state.get("followup"):
+            return done, state["followup"]
+
+
+async def followup_answer(j):
+    await j.step("session_start", "session_state(active)", _start(j))
+    done, question = await j.step("accept", "tutor_done(solve)", _accept_and_followup(j, *PROBLEMS[0]))
+    if question is not None:
+        _, answer = await j.step("followup_answer", "tutor_done", _chat(j, FOLLOWUP_ANSWER))
+        assert answer["reply_text"], answer
+    await j.step("session_done", "session_state(between)", _done_problem(j))
+    await j.step("session_end", "session_state(ended)", _end(j))
+    await j.step("recap", "recap_state(ready)", _recap(j))
+
+
+async def followup_skip(j):
+    await j.step("session_start", "session_state(active)", _start(j))
+    done, question = await j.step("accept", "tutor_done(solve)", _accept_and_followup(j, *PROBLEMS[0]))
+    if question is not None:
+        await j.send("followup_skip", {"question_id": question["question_id"]})
+        state = await j.expect("session_state")
+        assert state["followup"] is None, state
+    await j.step("session_done", "session_state(between)", _done_problem(j))
+    await j.step("session_end", "session_state(ended)", _end(j))
+    await j.step("recap", "recap_state(ready)", _recap(j))
 
 
 async def pause_resume(j):
@@ -734,6 +799,8 @@ JOURNEYS = {
     "abandon": abandon,
     "multi-problem": multi_problem,
     "long-session": long_session,
+    "followup-answer": followup_answer,
+    "followup-skip": followup_skip,
     "pause-resume": pause_resume,
     "reset-mid-session": reset_mid_session,
     "reconnect": reconnect,
