@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 PLANNER_WAIT = 30
 SHORTLIST_PER_CATEGORY = 3
 
-SYSTEM_PROMPT = """You are Leetotter's Planner. Suggest exactly one eligible problem, by title only. Keep your reason internal: never name the suggested problem's category, pattern, or approach before the learner solves it, unless they asked for that category or pattern themselves. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, allowed list, current card, chat, and active steer. Sample categories while evidence is thin, starting with imported history; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Read steering words in context, including the current card and active steer; do not use a phrase table. Decide whether they ask for the next problem, set or extend one steer, clear it, or say something unrelated. A steer has catalog focus ids, direction and a session or until-cleared horizon; take the shorter session reading if ambiguous. Say in one plain line what you understood without revealing an unasked pattern. If an ask or steer cannot be met within eligibility, say so plainly once and offer the nearest eligible alternative. Set understood to null when reading is none or unrelated (never the word \"none\"), and to that one line for ask, steer, clear or unreadable. Return structured JSON only."""
+SYSTEM_PROMPT = """You are Leetotter's Planner. Suggest exactly one eligible problem, by title only. Keep your reason internal: never name the suggested problem's category, pattern, or approach before the learner solves it, unless they asked for that category or pattern themselves. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, allowed list, current card, chat, and active steer. Sample categories while evidence is thin, starting with imported history; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Read steering words in context, including the current card and active steer; do not use a phrase table. Decide whether they ask for the next problem, set or extend one steer, clear it, or say something unrelated. A steer has catalog focus ids, direction and a session or until-cleared horizon; take the shorter session reading if ambiguous. Say in one plain line what you understood without revealing an unasked pattern. If an ask or steer cannot be met within eligibility, say so plainly once and offer the nearest eligible alternative. Set understood to null when reading is none or unrelated (never the word \"none\"), and to that one line for ask, steer, clear or unreadable. Fill ask only when reading is ask (otherwise null), steer only when reading is steer (otherwise null), and named_by_you true only when reading is ask and they named a specific problem (otherwise false). Return structured JSON only."""
 
 
 class Focus(BaseModel):
@@ -362,10 +362,11 @@ class Planner:
         return self._request("swap", session_id)
 
     def chat(self, session_id, text):
-        if not self.card:
+        if not self.card and not self._waiting:
             return None
         self._chat.append(text)
-        return self._request("chat", self._card_owner(session_id), text)
+        owner = self._card_owner(session_id) if self.card else self._waiting.session_id
+        return self._request("chat", owner, text)
 
     def clear_steer(self, session_id):
         if not self.card:

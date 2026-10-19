@@ -608,18 +608,31 @@ describe("panel actions", () => {
       expect(document.getElementById("planner-swap")).toBeTruthy();
       expect(document.getElementById("planner-clear")).toBeTruthy();
     });
-    it("shows the otter choosing a problem, without a composer, until the suggestion arrives", () => {
+    it("shows the otter choosing a problem, with the composer open for a steer, until the suggestion arrives", () => {
       showStart();
       startSession();
       const card = document.querySelector(".planner-waiting-card")!;
       expect(card.textContent).toContain("Choosing a problem for you...");
       expect(card.textContent).toContain("This can take a minute.");
       expect(card.querySelector("svg.otter")).toBeTruthy();
-      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
       notify({ kind: "suggestion", message: suggestion });
       expect(document.querySelector(".planner-waiting-card")).toBeNull();
       expect(document.querySelector(".suggestion-card")?.textContent).toContain("House Robber");
       expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
+    });
+    it("sends a steer typed while the first problem is being chosen and shows it above the wait", async () => {
+      showStart();
+      startSession();
+      const input = document.getElementById("chat-input") as HTMLTextAreaElement;
+      input.value = "more dynamic programming";
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      click("chat-send");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_chat", text: "more dynamic programming" });
+      await vi.waitFor(() => expect(document.querySelector(".chat-you")?.textContent).toBe("more dynamic programming"));
+      expect(document.querySelector(".planner-waiting-card")).toBeTruthy();
+      notify({ kind: "suggestion", message: suggestion });
+      expect(document.querySelector(".chat-you")?.textContent).toBe("more dynamic programming");
     });
     it("replaces the wait with an alert after 200 seconds and sends planner_get from Try again", () => {
       vi.useFakeTimers();

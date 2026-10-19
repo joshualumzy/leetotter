@@ -44,6 +44,7 @@ let acknowledgementTimer: number | undefined;
 let suggestion: Suggestion | undefined;
 const PLANNER_WAIT_MS = 200_000;
 let plannerWaitStartedAt: number | null = null;
+let plannerSaid: string[] = [];
 let plannerTimedOut = false;
 let plannerTimer: number | undefined;
 let recap: RecapState | undefined;
@@ -532,7 +533,7 @@ function renderChat(): void {
 function renderComposer(view: PanelView): void {
   // Until the session has a problem, the Planner is the only one to talk to, and only once it has a card to talk about.
   const plannerMode = view.body === "active" && !session?.problem;
-  const visible = plannerMode ? Boolean(suggestion) && !plannerTimedOut : ["active", "paused", "debrief"].includes(view.body);
+  const visible = plannerMode ? (Boolean(suggestion) || plannerWaiting()) && !plannerTimedOut : ["active", "paused", "debrief"].includes(view.body);
   composer!.hidden = !visible || settingsOpen;
   composerMode = composer!.hidden ? "hidden" : plannerMode ? "planner" : "tutor";
   if (composer!.hidden) { composer!.replaceChildren(); return; }
@@ -697,6 +698,7 @@ function render(): void {
       body!.append(startCard());
     }
     if (view.body === "active" && !session?.problem) {
+      for (const said of plannerSaid) appendText(body!, "div", said, "chat-line chat-you");
       if (plannerWaiting() && plannerTimedOut) body!.append(plannerTimeoutCard());
       else if (suggestion) {
         const suggestionNode = suggestionCard(plannerWaiting());
@@ -787,7 +789,8 @@ async function sendChat(): Promise<void> {
     if (!result.text) { updateComposer(); return; }
     draft = ""; input.value = ""; resizeComposer(input);
     const ok = await send({ kind: "planner_chat", text: result.text });
-    if (!ok) composerNote = "The Planner didn't get that.";
+    if (ok) { plannerSaid.push(result.text); beginPlannerWait(); render(); }
+    else composerNote = "The Planner didn't get that.";
     updateComposer();
     return;
   }
@@ -933,7 +936,7 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "session_state") {
     session = message.state;
-    if (session?.state === "ended" || (session?.state === "active" && session.problem)) suggestion = undefined;
+    if (session?.state === "ended" || (session?.state === "active" && session.problem)) { suggestion = undefined; plannerSaid = []; }
     if (session?.state === "active" && !session.problem) {
       if (!suggestion && !plannerWaiting()) beginPlannerWait();
     } else endPlannerWait();
@@ -970,7 +973,7 @@ chrome.runtime.onMessage.addListener(message => {
     else beginPlannerWait();
     render();
   }
-  if (message?.kind === "planner_open") { suggestion = undefined; endPlannerWait(); render(); }
+  if (message?.kind === "planner_open") { suggestion = undefined; plannerSaid = []; endPlannerWait(); render(); }
   if (message?.kind === "recap_state") {
     const next = message.message as RecapState;
     if (recap?.session_id !== next.session_id) recapNoted = "";
