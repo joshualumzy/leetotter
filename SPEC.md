@@ -37,7 +37,7 @@ This is the build spec. `design.html` (published at https://claude.ai/artifact/N
 ```
 Chrome extension (TypeScript, Manifest V3)
 ├── page readers      content script for neetcode.io
-├── side panel        timer, chat, problem suggestions, recap, Progress tab
+├── side panel        timer, chat, problem suggestions, Recaps tab, Progress tab
 └── background worker relays everything to the companion over one WebSocket
 
 Companion (Python, runs natively on localhost; starts at login)
@@ -121,7 +121,7 @@ After a solve, or once the Tutor has walked you to the solution:
 
 ### Session end: the recap
 
-When a session ends, the Reflector reviews it (§8) and writes a **recap**: a light consolidation card with a few short bullets, or none when the session went smoothly. Every hypothesis change is one of the bullets, so a session with hypothesis changes always has bullets (and therefore the feedback box). A bullet is about this session or "carried over" (from an open hypothesis or the learner model); carried-over bullets appear only when something changed (recurred, improved, new evidence). While it's being written, the panel shows the otter preparing notes, so you know it's coming. It appears when ready, or the next time you open the panel if you've closed it.
+When a session ends, the Reflector reviews it (§8) and writes a **recap**: a light consolidation card with a few short bullets, or none when the session went smoothly. Every hypothesis change is one of the bullets, so a session with hypothesis changes always has bullets (and therefore the feedback box). A bullet is about this session or "carried over" (from an open hypothesis or the learner model); carried-over bullets appear only when something changed (recurred, improved, new evidence). While it's being written, the panel shows the otter preparing notes, so you know it's coming. It lives in the **Recaps tab**, beside the Progress tab (§9): the tab shows an unread dot while a ready recap is unread, and opening the recap marks it read. Nothing interrupts the start of the next session (no recap card above Start); the dot is the only signal. The tab lists recaps newest first, each with its date, its bullets and, when it has bullets, the feedback box below. While one is being written the tab shows the otter preparing notes; if the Reflector failed, the tab says so with a retry. The Planner reads an open hypothesis that a session's recap created or changed only once you have opened that recap (§8), so a recap you never opened doesn't steer you; hypotheses that predate it are unaffected.
 
 **Feedback.** Only when the recap has bullets, under it: one optional free-text box ("Anything off or missing?") and a plain close (closing means seen, not feedback). On submit, the text is stored at once as a note (it has an id) and the panel says "Noted" (if it is about a grade, it points to the Progress-tab grade correction; notes never change grades). One extra Reflector call then takes the note, the recap and the open hypotheses and outputs hypothesis changes (drop, reword, new), validated like every model output; the call has no event log, so a hypothesis it creates may cite the note instead of an event. A drop is a rejection (§8). The card shows what changed ("Dropped: visited marking"). If the call fails, the panel says so and the note stays; the next session's Reflector reads it as input (re-dropping a dropped hypothesis is a no-op). There are no per-bullet controls.
 
