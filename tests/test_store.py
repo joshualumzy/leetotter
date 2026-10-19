@@ -131,3 +131,18 @@ def test_failed_migration_names_the_snapshot_and_leaves_the_store_intact(tmp_pat
     (snap,) = (tmp_path / "companion-snapshots").glob("*-before-migration.sqlite3")
     assert sqlite3.connect(snap).execute("PRAGMA user_version").fetchone()[0] == 10
     assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == 10
+
+
+def test_failed_snapshot_leaves_no_empty_file(tmp_path):
+    import sqlite3
+
+    from companion.store import snapshot_store
+
+    path = tmp_path / "companion.sqlite3"
+    path.write_bytes(b"not a database" * 100)
+    try:
+        snapshot_store(path, "start")
+        raise AssertionError("backup should have failed")
+    except sqlite3.DatabaseError:
+        pass
+    assert list((tmp_path / "companion-snapshots").glob("*.sqlite3")) == []

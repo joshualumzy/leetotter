@@ -364,6 +364,7 @@ async def _handle(connection):
                         try:
                             await _cancel_background_tasks()
                         except TimeoutError as error:
+                            _coordinator.abandon_turn()
                             logger.exception("Reset stopped because a background worker did not finish")
                             await _broadcast([{"type": "error", "ts": _timestamp(),
                                                "message": f"Reset stopped: {error}. Nothing was erased."}], None)

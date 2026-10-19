@@ -924,6 +924,12 @@ class SessionCoordinator:
             self._release(turn)
         return [self._tutor_error(now, turn.turn_id, message, turn.slug, turn.session_id)]
 
+    def abandon_turn(self):
+        """Drop the in-flight turn without a reply, when its task was cancelled and will never finish it."""
+        self.turn = None
+        self.turn_slug = None
+        self.turn_session = None
+
     def _release(self, turn):
         if self.turn == turn.turn_id:
             self.turn = None

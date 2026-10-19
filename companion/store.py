@@ -98,6 +98,9 @@ def snapshot_store(path: str | Path | None, reason: str) -> Path | None:
     copy = sqlite3.connect(target)
     try:
         source.backup(copy)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
     finally:
         copy.close()
         source.close()

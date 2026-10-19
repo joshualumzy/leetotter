@@ -153,6 +153,7 @@ def test_a_hung_worker_fails_the_reset_and_clears_resetting(tmp_path, monkeypatc
         db.execute("INSERT INTO settings (key, value) VALUES ('name', 'Ada')")
 
     entered, release = threading.Event(), threading.Event()
+    socket_module._coordinator.turn, socket_module._coordinator.turn_slug, socket_module._coordinator.turn_session = 7, "two-sum", 3
 
     async def scenario():
         task = asyncio.create_task(asyncio.to_thread(socket_module._tracked(
@@ -163,6 +164,7 @@ def test_a_hung_worker_fails_the_reset_and_clears_resetting(tmp_path, monkeypatc
         connection = Connection([msg("reset_progress", {"confirm": "RESET"})])
         await asyncio.wait_for(socket_module._handle(connection), 5)
         assert not socket_module._resetting
+        assert socket_module._coordinator.turn is None
         assert any(item["type"] == "error" and "did not finish" in item["message"] for item in connection.sent)
         assert not any(item["type"] == "reset_done" for item in connection.sent)
 
