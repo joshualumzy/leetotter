@@ -101,7 +101,7 @@ def test_card_chat_stores_steer_and_clear_replaces_without_swap(tmp_path, monkey
         setup(tmp_path, monkeypatch, ["house-robber", {
             "slug": "coin-change", "reading": "steer", "ask": None,
             "steer": {"label": "more dynamic programming", "horizon": "session", "focus": [{
-                "categories": ["1-D Dynamic Programming"], "patterns": [], "direction": "more"}]},
+                "categories": ["1-D Dynamic Programming"], "patterns": [], "difficulties": [], "direction": "more"}], "note": ""},
             "understood": "More dynamic programming this session.", "named_by_you": False}, "climbing-stairs"])
         connection = Connection([msg("hello"), msg("session_start"),
                                  msg("planner_chat", {"text": "more DP"}), msg("planner_clear")])

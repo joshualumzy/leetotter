@@ -19,8 +19,10 @@ tests/test_planner_flow.py:
                                       unreadable, None for none and unrelated
         named_by_you: bool            you named this problem yourself; only with reading "ask"
     Focus: {categories: [catalog category names], patterns: [pattern ids from stored references],
-            direction: "more" | "fewer"}, naming at least one category or pattern
-    SteerReading: {focus: [Focus, ...] (at least one), horizon: "session" | "until_cleared", label: str}
+            difficulties: ["Easy" | "Medium" | "Hard"], direction: "more" | "fewer"}, naming at least one
+        category, pattern or difficulty
+    SteerReading: {focus: [Focus, ...] (at least one), horizon: "session" | "until_cleared", label: str,
+            note: str}
 
     Checks in ask_planner beyond the schema: categories are catalog categories and patterns are known
     pattern ids; the slug is in request.allowed unless named_by_you on a chat request (then any unlocked
@@ -46,7 +48,7 @@ from datetime import timedelta
 import pytest
 from pydantic import ValidationError
 
-from companion.planner import Planner, PlannerReply, active_steer, allowed_next, ask_planner, code_ranked, learner_summary
+from companion.planner import Planner, PlannerReply, active_steer, allowed_next, ask_planner, code_ranked, learner_summary, shortlist
 from companion.store import open_store
 from tests.test_planner_flow import RecordedPlanner, answered, card, context, notes, reply
 from tests.test_planner_rules import (CATALOG, CLIMBING, COIN_CHANGE, GOOD_NODES, HOUSE_ROBBER, ISLANDS, LEVEL_ORDER,
@@ -58,12 +60,13 @@ DP = "1-D Dynamic Programming"
 LOCKED_SLUG = next(e["slug"] for e in CATALOG.entries if e["locked"])
 
 
-def focus(*categories, patterns=(), direction="more"):
-    return {"categories": list(categories), "patterns": list(patterns), "direction": direction}
+def focus(*categories, patterns=(), difficulties=(), direction="more"):
+    return {"categories": list(categories), "patterns": list(patterns), "difficulties": list(difficulties),
+            "direction": direction}
 
 
-def steering(label, *focuses, horizon="session"):
-    return {"focus": list(focuses), "horizon": horizon, "label": label}
+def steering(label, *focuses, horizon="session", note=""):
+    return {"focus": list(focuses), "horizon": horizon, "label": label, "note": note}
 
 
 MORE_DP = steering("more dynamic programming", focus(DP))
@@ -110,6 +113,7 @@ class Shown:
     reply(COIN_CHANGE, "none", named=True),                                              # named outside an ask
     reply(COIN_CHANGE, "clear", steer=MORE_DP, understood="Back to normal."),            # clear carrying a steer
     reply(COIN_CHANGE, "steer", steer=steering("nothing", focus()), understood="Hm."),   # focus names nothing
+    reply(COIN_CHANGE, "steer", steer=steering("x", focus(difficulties=["Expert"])), understood="x"),
     reply(COIN_CHANGE, "steer", steer=steering("x", focus(DP), horizon="week"), understood="x"),
     {**reply(COIN_CHANGE), "extra": 1},
 ])
@@ -139,6 +143,45 @@ def test_a_focus_must_name_known_patterns(tmp_path):
     shown = Shown(tmp_path, lambda db: reference(db, PERMUTATION, ["sliding-window"]))
     rejected(shown, "more memo stuff", reply(COIN_CHANGE, "steer", understood="More memoisation.",
                                              steer=steering("more memoisation", focus(patterns=["memoisation"]))))
+
+
+def test_a_difficulty_only_focus_filters_the_shortlist(tmp_path):
+    with open_store(tmp_path / "db.sqlite3") as db:
+        candidates = allowed_next(db, session_id=None, now=NOW)
+        summary = learner_summary(db, now=NOW)
+    assert any(c["difficulty"] == "Hard" for c in candidates)
+    hard = steering("more hard", focus(difficulties=["Hard"]))
+    pool = shortlist(candidates, summary, hard)
+    assert pool and {c["difficulty"] for c in pool} == {"Hard"}
+
+
+def test_harder_dp_needs_both_the_category_and_the_difficulty(tmp_path):
+    with open_store(tmp_path / "db.sqlite3") as db:
+        candidates = allowed_next(db, session_id=None, now=NOW)
+        summary = learner_summary(db, now=NOW)
+    harder_dp = steering("harder dynamic programming", focus(DP, difficulties=["Hard"]))
+    pool = shortlist(candidates, summary, harder_dp)
+    assert pool and {(c["category"], c["difficulty"]) for c in pool} == {(DP, "Hard")}
+
+
+def test_fewer_with_difficulties_excludes_them(tmp_path):
+    with open_store(tmp_path / "db.sqlite3") as db:
+        candidates = allowed_next(db, session_id=None, now=NOW)
+        summary = learner_summary(db, now=NOW)
+    assert any(c["difficulty"] == "Hard" for c in candidates)
+    fewer_hard = steering("fewer hard", focus(difficulties=["Hard"], direction="fewer"))
+    pool = shortlist(candidates, summary, fewer_hard)
+    assert pool and all(c["difficulty"] != "Hard" for c in pool)
+
+
+def test_an_old_stored_steer_without_the_new_fields_still_loads(tmp_path):
+    _, _, path = make(tmp_path)
+    old = {"focus": [{"categories": ["Trees"], "patterns": [], "direction": "more"}],
+           "horizon": "until_cleared", "label": "more trees"}
+    with open_store(path) as db:
+        db.execute("INSERT INTO notes (ts, kind, text) VALUES (?, 'steer', ?)", (NOW.isoformat(), json.dumps(old)))
+        steer = active_steer(db, session_id=None)
+    assert steer["note"] == "" and steer["focus"][0]["difficulties"] == []
 
 
 def test_a_steer_never_makes_an_ineligible_problem_eligible(tmp_path):

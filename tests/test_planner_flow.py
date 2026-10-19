@@ -256,7 +256,7 @@ def test_chat_goes_to_the_planner_while_a_card_is_shown_or_being_chosen(tmp_path
     steered = planner.chat(coord.session_id, "more dynamic programming")  # still choosing: replaces the pending request
     assert steered.trigger == "chat" and steered.session_id == coord.session_id
     assert answered(planner, request, reply(HOUSE_ROBBER)) == []
-    shown = card(answered(planner, steered, reply(HOUSE_ROBBER, "ask", ask=[{"categories": ["1-D Dynamic Programming"], "patterns": [], "direction": "more"}], understood="A dynamic programming problem next.")))
+    shown = card(answered(planner, steered, reply(HOUSE_ROBBER, "ask", ask=[{"categories": ["1-D Dynamic Programming"], "patterns": [], "difficulties": [], "direction": "more"}], understood="A dynamic programming problem next.")))
     talk = planner.chat(coord.session_id, "more dynamic programming")
     assert talk.trigger == "chat" and talk.session_id == coord.session_id
     assert "more dynamic programming" in talk.messages[-1]["content"]
@@ -281,7 +281,7 @@ def test_the_planner_never_names_the_suggested_problems_pattern_unless_you_asked
     blurted = reply(PERMUTATION, "unreadable", understood="Not sure what you meant; here's a sliding window one.")
     with pytest.raises(ValueError):
         ask_planner(RecordedPlanner(blurted, blurted), talk)
-    asked = reply(PERMUTATION, "ask", ask=[{"categories": [], "patterns": ["sliding-window"], "direction": "more"}],
+    asked = reply(PERMUTATION, "ask", ask=[{"categories": [], "patterns": ["sliding-window"], "difficulties": [], "direction": "more"}],
                   understood="A sliding window problem next.")
     assert ask_planner(RecordedPlanner(asked), talk).slug == PERMUTATION
 
