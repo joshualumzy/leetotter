@@ -1,6 +1,7 @@
 """What the Tutor is told: every SPEC section 6 context item, present or honestly absent."""
 
 import pytest
+from pydantic import ValidationError
 
 from companion.reference import Approach, Reference, StoredReference
 from companion.tutor import TutorRequest, answered_presses, build_messages, reply_schema
@@ -22,9 +23,11 @@ def text(messages):
     return messages[-1]["content"]
 
 
-def build(events=(), *, request=HELP_1, reference=REFERENCE, prior_solve=False, problem_seconds=18 * 60, seconds_left=27 * 60):
+def build(events=(), *, request=HELP_1, reference=REFERENCE, prior_solve=False, problem_seconds=18 * 60,
+          seconds_left=27 * 60, solve=None, answer=None):
     return text(build_messages(PROBLEM, list(events), reference=reference, prior_solve=prior_solve,
-                               problem_seconds=problem_seconds, seconds_left=seconds_left, request=request))
+                               problem_seconds=problem_seconds, seconds_left=seconds_left, request=request,
+                               solve=solve, answer=answer))
 
 
 def stmt(statement=STATEMENT, slug="contains-duplicate"):
@@ -206,3 +209,96 @@ def test_prompt_allows_light_markdown_but_no_headings_or_links():
     assert "fenced code blocks (each line of code on its own line, indented as in Python)" in SYSTEM_PROMPT
     assert "no headings, tables, images or links" in SYSTEM_PROMPT
     assert "Plain text;" not in SYSTEM_PROMPT
+
+
+# --- after the accept and follow-up answers ---------------------------------------
+
+SOLVE = TutorRequest("solve", None, None)
+ANSWER = TutorRequest("chat", None, "O(n) because each value is seen once")
+CHECKED = StoredReference(REFERENCE.reference, "checked", [])
+
+
+def solve_reply(**changes):
+    return {"gap": "none", "gap_note": None, "help_kind": "none", "reply_text": "That works.",
+            "follow_up_question": None, "follow_up_complexity": False, "postpone_reason": None,
+            "linked": [], **changes}
+
+
+def submitted(code="def f(nums):\n    return len(set(nums)) < len(nums)"):
+    return [("code_snapshot", {"code": code}),
+            ("submit_result", {"slug": PROBLEM["slug"], "accepted": True, "error_type": None, "error_message": "",
+                               "runtime": "0.01", "memory": 1, "passed": 34, "total": 34, "failing_case": None})]
+
+
+def test_the_solve_prompt_carries_the_accepted_code_load_and_follow_up_rules():
+    out = build(submitted(), reference=CHECKED, request=SOLVE, problem_seconds=12 * 60,
+                solve={"complexity_due": True, "followups_forbidden": False, "difficulty": "Easy"})
+    assert "return len(set(nums)) < len(nums)" in out and "accepted" in out.lower()
+    assert "12 min" in out and "Easy" in out and "Tutor help turns: 0" in out
+    assert "complexity question is due" in out.lower()
+    assert "follow_up_complexity" in out and "postpone_reason" in out
+    assert "make it faster" in out.lower()
+
+
+def test_the_solve_prompt_forbids_faster_and_follow_ups_while_the_reference_needs_review():
+    out = build(request=SOLVE, reference=REFERENCE,
+                solve={"complexity_due": True, "followups_forbidden": True, "difficulty": "Easy"})
+    assert "forbidden" in out.lower() and "needs review" in out.lower()
+    assert "make it faster" not in out.lower()
+
+
+def test_the_solve_reply_must_ask_or_postpone_when_a_complexity_question_is_due():
+    schema = reply_schema(SOLVE, complexity_due=True)
+    asked = schema.model_validate(solve_reply(follow_up_question="What's the complexity?",
+                                              follow_up_complexity=True))
+    assert asked.follow_up_question == "What's the complexity?" and asked.follow_up_complexity is True
+    postponed = schema.model_validate(solve_reply(postpone_reason="Long, hard problem; enough for now."))
+    assert postponed.postpone_reason and postponed.follow_up_question is None
+    for bad in (solve_reply(),
+                solve_reply(follow_up_question="What's the complexity?", follow_up_complexity=True,
+                            postpone_reason="both"),
+                solve_reply(follow_up_question="What's the complexity?", follow_up_complexity=False)):
+        with pytest.raises(ValidationError):
+            schema.model_validate(bad)
+
+
+def test_the_solve_reply_keeps_only_discussion_questions_when_nothing_is_due():
+    schema = reply_schema(SOLVE, complexity_due=False)
+    discussion = schema.model_validate(solve_reply(follow_up_question="What if the input were a stream?"))
+    assert discussion.follow_up_question and discussion.follow_up_complexity is False
+    for bad in (solve_reply(follow_up_complexity=True), solve_reply(postpone_reason="not now")):
+        with pytest.raises(ValidationError):
+            schema.model_validate(bad)
+
+
+def test_a_needs_review_reference_discards_every_follow_up_field_and_the_faster_line():
+    schema = reply_schema(SOLVE, complexity_due=True, followups_forbidden=True)
+    reply = schema.model_validate(solve_reply(follow_up_question="Why does it work?",
+                                              follow_up_complexity=True, postpone_reason="later"))
+    assert reply.follow_up_question is None and reply.follow_up_complexity is False
+    assert reply.postpone_reason is None
+
+
+def test_an_answer_turn_requires_has_reasoning_and_never_asks_a_new_question():
+    schema = reply_schema(ANSWER, answer=True)
+    with pytest.raises(ValidationError):
+        schema.model_validate(solve_reply())
+    reply = schema.model_validate(solve_reply(has_reasoning=True, follow_up_question="new question",
+                                              follow_up_complexity=True))
+    assert reply.has_reasoning is True and reply.follow_up_question is None
+    assert reply.follow_up_complexity is False
+
+
+def test_follow_up_fields_only_mean_something_after_a_solve():
+    reply = reply_schema(TutorRequest("chat", None, "ok")).model_validate(solve_reply(follow_up_question="hidden",
+                                                          follow_up_complexity=True))
+    assert reply.follow_up_question is None and reply.follow_up_complexity is False
+
+
+def test_the_answer_prompt_quotes_the_question_and_asks_for_reasoning_once():
+    out = build(request=ANSWER, answer={"question": "What's the time complexity?",
+                                        "reasoning_requested": False})
+    assert "What's the time complexity?" in out and "reasoning" in out
+    again = build(request=ANSWER, answer={"question": "What's the time complexity?",
+                                          "reasoning_requested": True})
+    assert "already asked" in again

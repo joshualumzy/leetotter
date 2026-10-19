@@ -31,6 +31,40 @@ def _question_events(db, question_id):
     return events
 
 
+def _closed(events, question):
+    return any(kind == "followup_skipped" or
+               kind == "followup_answered" and (payload["has_reasoning"] or not question["complexity"])
+               for kind, payload in events)
+
+
+def open_followup(db, *, session_id, slug=None):
+    """The latest question in this session that is still open, or None.
+
+    A question closes when it is skipped, when a complexity answer gives reasoning, or when any answer to a
+    discussion question is given. `slug` narrows it to the current problem.
+    """
+    rows = db.execute("SELECT id, payload FROM events WHERE session_id = ? AND type = 'followup_asked' "
+                      "ORDER BY id", (session_id,)).fetchall()
+    for question_id, raw in reversed(rows):
+        question = json.loads(raw)
+        if slug is not None and question["slug"] != slug:
+            continue
+        if not _closed(_question_events(db, question_id), question):
+            return {"question_id": question_id, "slug": question["slug"], "question": question["question"],
+                    "complexity": question["complexity"]}
+    return None
+
+
+def reasoning_requested(db, *, question_id):
+    return any(kind == "reasoning_requested" for kind, _ in _question_events(db, question_id))
+
+
+def close_open_followups(db, *, session_id, ts, slug=None):
+    """Close every open question in this session (or on one problem) as skipped, so none goes stale."""
+    while (question := open_followup(db, session_id=session_id, slug=slug)) is not None:
+        skip_followup(db, question_id=question["question_id"], ts=ts)
+
+
 def complexity_question_due(db, *, session_id, slug):
     catalog = load_catalog().by_slug(slug)
     if catalog is None:
@@ -83,9 +117,7 @@ def postpone_complexity(db, *, session_id, slug, ts, reason):
 def answer_followup(db, *, question_id, ts, text, has_reasoning):
     session_id, question = _question(db, question_id)
     prior = _question_events(db, question_id)
-    if any(kind == "followup_skipped" for kind, _ in prior) or any(
-            kind == "followup_answered" and (payload["has_reasoning"] or not question["complexity"])
-            for kind, payload in prior):
+    if _closed(prior, question):
         raise ValueError("Follow-up question is closed")
     if not isinstance(text, str) or not text or type(has_reasoning) is not bool:
         raise ValueError("Invalid follow-up answer")
@@ -102,8 +134,6 @@ def answer_followup(db, *, question_id, ts, text, has_reasoning):
 
 def skip_followup(db, *, question_id, ts):
     session_id, question = _question(db, question_id)
-    if any(kind == "followup_skipped" or kind == "followup_answered"
-           and (payload["has_reasoning"] or not question["complexity"])
-           for kind, payload in _question_events(db, question_id)):
+    if _closed(_question_events(db, question_id), question):
         raise ValueError("Follow-up question is closed")
     _event(db, session_id, ts, "followup_skipped", {"question_id": question_id, "slug": question["slug"]})

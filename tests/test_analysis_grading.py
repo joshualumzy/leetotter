@@ -29,7 +29,7 @@ from companion.memory import item_memory
 from companion.store import open_store
 from tests.test_grading import (CATEGORY, MEDIUM, MEDIUM_TITLE, FakeGraders, Run, down, put_reference, reviews,
                                 set_reference_status)
-from tests.test_session import opened
+from tests.test_session import of_type, opened
 
 OTHER, OTHER_TITLE = "is-palindrome", "Valid Palindrome"  # catalog: Easy, Two Pointers
 ANSWER = "O(n log k)"
@@ -248,18 +248,19 @@ def test_failing_analysis_graders_never_hold_up_the_solve_grade(tmp_path):
     assert analysis_rows(run.path) == []
 
 
-def test_an_answer_given_after_the_solve_was_graded_is_graded_later(tmp_path):
+def test_leaving_with_an_open_question_skips_it_and_never_grades_analysis(tmp_path):
     run = Run(tmp_path)
     put_reference(run.path)
     run.start()
     run.open(MEDIUM, MEDIUM_TITLE)
     run.accept(MEDIUM)
     question = ask(run)
-    run.send(opened(OTHER, OTHER_TITLE))  # leaving the problem before answering
+    run.send(opened(OTHER, OTHER_TITLE))  # leaving the problem closes the question
+    skipped, = of_type(run.path, "followup_skipped")
+    assert skipped[1]["question_id"] == question
     grade_pending(FakeAllGraders("right"), db_path=run.path)
     assert solve_rows(run.path) == [("problem", "good"), ("category:solve", "good")]
     assert analysis_rows(run.path) == []
-    answer(run, question)
-    grade_pending(FakeAllGraders("right"), db_path=run.path)
-    assert [(r["item_key"], r["grade"]) for r in analysis_rows(run.path)] == [(CATEGORY, "good")]
+    with pytest.raises(ValueError):
+        answer(run, question)
     run.end()

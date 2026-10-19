@@ -35,10 +35,11 @@ import pytest
 from companion.followups import (answer_followup, ask_followup, complexity_question_due, postpone_complexity,
                                  skip_followup)
 from companion.history import import_history
+from companion.model import TutorReply
 from companion.session import SessionCoordinator
 from companion.store import open_store
 from tests.test_grading import CATEGORY, MEDIUM, MEDIUM_TITLE, Run, put_reference
-from tests.test_session import START, of_type, submit
+from tests.test_session import START, msg, of_type, opened, submit
 
 SAME_CATEGORY, SAME_TITLE = "is-anagram", "Valid Anagram"          # catalog: Easy, Arrays & Hashing
 OTHER_CATEGORY, OTHER_TITLE = "is-palindrome", "Valid Palindrome"  # catalog: Easy, Two Pointers
@@ -257,3 +258,68 @@ def test_a_session_with_follow_up_events_restores_after_a_restart(tmp_path):
     restarted = SessionCoordinator(run.path, run.clock)
     assert restarted.state == "paused" and restarted.paused_reason == "restart"
     assert restarted.session_id == run.coord.session_id
+
+
+# --- the open question in session state --------------------------------------------
+
+def state(coord):
+    out = coord.handle(msg("session_get_state"))
+    assert out[0]["type"] == "session_state"
+    return out[0]
+
+
+def test_session_state_shows_the_open_question_for_the_panel(tmp_path):
+    run = started(tmp_path)
+    solve(run)
+    question = ask(run)
+    assert state(run.coord)["followup"] == {
+        "question_id": question,
+        "question": "What's the time complexity of your solution?",
+        "complexity": True,
+    }
+
+
+def test_session_state_hides_the_question_once_answered_with_reasoning(tmp_path):
+    run = started(tmp_path)
+    solve(run)
+    question = ask(run)
+    answer(run, question, "O(n log k), because each item touches a size-k heap")
+    assert state(run.coord)["followup"] is None
+
+
+def test_an_open_question_is_closed_as_skipped_when_the_problem_is_left(tmp_path):
+    run = started(tmp_path)
+    solve(run)
+    question = ask(run)
+    run.send(opened(SAME_CATEGORY, SAME_TITLE))
+    skipped = of_type(run.path, "followup_skipped")
+    assert len(skipped) == 1 and skipped[0][1]["question_id"] == question
+    assert state(run.coord)["followup"] is None
+
+
+def test_an_open_question_is_closed_as_skipped_when_the_session_ends(tmp_path):
+    run = started(tmp_path)
+    solve(run)
+    question = ask(run)
+    run.end()
+    skipped = of_type(run.path, "followup_skipped")
+    assert len(skipped) == 1 and skipped[0][1]["question_id"] == question
+    assert state(run.coord)["followup"] is None
+
+
+def test_an_open_question_is_rebuilt_from_events_after_a_restart_and_can_be_answered(tmp_path):
+    run = started(tmp_path)
+    solve(run)
+    question = ask(run)
+    fresh = SessionCoordinator(run.path, run.clock)
+    fresh.handle(msg("session_resume"))
+    assert state(fresh)["followup"]["question_id"] == question
+    out, turn = fresh.begin_turn("chat", "O(n log k): each push and pop on the heap costs log k")
+    assert turn is not None, out
+    reply = turn.schema.model_validate({"gap": "none", "gap_note": None, "help_kind": "none",
+                                        "reply_text": "Right, that follows.", "follow_up_question": None,
+                                        "has_reasoning": True})
+    fresh.finish_turn(turn, reply, "x-test-1")
+    answered = of_type(run.path, "followup_answered")
+    assert answered[-1][1]["question_id"] == question and answered[-1][1]["has_reasoning"] is True
+    assert state(fresh)["followup"] is None

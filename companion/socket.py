@@ -26,13 +26,18 @@ from companion.tutor import ask_tutor, failure
 EXTENSION_ID = "oohbhndckkkkdngkglilcbpcoekapmgp"
 ALLOWED_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
-SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_time_up", "session_done", "session_skip", "session_get_state", "tab_closed"})
+SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "session_end", "session_time_up", "session_done", "session_skip", "session_get_state", "tab_closed", "followup_skip"})
 # Tutor messages. Client: help_request (a press of "I need help", no payload) and chat_message {text}.
+# A chat_message while a follow-up question is open is that question's answer.
 # Server, each with the turn's id: tutor_start {request, press_index}; tutor_chunk {attempt, text}, reply text
 # as it streams (append chunks of the same attempt; a higher attempt is a retry after an invalid reply and
 # replaces what was shown); tutor_done {reply_text, gap, gap_note, help_kind, follow_up_question, linked}, the
 # validated reply, which replaces the streamed text; tutor_error {message}, the turn failed and anything
 # streamed for it is withdrawn. A refused request gets tutor_error with turn_id null, to the sender only.
+# The first accept on a problem also starts one Tutor turn with request "solve"; later accepts in the same
+# visit do not. followup_skip {question_id} closes the open follow-up question as skipped and answers with
+# session_state. session_state carries followup {question_id, question, complexity} while a question is open,
+# otherwise null, so the panel can offer Skip.
 # chat_get (no payload) answers the sender only with chat_state {turns, streaming}: the current problem's
 # conversation in this session, from the store, oldest first, empty outside an active or paused session on a problem; each turn is
 #   {turn_id, kind: "press", press_index} | {turn_id, kind: "chat", text}
@@ -174,6 +179,10 @@ def _validate(raw):
         payload = message.get("payload")
         if not isinstance(payload, dict) or payload.get("choice") not in ("extend", "debrief"):
             raise ValueError("Invalid session_time_up payload")
+    if kind == "followup_skip":
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or not _integer(payload.get("question_id")) or payload["question_id"] <= 0:
+            raise ValueError("Invalid followup_skip payload")
     if kind in ("tab_closed", "help_request", "chat_get") and "payload" in message:
         raise ValueError(f"Invalid {kind} payload")
     if kind == "chat_message":
@@ -382,9 +391,7 @@ async def _handle(connection):
                     if turn is None:
                         await _broadcast(outgoing, connection)
                     else:
-                        task = asyncio.create_task(_run_turn(turn, outgoing))
-                        _turns.add(task)
-                        task.add_done_callback(_turns.discard)
+                        _schedule_turn(outgoing, turn)
                 elif kind != "ping":
                     before_state = _coordinator.state
                     outgoing = _coordinator.handle(message)
@@ -395,9 +402,7 @@ async def _handle(connection):
                             if turn is None:
                                 await _broadcast(started, connection)
                             else:
-                                task = asyncio.create_task(_run_turn(turn, started))
-                                _turns.add(task)
-                                task.add_done_callback(_turns.discard)
+                                _schedule_turn(started, turn)
                         if _planner is not None:
                             if kind == "session_start":
                                 request = _planner.session_started(_coordinator.session_id)
@@ -424,6 +429,7 @@ async def _handle(connection):
                             _schedule_grading("initial")
                             await _broadcast([recap_state(store_path(), _coordinator.session_id)], connection)
                             _schedule_reflection(_coordinator.session_id)
+                        await _run_solve_turn()
             except Exception as exc:
                 logger.exception("WebSocket request failed: %s", exc)
                 await connection.send(json.dumps({"type": "error", "ts": _timestamp(), "message": str(exc)}))
@@ -460,6 +466,32 @@ async def _broadcast(outgoing, sender, broadcast=True):
                 logger.warning("Connection closed before %s could be delivered", message["type"])
 
 
+def _schedule_turn(started, turn):
+    task = asyncio.create_task(_run_turn(turn, started))
+    _turns.add(task)
+    task.add_done_callback(_turns.discard)
+
+
+async def _run_solve_turn():
+    """Start the after-solve Tutor turn for the first accept, once the session can take it."""
+    slug = _coordinator.solve_turn_due()
+    if slug is None or _coordinator.state == "paused":
+        return
+    if (_coordinator.state != "active" or _coordinator.problem is None
+            or _coordinator.problem["slug"] != slug or not _coordinator.accepted):
+        _coordinator.take_solve_turn()
+        return
+    started, turn = _coordinator.begin_turn("solve")
+    if turn is None:
+        if any(item.get("turn_id") is None and "still answering" in item.get("message", "") for item in started):
+            return  # keep it pending; the turn in flight retries when it ends
+        _coordinator.take_solve_turn()
+        await _broadcast(started, None)
+        return
+    _coordinator.take_solve_turn()
+    _schedule_turn(started, turn)
+
+
 async def _run_turn(turn, started):
     """Announce a turn (`started`), run its Tutor call in a worker thread, so the event loop (the timer, other
     clients) never waits on it, and relay its streamed text to every panel in order. Whatever goes wrong, the turn
@@ -492,10 +524,14 @@ async def _run_turn(turn, started):
                 continue
             if item[0] == "done":
                 outgoing = _coordinator.finish_turn(turn, item[1], item[2])
+                await _broadcast(outgoing, None)
+                if turn.request.kind == "solve" or turn.answer_question is not None:
+                    await _broadcast([_coordinator._state(_coordinator.clock())], None)
             else:
                 logger.error("Tutor turn %s failed", turn.turn_id, exc_info=item[1])
                 outgoing = _coordinator.fail_turn(turn, *failure(item[1]))
-            await _broadcast(outgoing, None)
+                await _broadcast(outgoing, None)
+            await _run_solve_turn()
             return
     except asyncio.CancelledError:
         _coordinator.fail_turn(turn, "shutdown", "The companion stopped before the Tutor finished.")

@@ -5,6 +5,8 @@ import json
 import logging
 from datetime import datetime
 from companion.catalog import load_catalog
+from companion.followups import (answer_followup, ask_followup, close_open_followups, complexity_question_due,
+                                 open_followup, postpone_complexity, reasoning_requested, skip_followup)
 from companion.grading import write_missed
 from companion.past_links import build_past_links, asks_about_similar
 from companion.reference import load_reference
@@ -19,11 +21,16 @@ TIMELINE_LIMIT = 10
 READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"})
 # Tutor turn events. A turn's id is the id of its request event.
 #   chat_message {slug, text}           help_request {slug, press_index}       debrief_request {slug}
-#   help_turn {turn_id, slug, request: "help" | "chat" | "debrief", press_index (None for chat and debrief),
-#              gap, gap_note, help_kind, reply_text, follow_up_question, linked, model}
+#   solve_request {slug}                (the first accept on a problem)
+#   help_turn {turn_id, slug, request: "help" | "chat" | "debrief" | "solve",
+#              press_index (None for chat, debrief and solve), gap, gap_note, help_kind, reply_text,
+#              follow_up_question, linked, model}
 #   help_failed {turn_id, slug, reason, message}   reason: model_unavailable, rate_limited, timeout,
-#              invalid_output, error, context (the prompt couldn't be built), restart, shutdown
-TURN_REQUESTS = frozenset({"chat_message", "help_request", "debrief_request"})
+#              invalid_output, error, context (the prompt couldn't be built), restart, shutdown, closed
+# Follow-up events (SPEC §5 "Between problems"): followup_asked {slug, question, complexity},
+# complexity_postponed {slug, reason}, followup_answered {question_id, slug, text, has_reasoning},
+# reasoning_requested {question_id, slug}, followup_skipped {question_id, slug}, analysis_resolved {...}.
+TURN_REQUESTS = frozenset({"chat_message", "help_request", "debrief_request", "solve_request"})
 TURN_EVENTS = TURN_REQUESTS | {"help_turn", "help_failed"}
 FOLLOWUP_EVENTS = frozenset({"followup_asked", "complexity_postponed", "followup_answered", "reasoning_requested", "followup_skipped", "analysis_resolved"})
 EVENT_TYPES = READER_TYPES | TURN_EVENTS | FOLLOWUP_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "time_up_shown", "time_up_choice", "session_restored"}
@@ -53,6 +60,7 @@ class SessionCoordinator:
         self.extensions = set()  # problem slugs that have taken their one extension
         self.debrief = False  # the current problem is in the Tutor's debrief mode
         self.turn = None  # id of the Tutor turn in flight; one at a time
+        self.pending_solve_slug = None  # the first accept awaiting its after-solve Tutor turn
         with open_store(db_path) as db:
             rows = db.execute("SELECT id, started_at FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC").fetchall()
             if rows:
@@ -101,6 +109,7 @@ class SessionCoordinator:
         self.extensions = set()
         self.debrief = False
         self.turn = None
+        self.pending_solve_slug = None
 
     def _close_open_turns(self, db, session_id, history, now):
         """A Tutor turn still open when the companion died is logged as failed, never left open."""
@@ -321,17 +330,21 @@ class SessionCoordinator:
         return "paused" if self.state == "paused" else "idle"
 
     def _state(self, now):
+        """The panel's view. `followup` is {question_id, question, complexity} while a question is open, else null."""
         reference_status = None
+        question = None
         if self.problem:
             with open_store(self.db_path) as db:
                 row = db.execute('SELECT status FROM "references" WHERE problem_key = ?',
                                  (self.problem["slug"],)).fetchone()
+                if self.session_id is not None:
+                    question = open_followup(db, session_id=self.session_id, slug=self.problem["slug"])
             reference_status = row[0] if row and row[0] in {"checked", "resolved_by_you"} else "not_checked_yet"
         state = {"type": "session_state", "ts": now.isoformat(), "state": self.state,
                 "paused_reason": self.paused_reason, "check_message": self.check_message,
                 "active_seconds": self._seconds(now), "running": self.state == "active",
                 "problem": self.problem, "accepted": self.accepted, "mode": self._mode(),
-                "cap_minutes": None, "cap_seconds_left": None, "time_up": None}
+                "cap_minutes": None, "cap_seconds_left": None, "time_up": None, "followup": None}
         if self.problem:
             cap = self._cap_minutes()
             left = self._cap_seconds()
@@ -339,6 +352,8 @@ class SessionCoordinator:
             state["cap_seconds_left"] = None if left is None else max(0, int(left - (self._problem_seconds(now) or 0)))
             state["time_up"] = self.time_up
             state["reference_status"] = reference_status
+            if question is not None:
+                state["followup"] = {key: question[key] for key in ("question_id", "question", "complexity")}
             if reference_status == "not_checked_yet":
                 state["reference_message"] = "Reference not checked yet"
         return state
@@ -364,6 +379,7 @@ class SessionCoordinator:
         if self.pending_accept and self.problem and not self.accepted:
             self.accepted = True
             self.time_up = None
+            self.pending_solve_slug = self.problem["slug"]
             self._event(db, self.session_id, now.isoformat(), "accept_counted", {"slug": self.problem["slug"]})
         self.pending_accept = False
 
@@ -372,6 +388,8 @@ class SessionCoordinator:
         if self.state == "active":
             self.elapsed += (now - self.active_since).total_seconds()
         self.active_since = None
+        if self.session_id is not None:
+            close_open_followups(db, session_id=self.session_id, ts=now.isoformat())
         if self.problem:
             self._event(db, self.session_id, now.isoformat(), "problem_left", {"slug": self.problem["slug"], "accepted": self.accepted})
         seconds = self._seconds(now)
@@ -381,6 +399,7 @@ class SessionCoordinator:
         self.paused_reason = None
         self.check_message = None
         self.pending_accept = False
+        self.pending_solve_slug = None
         self.time_up = None
         self.debrief = False
 
@@ -405,11 +424,13 @@ class SessionCoordinator:
             return [{"type": "error", "message": "Invalid session_time_up"}]
         if kind == "session_time_up" and payload["choice"] == "debrief" and self.turn is not None:
             return [{"type": "error", "message": "The Tutor is still answering. Wait for that reply, then choose the debrief."}]
-        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_time_up", "session_done", "session_skip", "tab_closed"}:
+        if kind not in READER_TYPES | {"session_start", "session_pause", "session_resume", "session_end", "session_time_up", "session_done", "session_skip", "tab_closed", "followup_skip"}:
             return [{"type": "error", "message": f"Unknown message type: {kind}"}]
         if kind in ("session_done", "session_skip") and (self.state != "active" or self.problem is None or
                 (kind == "session_done" and not (self.accepted or self.debrief))):
             return [{"type": "error", "message": f"{kind} requires an appropriate active problem"}]
+        if kind == "followup_skip" and (self.state not in ("active", "paused") or self.problem is None):
+            return [{"type": "error", "message": "followup_skip requires a session and an open follow-up question"}]
         if kind == "tab_closed" and self.state != "active":
             return [self._state(now)]
         if kind in READER_TYPES and (self.state in ("idle", "ended") or
@@ -437,13 +458,21 @@ class SessionCoordinator:
                 self._end(db, now)
             elif kind in ("session_done", "session_skip"):
                 self._close_problem(now)
+                close_open_followups(db, session_id=self.session_id, ts=now.isoformat(), slug=self.problem["slug"])
                 self._event(db, self.session_id, now.isoformat(), "problem_left", {"slug": self.problem["slug"], "accepted": self.accepted})
                 self.problem = None
                 self.accepted = False
                 self.pending_accept = False
+                self.pending_solve_slug = None
                 self.attempt_start = None
                 self.time_up = None
                 self.debrief = False
+            elif kind == "followup_skip":
+                question = open_followup(db, session_id=self.session_id, slug=self.problem["slug"])
+                if (not isinstance(payload, dict) or type(payload.get("question_id")) is not int
+                        or question is None or question["question_id"] != payload["question_id"]):
+                    return [{"type": "error", "message": "That follow-up question is closed. It was skipped or already answered."}]
+                skip_followup(db, question_id=payload["question_id"], ts=now.isoformat())
             elif kind == "session_time_up":
                 slug = self.problem["slug"]
                 choice_id = self._event(db, self.session_id, now.isoformat(), "time_up_choice", {"slug": slug, "choice": payload["choice"]})
@@ -470,9 +499,12 @@ class SessionCoordinator:
                 elif kind == "problem_opened":
                     if self.problem and self.problem["slug"] != payload["slug"]:
                         self._close_problem(now)
+                        close_open_followups(db, session_id=self.session_id, ts=now.isoformat(),
+                                             slug=self.problem["slug"])
                         self._event(db, self.session_id, now.isoformat(), "problem_left", {"slug": self.problem["slug"], "accepted": self.accepted})
                         self.accepted = False
                         self.pending_accept = False
+                        self.pending_solve_slug = None
                         self.time_up = None
                         self.debrief = False
                     if self.problem is None or self.problem["slug"] != payload["slug"]:
@@ -489,6 +521,7 @@ class SessionCoordinator:
                     elif not self.accepted:
                         self.accepted = True
                         self.time_up = None
+                        self.pending_solve_slug = payload["slug"]
                         self._event(db, self.session_id, now.isoformat(), "accept_counted", {"slug": payload["slug"]})
         return [self._state(now)]
 
@@ -508,15 +541,26 @@ class SessionCoordinator:
         self.time_up_shows = {}
         self.extensions = set()
         self.debrief = False
+        self.pending_solve_slug = None
+
+    def solve_turn_due(self):
+        """The slug whose first accept still needs its after-solve Tutor turn, or None."""
+        return self.pending_solve_slug
+
+    def take_solve_turn(self):
+        slug = self.pending_solve_slug
+        self.pending_solve_slug = None
+        return slug
 
     def begin_turn(self, kind, text=None) -> tuple[list[dict], Turn | None]:
-        """Start a Tutor turn for a press of "I need help" (`help`), a chat message (`chat`, with its text), or
-        the debrief (`debrief`, entered from the time-up card).
+        """Start a Tutor turn for a press of "I need help" (`help`), a chat message (`chat`, with its text), the
+        debrief (`debrief`, entered from the time-up card), or the first accept on a problem (`solve`).
 
         Accepted only while the session is active, on a problem, with no other turn in flight; the debrief also
-        requires debrief mode. A refusal is a `tutor_error` with no turn id and logs nothing. An accepted request
-        is logged first, then its prompt is built from this attempt's events; if that fails, the turn is logged
-        failed and nothing is sent. Every Tutor turn in the debrief is fed the code-built timeline.
+        requires debrief mode and the solve turn an accepted submission. A chat message while a follow-up question
+        is open is that question's answer. A refusal is a `tutor_error` with no turn id and logs nothing. An
+        accepted request is logged first, then its prompt is built from this attempt's events; if that fails, the
+        turn is logged failed and nothing is sent. Every Tutor turn in the debrief is fed the code-built timeline.
         """
         now = self.clock()
         if self.state == "paused":
@@ -525,21 +569,33 @@ class SessionCoordinator:
             return [self._tutor_error(now, None, "Help is available only during a session.")], None
         if self.problem is None:
             return [self._tutor_error(now, None, "Open a problem first, then ask.")], None
-        if kind not in ("help", "chat", "debrief"):
+        if kind not in ("help", "chat", "debrief", "solve"):
             return [self._tutor_error(now, None, f"Unknown Tutor request: {kind}")], None
         if kind == "debrief" and not self.debrief:
             return [self._tutor_error(now, None, "The debrief begins from the time-up card.")], None
+        if kind == "solve" and not self.accepted:
+            return [self._tutor_error(now, None, "The solve turn begins after an accepted submission.")], None
         if self.turn is not None:
             return [self._tutor_error(now, None, "The Tutor is still answering. Wait for that reply, then ask again.")], None
         slug = self.problem["slug"]
+        answer = None
+        solve = None
         with open_store(self.db_path) as db:
             events = [(kind_, payload) for _, kind_, payload in self._problem_events(db)]
+            question = open_followup(db, session_id=self.session_id, slug=slug) if kind == "chat" else None
+            if question is not None:
+                answer = {"question_id": question["question_id"], "question": question["question"],
+                          "complexity": question["complexity"],
+                          "reasoning_requested": reasoning_requested(db, question_id=question["question_id"])}
             if kind == "help":
                 request = TutorRequest("help", answered_presses(events) + 1, None)
                 turn_id = self._event(db, self.session_id, now.isoformat(), "help_request", {"slug": slug, "press_index": request.press_index})
             elif kind == "debrief":
                 request = TutorRequest("debrief", None, None)
                 turn_id = self._event(db, self.session_id, now.isoformat(), "debrief_request", {"slug": slug})
+            elif kind == "solve":
+                request = TutorRequest("solve", None, None)
+                turn_id = self._event(db, self.session_id, now.isoformat(), "solve_request", {"slug": slug})
             else:
                 request = TutorRequest("chat", None, text)
                 turn_id = self._event(db, self.session_id, now.isoformat(), "chat_message", {"slug": slug, "text": text})
@@ -551,10 +607,19 @@ class SessionCoordinator:
                 seconds_left = max(0, cap_seconds - int(problem_seconds)) if cap_seconds is not None else 0
                 timeline = self._timeline(db) if self.debrief else None
                 reference = load_reference(db, slug)
+                if kind == "solve":
+                    catalog_problem = load_catalog().by_slug(slug) or {}
+                    solve = {
+                        "complexity_due": complexity_question_due(db, session_id=self.session_id, slug=slug),
+                        "followups_forbidden": reference is not None and reference.status == "needs_review",
+                        "difficulty": (reference.reference.difficulty if reference is not None
+                                       else catalog_problem.get("difficulty")),
+                    }
                 links = build_past_links(db, slug, reference=reference, current_session_id=self.session_id)
                 messages = build_messages(self.problem, events, reference=reference, prior_solve=prior_solve,
                                           problem_seconds=int(problem_seconds), seconds_left=seconds_left,
-                                          request=request, timeline=timeline, past_links=links)
+                                          request=request, timeline=timeline, past_links=links,
+                                          solve=solve, answer=answer)
             except Exception as exc:
                 logger.exception("Cannot build the Tutor's context for %s", slug)
                 message = f"Couldn't prepare the Tutor's context: {exc}"
@@ -563,8 +628,10 @@ class SessionCoordinator:
                 return [self._tutor_error(now, turn_id, message)], None
         self.turn = turn_id
         asked = request.kind == "chat" and asks_about_similar(request.text)
-        schema = reply_schema(request, allowed=(link.slug for link in links), asked=asked)
-        turn = Turn(turn_id, self.session_id, slug, request, messages, schema)
+        schema = reply_schema(request, allowed=(link.slug for link in links), asked=asked, answer=answer is not None,
+                              complexity_due=(solve or {}).get("complexity_due", False),
+                              followups_forbidden=(solve or {}).get("followups_forbidden", False))
+        turn = Turn(turn_id, self.session_id, slug, request, messages, schema, answer)
         return [{"type": "tutor_start", "ts": now.isoformat(), "turn_id": turn_id, "request": kind,
                  "press_index": request.press_index}], turn
 
@@ -728,6 +795,14 @@ class SessionCoordinator:
     def finish_turn(self, turn: Turn, reply, model: str) -> list[dict]:
         """Log a validated reply and send it; it is stored whatever the session's state is now."""
         now = self.clock()
+        if turn.answer_question is not None:
+            try:
+                with open_store(self.db_path) as db:
+                    answer_followup(db, question_id=turn.answer_question["question_id"], ts=now.isoformat(),
+                                    text=turn.request.text, has_reasoning=reply.has_reasoning)
+            except ValueError:
+                logger.warning("Follow-up answer for turn %s arrived after the question closed", turn.turn_id)
+                return self.fail_turn(turn, "closed", "That follow-up question is closed. It was skipped or already answered.")
         labels = {"gap": reply.gap, "gap_note": reply.gap_note, "help_kind": reply.help_kind, "linked": reply.linked}
         try:
             with open_store(self.db_path) as db:
@@ -735,6 +810,8 @@ class SessionCoordinator:
                     "turn_id": turn.turn_id, "slug": turn.slug, "request": turn.request.kind,
                     "press_index": turn.request.press_index, **labels, "reply_text": reply.reply_text,
                     "follow_up_question": reply.follow_up_question, "model": model})
+                if turn.request.kind == "solve":
+                    self._record_solve_followup(db, turn, reply, now)
                 if reply.help_kind == "full_solution":
                     events = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id <= ? ORDER BY id",
                                         (turn.session_id, turn.turn_id)).fetchall()
@@ -763,6 +840,22 @@ class SessionCoordinator:
             self._release(turn)
         return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id, "reply_text": reply.reply_text,
                  **labels, "follow_up_question": reply.follow_up_question}]
+
+    def _record_solve_followup(self, db, turn: Turn, reply, now):
+        """Record the Tutor's follow-up decision, unless the accept was left or the reference is disputed."""
+        if (self.problem is None or self.problem["slug"] != turn.slug or not self.accepted
+                or self.attempt_start is None or turn.turn_id < self.attempt_start):
+            return
+        status = db.execute('SELECT status FROM "references" WHERE problem_key = ?', (turn.slug,)).fetchone()
+        if status is not None and status[0] == "needs_review":
+            return
+        ts = now.isoformat()
+        if reply.follow_up_question:
+            ask_followup(db, session_id=turn.session_id, slug=turn.slug, ts=ts,
+                         question=reply.follow_up_question, complexity=reply.follow_up_complexity)
+        elif reply.postpone_reason:
+            postpone_complexity(db, session_id=turn.session_id, slug=turn.slug, ts=ts,
+                                reason=reply.postpone_reason)
 
     def fail_turn(self, turn: Turn, reason: str, message: str) -> list[dict]:
         """Log a turn that ended without a valid reply and tell the panel; nothing if it already ended."""

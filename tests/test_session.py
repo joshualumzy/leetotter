@@ -151,7 +151,7 @@ def test_idle_state(tmp_path):
     assert {k: v for k, v in s.items() if k != "ts"} == {
         "type": "session_state", "state": "idle", "paused_reason": None, "check_message": None,
         "active_seconds": 0, "running": False, "problem": None, "accepted": False, "mode": "idle",
-        "cap_minutes": None, "cap_seconds_left": None, "time_up": None,
+        "cap_minutes": None, "cap_seconds_left": None, "time_up": None, "followup": None,
     }
 
 
@@ -162,7 +162,7 @@ def test_active_state_and_on_connect_and_get_state_agree(tmp_path):
     assert {k: v for k, v in out[0].items() if k != "ts"} == {
         "type": "session_state", "state": "active", "paused_reason": None, "check_message": None,
         "active_seconds": 0, "running": True, "problem": None, "accepted": False, "mode": "watching",
-        "cap_minutes": None, "cap_seconds_left": None, "time_up": None,
+        "cap_minutes": None, "cap_seconds_left": None, "time_up": None, "followup": None,
     }
 
 
@@ -774,7 +774,7 @@ def test_restart_restores_an_unfinished_session_as_paused_with_reason_restart(tm
         "active_seconds": 120, "running": False,
         "problem": {"slug": SLUG_A, "title": TITLE_A}, "reference_status": "not_checked_yet",
         "reference_message": "Reference not checked yet", "accepted": False, "mode": "paused",
-        "cap_minutes": 20, "cap_seconds_left": 20 * 60 - 120, "time_up": None,
+        "cap_minutes": 20, "cap_seconds_left": 20 * 60 - 120, "time_up": None, "followup": None,
     }
     restored = of_type(path, "session_restored")
     assert len(restored) == 1 and restored[0][1] == {"active_seconds": 120}

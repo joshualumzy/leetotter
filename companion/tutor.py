@@ -202,7 +202,10 @@ Your reply is JSON with these fields:
 - gap_note: a few words naming the gap when gap is other; otherwise null.
 - help_kind: the most concrete help in this reply: question (a guiding question), trace (walking through an example or their code), analogy, teach_tool (explaining a data structure or algorithm they didn't know), syntax (Python mechanics such as how heapq is called), snippet (code that carries part of the idea), partial_logic (spelling out part of the algorithm's steps), full_solution (the whole approach or code), none (no help; only with gap none). Code that carries any of the algorithm's idea is snippet or partial_logic, never syntax. Label honestly: the label records how much help the attempt needed.
 - reply_text: what the learner reads. It is a JSON string, so write every line break as \\n: a blank line between paragraphs is \\n\\n, and each line of a code block ends with \\n and keeps its indentation spaces. Never put code on one line.
-- follow_up_question: null.
+- follow_up_question: the one question you ask after a solve, or null. It is null except in the turn right after an accepted solve.
+- follow_up_complexity: true only when follow_up_question is a complexity question and one is due; otherwise false.
+- postpone_reason: a short reason for postponing the due complexity question, or null. Never set it with a follow_up_question.
+- has_reasoning: when answering a follow-up question, true only if the learner gave the reasoning behind their answer; null in every other turn.
 - linked: the slugs from the past-links list you cite in this reply, or [] (at most one unless the learner asked what is similar).
 
 Examples of good replies (invented problems; never reuse their wording):
@@ -224,9 +227,9 @@ CASE_FIELD_LIMIT = 600
 
 @dataclass(frozen=True)
 class TutorRequest:
-    kind: Literal["help", "chat", "debrief"]
-    press_index: int | None  # help: which answered press this is (1 = first); chat: None
-    text: str | None  # chat: the learner's message; help and debrief: None
+    kind: Literal["help", "chat", "debrief", "solve"]
+    press_index: int | None  # help: which answered press this is (1 = first); chat, debrief and solve: None
+    text: str | None  # chat: the learner's message; help, debrief and solve: None
 
 
 @dataclass(frozen=True)
@@ -238,6 +241,7 @@ class Turn:
     request: TutorRequest
     messages: list
     schema: type
+    answer_question: dict | None = None
 
 
 def _schema(name, gaps, kinds):
@@ -249,19 +253,29 @@ HelpReply = _schema("HelpReply", _PRESSED, tuple(k for k in HELP_KINDS if k != "
 FirstHelpReply = _schema("FirstHelpReply", _PRESSED, tuple(k for k in HELP_KINDS if k not in ("none", "full_solution")))
 
 
-def reply_schema(request: TutorRequest, *, allowed=(), asked: bool = False) -> type[TutorReply]:
+def reply_schema(request: TutorRequest, *, allowed=(), asked: bool = False, answer: bool = False,
+                 complexity_due: bool = False, followups_forbidden: bool = False) -> type[TutorReply]:
     """A press always gets help, and a first press never the full solution; the schema enforces both.
 
     A reply may cite only slugs from `allowed`, and only one unless the learner asked what is similar. The
-    allowed slugs are empty when there is no past-links section, so any link is then invalid.
+    allowed slugs are empty when there is no past-links section, so any link is then invalid. After a solve,
+    the follow-up fields are checked against whether a complexity question is due and whether the reference
+    forbids them; an answer turn must say whether the learner gave reasoning.
     """
-    base = TutorReply if request.kind in ("chat", "debrief") else (
+    base = TutorReply if request.kind in ("chat", "debrief", "solve") else (
         FirstHelpReply if request.press_index == 1 else HelpReply)
-    return type(base.__name__, (base,), {
+    attrs = {
         "_links_enforced": True,
         "_allowed_links": frozenset(allowed),
         "_asked_about_similar": asked,
-    })
+    }
+    if request.kind == "solve":
+        attrs["_solve_turn"] = True
+        attrs["_complexity_due"] = complexity_due
+        attrs["_followups_forbidden"] = followups_forbidden
+    if answer:
+        attrs["_answer_turn"] = True
+    return type(base.__name__, (base,), attrs)
 
 
 def answered_presses(events) -> int:
@@ -361,6 +375,12 @@ def _conversation(events):
             entries.append(f"You (gap {gap}; help {payload['help_kind']}): {payload['reply_text']}")
         elif kind == "help_failed":
             entries.append("(Your reply failed and was not shown.)")
+        elif kind == "followup_asked":
+            entries.append(f"You asked a follow-up question: {payload['question']}")
+        elif kind == "reasoning_requested":
+            entries.append("You asked for the reasoning behind the answer.")
+        elif kind == "followup_skipped":
+            entries.append("The follow-up question was skipped.")
     if not entries:
         return "## Conversation on this problem\nNothing yet."
     kept, size = [], 0
@@ -406,6 +426,58 @@ def _request(request: TutorRequest, events, *, has_links: bool = False):
             "A press always gets real help, so never label it gap none or help_kind none.")
 
 
+def _solve_request(events, *, solve: dict, reference: StoredReference | None, accepted_code: str | None,
+                   problem_seconds: int):
+    help_turns = sum(1 for kind, _ in events if kind == "help_turn")
+    difficulty = solve.get("difficulty") or "unknown difficulty"
+    lines = ["## After the accept",
+             "The learner's submission was accepted. Discuss it the way an interviewer would after a solve; "
+             "help now never changes the solve grade."]
+    if accepted_code and accepted_code.strip():
+        lines += ["## Accepted code", f"```python\n{_clip(accepted_code, CODE_LIMIT)}\n```"]
+    else:
+        lines += ["## Accepted code", "No code was captured at the accept."]
+    lines.append(f"Load so far: {_minutes(problem_seconds)} on the problem, Tutor help turns: {help_turns}, "
+                 f"{difficulty} problem.")
+    if solve.get("followups_forbidden"):
+        lines.append("The reference needs review, so the faster line and every follow-up are forbidden: leave "
+                     "follow_up_question null, follow_up_complexity false and postpone_reason null. Do not offer "
+                     "the faster line.")
+    else:
+        if reference is not None:
+            lines.append("If the accepted approach is below the best approach the reference marks usually, say so "
+                         "in one line the way an interviewer would, such as \"That works. Can you make it faster?\" "
+                         "Never reveal or name the better approach.")
+        else:
+            lines.append("There is no checked reference to compare the approach against, so do not say the faster line.")
+        if solve.get("complexity_due"):
+            lines.append("A complexity question is due. Either ask one complexity question in follow_up_question "
+                         "and set follow_up_complexity true, or set postpone_reason to a short reason and leave "
+                         "follow_up_question null. Never both.")
+        else:
+            lines.append("No complexity question is due: follow_up_complexity must be false and postpone_reason "
+                         "null. You may still ask one non-complexity discussion question with "
+                         "follow_up_complexity false.")
+        lines.append("A follow_up_question is shown to the learner after reply_text.")
+    return "\n".join(lines)
+
+
+def _answer_request(request: TutorRequest, answer: dict):
+    lines = ["## Now",
+             "The learner is answering the follow-up question you asked after the solve:",
+             f'"""\n{answer["question"]}\n"""',
+             f'Their answer:\n"""\n{request.text}\n"""',
+             "Judge whether they gave the reasoning behind the answer and set has_reasoning accordingly."]
+    if answer.get("reasoning_requested"):
+        lines.append("You already asked for the reasoning once. If it is still missing, reply briefly and do "
+                     "not ask again.")
+    else:
+        lines.append("If it is missing, ask for the reasoning behind their answer, without stating it yourself.")
+    lines.append("Do not ask a new follow-up question: follow_up_question null, follow_up_complexity false, "
+                 "postpone_reason null.")
+    return "\n".join(lines)
+
+
 def _debrief_request(request: TutorRequest, timeline: list[dict]):
     rendered = json.dumps(timeline, ensure_ascii=False, separators=(",", ":"))
     if request.kind == "chat":
@@ -427,7 +499,8 @@ def _debrief_request(request: TutorRequest, timeline: list[dict]):
 
 def build_messages(problem: dict, events: list, *, reference: StoredReference | None, prior_solve: bool,
                    problem_seconds: int, seconds_left: int, request: TutorRequest,
-                   timeline: list[dict] | None = None, past_links: list[PastLink] | None = None) -> list[dict]:
+                   timeline: list[dict] | None = None, past_links: list[PastLink] | None = None,
+                   solve: dict | None = None, answer: dict | None = None) -> list[dict]:
     """The Tutor's prompt, from the current problem and this session's events about it, oldest first.
 
     `events` are (type, payload) pairs; the code events are those since the problem was last opened. Only this
@@ -460,8 +533,14 @@ def build_messages(problem: dict, events: list, *, reference: StoredReference | 
         results = [(k, p) for k, p in events if k in ("run_result", "submit_result") and p["slug"] == problem["slug"]][-RECENT_RESULTS:]
         results_section = ("## Recent runs and submits (oldest first)\n" + "\n".join(_result(k, p) for k, p in results)
                            if results else "## Runs and submits\nThe learner hasn't run or submitted this problem yet.")
-        body = "\n\n".join([code_section, results_section, _conversation(events),
-                             _request(request, events, has_links=bool(past_links))])
+        if request.kind == "solve":
+            now_section = _solve_request(events, solve=solve or {}, reference=reference, accepted_code=code,
+                                         problem_seconds=problem_seconds)
+        elif answer is not None:
+            now_section = _answer_request(request, answer)
+        else:
+            now_section = _request(request, events, has_links=bool(past_links))
+        body = "\n\n".join([code_section, results_section, _conversation(events), now_section])
     if seconds_left > 0:
         time_left = f"{_minutes(seconds_left)} left on the problem's cap"
     elif seconds_left == 0:

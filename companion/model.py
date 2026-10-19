@@ -149,11 +149,18 @@ class TutorReply(BaseModel):
     gap_note: str | None
     help_kind: Literal[HELP_KINDS]
     reply_text: str = Field(min_length=1)
-    follow_up_question: str | None
+    follow_up_question: str | None = None
     linked: list[str] = Field(default_factory=list)
+    follow_up_complexity: bool = False
+    postpone_reason: str | None = None
+    has_reasoning: bool | None = None
     _links_enforced: ClassVar[bool] = False
     _allowed_links: ClassVar[frozenset[str]] = frozenset()
     _asked_about_similar: ClassVar[bool] = False
+    _solve_turn: ClassVar[bool] = False
+    _complexity_due: ClassVar[bool] = False
+    _followups_forbidden: ClassVar[bool] = False
+    _answer_turn: ClassVar[bool] = False
 
     @model_validator(mode="after")
     def _consistent_labels(self):
@@ -174,7 +181,45 @@ class TutorReply(BaseModel):
                 raise ValueError("linked names a past problem that is not in the list")
             if len(self.linked) > 1 and not self._asked_about_similar:
                 raise ValueError("link at most one past problem unless the learner asked what is similar")
+        if self._solve_turn:
+            self._follow_up_fields()
+        else:
+            self.follow_up_question = None
+            self.follow_up_complexity = False
+            self.postpone_reason = None
+            if self._answer_turn:
+                if type(self.has_reasoning) is not bool:
+                    raise ValueError("has_reasoning is required when answering a follow-up question")
+            else:
+                self.has_reasoning = None
         return self
+
+    def _follow_up_fields(self):
+        self.has_reasoning = None
+        if self._followups_forbidden:
+            self.follow_up_question = None
+            self.follow_up_complexity = False
+            self.postpone_reason = None
+            return
+        question = (self.follow_up_question or "").strip()
+        postpone = (self.postpone_reason or "").strip()
+        if self.follow_up_question is not None and not question:
+            raise ValueError("follow_up_question must be null or a non-empty question")
+        if self.postpone_reason is not None and not postpone:
+            raise ValueError("postpone_reason must be null or a non-empty reason")
+        if self._complexity_due:
+            if bool(question) == bool(postpone):
+                raise ValueError("when a complexity question is due, ask exactly one follow-up question "
+                                 "or postpone it with a non-empty postpone_reason")
+            if question and self.follow_up_complexity is not True:
+                raise ValueError("a complexity question needs follow_up_complexity true")
+            if postpone and self.follow_up_complexity:
+                raise ValueError("a postponement cannot also set follow_up_complexity")
+        else:
+            if self.follow_up_complexity:
+                raise ValueError("follow_up_complexity must be false when no complexity question is due")
+            if self.postpone_reason is not None:
+                raise ValueError("postpone_reason must be null when no complexity question is due")
 
 
 def _credentials():
