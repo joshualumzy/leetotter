@@ -323,6 +323,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           (key === "theme" && !["match", "light", "dark"].includes(value))) return { error: "Invalid setting." };
       return connection.send({ type: "settings_set", ts: new Date().toISOString(), payload: { key, value } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
+    if (message?.kind === "followup_skip") {
+      if (!Number.isInteger(message.question_id) || message.question_id <= 0) return { error: "Invalid follow-up question." };
+      return connection.send({ type: "followup_skip", ts: new Date().toISOString(), payload: { question_id: message.question_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
     if (message?.kind === "session_command") {
       const command = message.command;
       const types = { start: "session_start", pause: "session_pause", resume: "session_resume", end: "session_end", time_up_extend: "session_time_up", time_up_debrief: "session_time_up", done: "session_done", skip: "session_skip" } as const;

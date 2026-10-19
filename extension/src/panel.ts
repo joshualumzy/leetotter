@@ -1,5 +1,5 @@
 import type { ConnectionState } from "./connection";
-import { MISSING_READER_MESSAGE, type ProgressCategoryState, type ProgressState, type RecapItem, type RecapNoted, type RecapsState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
+import { MISSING_READER_MESSAGE, type Followup, type ProgressCategoryState, type ProgressState, type RecapItem, type RecapNoted, type RecapsState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
 import { categoryCount, earlierLabel, healthLine, progressHeaderLines, recapDate, untriedLine } from "./tabs-view";
 import { capLine, clock, panelView, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
@@ -545,6 +545,16 @@ function timeUpCard(): HTMLElement {
   card.append(row);
   return card;
 }
+function followupCard(item: Followup): HTMLElement {
+  const card = element("section", "card followup-card");
+  appendText(card, "h4", "One more thought");
+  appendText(card, "p", item.question, "followup-question");
+  const row = element("div", "row");
+  appendText(row, "span", "Answer in the chat, or skip", "quiet");
+  row.append(button("followup-skip", "Skip", "link"));
+  card.append(row);
+  return card;
+}
 function debriefActions(): HTMLElement {
   const row = element("div", "card debrief-actions");
   appendText(row, "span", "Debriefing this problem.", "quiet");
@@ -988,6 +998,7 @@ function render(): void {
     stream.id = "chat-stream";
     body!.append(stream);
   }
+  if (session?.followup && ["active", "paused", "time_up", "debrief"].includes(view.body)) body!.append(followupCard(session.followup));
   if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
   if (view.body === "active" && session?.problem && !session.accepted) {
     const actions = element("div", "problem-actions");
@@ -1188,6 +1199,7 @@ body.addEventListener("click", event => {
   if (id === "time-up-extend") void send({ kind: "session_command", command: "time_up_extend" });
   if (id === "time-up-debrief") void send({ kind: "session_command", command: "time_up_debrief" });
   if (id === "time-up-skip" || id === "debrief-skip" || id === "skip-problem") void send({ kind: "session_command", command: "skip" });
+  if (id === "followup-skip" && session?.followup) void send({ kind: "followup_skip", question_id: session.followup.question_id });
   if (id === "debrief-done") void send({ kind: "session_command", command: "done" });
   if (id?.startsWith("copy-reference-")) {
     const item = referenceState?.references.find(reference => reference.slug === id.slice("copy-reference-".length));

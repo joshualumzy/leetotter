@@ -32,6 +32,7 @@ export type Message =
   | { type: "session_pause" | "session_resume" | "session_end" | "session_get_state" | "tab_closed"; ts: string }
   | { type: "session_time_up"; ts: string; payload: { choice: "extend" | "debrief" } }
   | { type: "session_done" | "session_skip"; ts: string }
+  | { type: "followup_skip"; ts: string; payload: { question_id: number } }
   | { type: "settings_get"; ts: string }
   | { type: "settings_set"; ts: string; payload: { key: "name" | "theme"; value: string } }
   | { type: "planner_get" | "planner_go" | "planner_swap" | "planner_clear"; ts: string }
@@ -67,7 +68,8 @@ export type Message =
   | { type: "chat_message"; ts: string; payload: { text: string } }
   | { type: ReaderMessageType; ts: string; session_id?: string; payload: Record<string, unknown> };
 
-export type SessionState = { type: "session_state"; ts: string; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | "closed" | "restart" | null; check_message: string | null; cap_minutes: number | null; cap_seconds_left: number | null; time_up: { can_extend: boolean } | null; active_seconds: number; running: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" | "debrief"; reference_status?: "checked" | "resolved_by_you" | "not_checked_yet"; reference_message?: string };
+export type Followup = { question_id: number; question: string; complexity: boolean };
+export type SessionState = { type: "session_state"; ts: string; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | "closed" | "restart" | null; check_message: string | null; cap_minutes: number | null; cap_seconds_left: number | null; time_up: { can_extend: boolean } | null; active_seconds: number; running: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" | "debrief"; reference_status?: "checked" | "resolved_by_you" | "not_checked_yet"; reference_message?: string; followup?: Followup | null };
 export type SettingsState = { type: "settings_state"; ts: string; name: string | null; theme: "match" | "light" | "dark" };
 export type TutorMessage =
   | { type: "tutor_start"; ts: string; turn_id: number; request: "help" | "chat"; press_index: number | null }
@@ -84,7 +86,7 @@ export type ReaderMessageType = "problem_opened" | "problem_statement" | "code_c
 export const MISSING_READER_MESSAGE = "Leetotter can't see this NeetCode page. Reload the tab.";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
-const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "recaps_get", "recaps_state", "progress_get", "progress_state", "progress_category", "progress_category_state", "grade_correct", "session_exclude", "reset_progress", "reset_done", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
+const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "followup_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "recaps_get", "recaps_state", "progress_get", "progress_state", "progress_category", "progress_category_state", "grade_correct", "session_exclude", "reset_progress", "reset_done", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
 
 export function validateImportUrls(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every(url => typeof url === "string" && /^https:\/\/(?:www\.)?leetcode\.com\/problems\/[^/?#]+\/?(?:[?#].*)?$/.test(url))) {
@@ -101,6 +103,12 @@ function nonempty(value: unknown): boolean { return typeof value === "string" &&
 function positiveInteger(value: unknown): boolean { return Number.isInteger(value) && (value as number) > 0; }
 function oneLine(value: unknown): boolean { return typeof value === "string" && !value.includes("\n") && value.length <= 500; }
 function linkedSlugs(value: unknown): boolean { return value === undefined || (Array.isArray(value) && value.every(nonempty)); }
+function followup(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return positiveInteger(item.question_id) && nonempty(item.question) && typeof item.complexity === "boolean";
+}
 function failure(value: unknown): boolean {
   if (value === undefined || value === null) return true;
   const item = record(value);
@@ -196,6 +204,10 @@ export function parseMessage(raw: string): Message {
     if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).length > 0) throw new Error("Invalid session_start payload");
   }
   if (message.type === "session_time_up" && !["extend", "debrief"].includes(String((message.payload as Record<string, unknown> | undefined)?.choice))) throw new Error("Invalid session_time_up payload");
+  if (message.type === "followup_skip") {
+    const payload = message.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) || !positiveInteger((payload as Record<string, unknown>).question_id)) throw new Error("Invalid followup_skip payload");
+  }
   if (message.type === "settings_set") {
     const payload = message.payload as Record<string, unknown> | undefined;
     if (!payload || !["name", "theme"].includes(String(payload.key)) || typeof payload.value !== "string" ||
@@ -215,6 +227,7 @@ export function parseMessage(raw: string): Message {
       !(message.time_up === null || (typeof message.time_up === "object" && !Array.isArray(message.time_up) && typeof (message.time_up as Record<string, unknown>).can_extend === "boolean")) ||
       !(message.reference_status === undefined || ["checked", "resolved_by_you", "not_checked_yet"].includes(String(message.reference_status))) ||
       !(message.reference_message === undefined || typeof message.reference_message === "string") ||
+      !followup(message.followup) ||
       !(message.problem === null || (typeof message.problem === "object" && !Array.isArray(message.problem) && typeof (message.problem as Record<string, unknown>).slug === "string" && typeof (message.problem as Record<string, unknown>).title === "string"))) throw new Error("Invalid session_state payload");
   }
   if (message.type === "suggestion") validateSuggestion(message);

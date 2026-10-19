@@ -564,6 +564,21 @@ describe("panel actions", () => {
     expect(document.querySelector(".time-up-card")?.textContent).toContain("Time's up");
     expect(document.querySelector(".active-otter")).toBeNull();
   });
+  it("shows an open follow-up question above the chat box, skips it, and hides it when it closes", () => {
+    const active = { ...session, state: "active", mode: "watching", running: true, accepted: true, problem: { slug: "two-sum", title: "Two Sum" } } as SessionState;
+    const followup = { question_id: 12, question: "What's the time complexity of your approach?", complexity: true };
+    notify({ kind: "session_state", state: { ...active, followup } });
+    const card = document.querySelector(".followup-card") as HTMLElement;
+    expect(card.textContent).toContain("What's the time complexity of your approach?");
+    expect(card.textContent).toContain("Answer in the chat, or skip");
+    expect(document.getElementById("session-body")?.contains(card)).toBe(true);
+    expect(document.getElementById("followup-skip")).toBeTruthy();
+    expect((document.getElementById("chat-input") as HTMLTextAreaElement).disabled).toBe(false);
+    click("followup-skip");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "followup_skip", question_id: 12 });
+    notify({ kind: "session_state", state: { ...active, followup: null } });
+    expect(document.querySelector(".followup-card")).toBeNull();
+  });
   it("sends the time-up choices and Skip, and hides auto-resume", () => {
     notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true, time_up: { can_extend: true } } });
     click("time-up-extend");

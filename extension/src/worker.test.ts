@@ -141,6 +141,14 @@ describe("Tutor relay", () => {
     expect(socket.sent.slice(-3)).toMatchObject([{ type: "help_request" }, { type: "chat_message", payload: { text: "Why?" } }, { type: "chat_get" }]);
     expect(await dispatch({ kind: "chat_message", text: " " })).toEqual({ error: expect.any(String) });
   });
+  it("forwards a follow-up skip with its question id", async () => {
+    await start();
+    expect(await dispatch({ kind: "followup_skip", question_id: 12 })).toEqual({ error: "Tutor service isn't connected." });
+    socket.readyState = 1;
+    expect(await dispatch({ kind: "followup_skip", question_id: 12 })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "followup_skip", payload: { question_id: 12 } });
+    expect(await dispatch({ kind: "followup_skip", question_id: 0 })).toEqual({ error: expect.any(String) });
+  });
 });
 
 describe("worker reader delivery", () => {

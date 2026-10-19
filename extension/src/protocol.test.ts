@@ -215,6 +215,24 @@ describe("Recaps, Progress and reset messages", () => {
     expect(() => parseMessage('{"type":"reset_progress","ts":"now","payload":{"confirm":"reset"}}')).toThrow("Invalid reset_progress payload");
     expect(() => parseMessage('{"type":"reset_done","ts":"now","payload":{}}')).toThrow("Invalid reset_done payload");
   });
+  it("accepts an open follow-up question and the skip request, rejecting malformed ones", () => {
+    const state = { type: "session_state", ts: "now", state: "active", mode: "watching", paused_reason: null, check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 0, running: true, problem: { slug: "two-sum", title: "Two Sum" }, accepted: true,
+      followup: { question_id: 12, question: "What's the time complexity of your approach?", complexity: true } };
+    expect(parseMessage(JSON.stringify(state))).toMatchObject(state);
+    expect(parseMessage(JSON.stringify({ ...state, followup: null }))).toMatchObject({ followup: null });
+    expect(parseMessage(JSON.stringify({ ...state, followup: undefined }))).toMatchObject({ type: "session_state" });
+    for (const followup of [
+      { question_id: 0, question: "Why?", complexity: false },
+      { question_id: 12, question: "", complexity: false },
+      { question_id: 12, question: "Why?", complexity: "no" },
+      { question_id: 12, question: "Why?" },
+      [],
+    ]) expect(() => parseMessage(JSON.stringify({ ...state, followup }))).toThrow("Invalid session_state payload");
+    expect(parseMessage('{"type":"followup_skip","ts":"now","payload":{"question_id":12}}')).toMatchObject({ type: "followup_skip", payload: { question_id: 12 } });
+    for (const payload of [undefined, {}, { question_id: 0 }, { question_id: "12" }]) {
+      expect(() => parseMessage(JSON.stringify({ type: "followup_skip", ts: "now", payload }))).toThrow("Invalid followup_skip payload");
+    }
+  });
   it("keeps linked problem slugs in Tutor replies without requiring them of older messages", () => {
     const done = { type: "tutor_done", ts: "now", turn_id: 1, reply_text: "Try it like Two Sum", gap: "pattern", gap_note: null, help_kind: "analogy", follow_up_question: null, linked: ["two-sum"] };
     expect(parseMessage(JSON.stringify(done))).toMatchObject(done);

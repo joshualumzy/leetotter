@@ -903,8 +903,16 @@ p {
   }
 }
 
-.suggestion-card h4,.past-card h4,.recap-card h4,.time-up-card h4 {
+.suggestion-card h4,.past-card h4,.recap-card h4,.time-up-card h4,.followup-card h4 {
   margin-bottom:4px
+}
+
+.followup-question {
+  color:var(--ink)
+}
+
+.followup-card .row {
+  margin-top:8px
 }
 
 .past-card {
