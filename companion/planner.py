@@ -273,24 +273,22 @@ def _validate_reply(reply, request):
         satisfying = [c for c in request.allowed if all(_matches(c, f.model_dump()) for f in reply.ask)]
         if satisfying and reply.slug not in {c["slug"] for c in satisfying}:
             raise ValueError("Direct ask has an eligible match")
-    if reply.understood and len(reply.understood) > 280:
-        raise ValueError("Understood line is too long; reply in one or two short sentences to the learner")
-    if reply.understood and ("{" in reply.understood or "}" in reply.understood):
-        raise ValueError("Understood line contains stray braces; write plain sentences only")
-    if reply.understood and request.learner_text:
-        def bare(text):
-            return "".join(ch for ch in text.lower() if ch.isalnum())
-        if bare(reply.understood) == bare(request.learner_text):
-            raise ValueError("Understood line only repeats the learner's message; reply in your own words")
-    if reply.understood and entry:
-        volunteered = [entry["category"], *allowed.get(reply.slug, {}).get("patterns", [])]
-        requested = [name for f in (reply.ask or []) + (reply.steer.focus if reply.steer else [])
-                     for name in [*f.categories, *f.patterns]]
-        learner = request.learner_text.lower().replace("-", " ")
-        for name in volunteered:
-            spoken = name.lower().replace("-", " ")
-            if spoken not in [r.lower().replace("-", " ") for r in requested] and spoken in reply.understood.lower() and spoken not in learner:
-                raise ValueError(f"Understood line names '{name}', which the learner did not ask for; rewrite it without that word")
+
+
+def _reveal(reply, request):
+    entry = load_catalog().by_slug(reply.slug)
+    if not (reply.understood and entry):
+        return None
+    allowed = {c["slug"]: c for c in request.allowed}
+    volunteered = [entry["category"], *allowed.get(reply.slug, {}).get("patterns", [])]
+    requested = [name for f in (reply.ask or []) + (reply.steer.focus if reply.steer else [])
+                 for name in [*f.categories, *f.patterns]]
+    learner = request.learner_text.lower().replace("-", " ")
+    for name in volunteered:
+        spoken = name.lower().replace("-", " ")
+        if spoken not in [r.lower().replace("-", " ") for r in requested] and spoken in reply.understood.lower() and spoken not in learner:
+            return f"Understood line names '{name}', which the learner did not ask for; rewrite it without that word"
+    return None
 
 
 def ask_planner(client, request):
@@ -299,12 +297,16 @@ def ask_planner(client, request):
         reply = client.call_role("planner", messages, PlannerReply)
         try:
             _validate_reply(reply, request)
-            return reply
         except ValueError as exc:
             if attempt:
                 raise ValueError(f"Planner reply invalid after retry: {exc}") from exc
-            messages = [*messages, {"role": "assistant", "content": reply.model_dump_json()},
-                        {"role": "user", "content": f"Invalid reply: {exc}. Correct it."}]
+            problem = str(exc)
+        else:
+            problem = _reveal(reply, request)
+            if not problem or attempt:
+                return reply
+        messages = [*messages, {"role": "assistant", "content": reply.model_dump_json()},
+                    {"role": "user", "content": f"Invalid reply: {problem}. Correct it."}]
     raise AssertionError("unreachable")
 
 

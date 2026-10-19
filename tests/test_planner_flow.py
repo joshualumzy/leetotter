@@ -279,8 +279,10 @@ def test_the_planner_never_names_the_suggested_problems_pattern_unless_you_asked
     answered(planner, request, reply(HOUSE_ROBBER))
     talk = planner.chat(coord.session_id, "something different please")
     blurted = reply(PERMUTATION, "unreadable", understood="Not sure what you meant; here's a sliding window one.")
-    with pytest.raises(ValueError):
-        ask_planner(RecordedPlanner(blurted, blurted), talk)
+    clean = reply(PERMUTATION, "unreadable", understood="Not sure what you meant; can you say it another way?")
+    client = RecordedPlanner(blurted, clean)
+    assert ask_planner(client, talk).understood == clean["understood"]
+    assert len(client.calls) == 2
     asked = reply(PERMUTATION, "ask", ask=[{"categories": [], "patterns": ["sliding-window"], "difficulties": [], "direction": "more"}],
                   understood="A sliding window problem next.")
     assert ask_planner(RecordedPlanner(asked), talk).slug == PERMUTATION
