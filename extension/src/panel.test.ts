@@ -634,6 +634,31 @@ describe("panel actions", () => {
       notify({ kind: "suggestion", message: suggestion });
       expect(document.querySelector(".chat-you")?.textContent).toBe("more dynamic programming");
     });
+    it("keeps a past card, the steer and the wait in order until the next suggestion replaces the wait", async () => {
+      showStart();
+      startSession();
+      notify({ kind: "suggestion", message: suggestion });
+      const input = document.getElementById("chat-input") as HTMLTextAreaElement;
+      input.value = "fewer arrays";
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      click("chat-send");
+      await vi.waitFor(() => expect(document.querySelector(".chat-you")?.textContent).toBe("fewer arrays"));
+      const order = () => [...document.getElementById("session-body")!.children].flatMap(child => {
+        if (child.classList.contains("past-card")) return ["past"];
+        if (child.classList.contains("chat-you")) return ["you"];
+        if (child.classList.contains("planner-waiting-card")) return ["waiting"];
+        if (child.classList.contains("suggestion-card")) return ["live"];
+        return [];
+      });
+      expect(order()).toEqual(["past", "you", "waiting"]);
+      const past = document.querySelector(".past-card")!;
+      expect(past.textContent).toContain("House Robber");
+      expect(past.querySelector("button")).toBeNull();
+      expect(past.querySelector(".steer-line")).toBeNull();
+      notify({ kind: "suggestion", message: { ...suggestion, slug: "two-sum", title: "Two Sum" } });
+      expect(order()).toEqual(["past", "you", "live"]);
+      expect(document.querySelector(".suggestion-card")?.textContent).toContain("Two Sum");
+    });
     it("replaces the wait with an alert after 200 seconds and sends planner_get from Try again", () => {
       vi.useFakeTimers();
       try {
@@ -655,7 +680,7 @@ describe("panel actions", () => {
         expect(document.querySelector(".planner-timeout-card")).toBeTruthy();
       } finally { vi.useRealTimers(); }
     });
-    it("replaces the old card with the choosing otter while Swap chooses, then clears the wait when the next suggestion arrives", () => {
+    it("keeps the old card as a past card while Swap chooses, then shows the next suggestion below the wait", () => {
       vi.useFakeTimers();
       try {
         showStart();
@@ -665,16 +690,19 @@ describe("panel actions", () => {
         click("planner-swap");
         expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_swap" });
         expect(document.querySelector(".suggestion-card")).toBeNull();
+        expect(document.querySelector(".past-card")?.textContent).toContain("House Robber");
         expect(document.querySelector(".planner-waiting-card")?.textContent).toContain("Choosing a problem for you...");
         expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
         notify({ kind: "suggestion", message: { ...suggestion, slug: "two-sum", title: "Two Sum" } });
         expect(document.querySelector(".planner-waiting-card")).toBeNull();
+        expect(document.querySelector(".past-card")?.textContent).toContain("House Robber");
+        expect(document.querySelector(".suggestion-card")?.textContent).toContain("Two Sum");
         expect((document.getElementById("planner-go") as HTMLButtonElement).disabled).toBe(false);
         vi.advanceTimersByTime(200_000);
         expect(document.querySelector(".planner-timeout-card")).toBeNull();
       } finally { vi.useRealTimers(); }
     });
-    it("replaces the old card with the choosing otter while Clear chooses and times out from that request", () => {
+    it("keeps the old card as a past card while Clear chooses and times out from that request", () => {
       vi.useFakeTimers();
       try {
         showStart();
@@ -684,11 +712,13 @@ describe("panel actions", () => {
         click("planner-clear");
         expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_clear" });
         expect(document.querySelector(".suggestion-card")).toBeNull();
+        expect(document.querySelector(".past-card")?.textContent).toContain("House Robber");
         expect(document.querySelector(".planner-waiting-card")?.textContent).toContain("Choosing a problem for you...");
         vi.advanceTimersByTime(199_999);
         expect(document.querySelector(".planner-timeout-card")).toBeNull();
         vi.advanceTimersByTime(1);
         expect(document.querySelector(".suggestion-card")).toBeNull();
+        expect(document.querySelector(".past-card")?.textContent).toContain("House Robber");
         expect(document.querySelector(".planner-timeout-card")?.textContent).toContain("The Planner is taking too long.");
       } finally { vi.useRealTimers(); }
     });

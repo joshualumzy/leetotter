@@ -426,7 +426,7 @@ class Planner:
             return []
         if reply.reading == "unrelated":
             self._waiting = None
-            return []
+            return [self.card] if self.card else []
         if reply.reading in ("steer", "clear"):
             with open_store(self.db_path) as db:
                 kind = "steer" if reply.reading == "steer" else "steer_clear"

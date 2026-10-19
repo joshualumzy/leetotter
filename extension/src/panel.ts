@@ -44,7 +44,8 @@ let acknowledgementTimer: number | undefined;
 let suggestion: Suggestion | undefined;
 const PLANNER_WAIT_MS = 200_000;
 let plannerWaitStartedAt: number | null = null;
-let plannerSaid: string[] = [];
+type PlannerEntry = { kind: "said"; text: string } | { kind: "card"; suggestion: Suggestion };
+let plannerLog: PlannerEntry[] = [];
 let plannerTimedOut = false;
 let plannerTimer: number | undefined;
 let recap: RecapState | undefined;
@@ -137,6 +138,11 @@ function beginPlannerWait(): void {
   }, PLANNER_WAIT_MS);
 }
 function plannerWaiting(): boolean { return plannerWaitStartedAt !== null; }
+function rememberSuggestion(): void {
+  if (!suggestion) return;
+  plannerLog.push({ kind: "card", suggestion });
+  suggestion = undefined;
+}
 
 function playReaction(reaction: ReaderReaction): void {
   if (session?.mode !== "watching") return;
@@ -252,13 +258,21 @@ function startCard(): HTMLElement {
   if (!onNeetCode()) appendText(card, "p", "Open NeetCode to start.", "quiet");
   return card;
 }
+function suggestionSummary(card: HTMLElement, item: Suggestion): void {
+  appendText(card, "h4", item.title);
+  const cap = capLine(item.difficulty, item.cap_minutes);
+  if (cap) appendText(card, "p", cap, "cap-line");
+  if (item.message) appendText(card, "p", item.message, "planner-message");
+}
+function pastSuggestionCard(item: Suggestion): HTMLElement {
+  const card = element("section", "card past-card");
+  suggestionSummary(card, item);
+  return card;
+}
 function suggestionCard(): HTMLElement | null {
   if (!suggestion) return null;
   const card = element("section", "card suggestion-card");
-  appendText(card, "h4", suggestion.title);
-  const cap = capLine(suggestion.difficulty, suggestion.cap_minutes);
-  if (cap) appendText(card, "p", cap, "cap-line");
-  if (suggestion.message) appendText(card, "p", suggestion.message, "planner-message");
+  suggestionSummary(card, suggestion);
   if (suggestion.steer) {
     const steer = element("div", "steer-line");
     appendText(steer, "span", `Steering: ${suggestion.steer}`);
@@ -706,7 +720,10 @@ function render(): void {
       body!.append(startCard());
     }
     if (view.body === "active" && !session?.problem) {
-      for (const said of plannerSaid) appendText(body!, "div", said, "chat-line chat-you");
+      for (const entry of plannerLog) {
+        if (entry.kind === "said") appendText(body!, "div", entry.text, "chat-line chat-you");
+        else body!.append(pastSuggestionCard(entry.suggestion));
+      }
       if (plannerWaiting() && plannerTimedOut) body!.append(plannerTimeoutCard());
       else if (plannerWaiting()) body!.append(plannerWaitingCard());
       else if (suggestion) {
@@ -798,7 +815,11 @@ async function sendChat(): Promise<void> {
     if (!result.text) { updateComposer(); return; }
     draft = ""; input.value = ""; resizeComposer(input);
     const ok = await send({ kind: "planner_chat", text: result.text });
-    if (ok) { plannerSaid.push(result.text); beginPlannerWait(); render(); }
+    if (ok) {
+      rememberSuggestion();
+      plannerLog.push({ kind: "said", text: result.text });
+      beginPlannerWait(); render();
+    }
     else composerNote = "The Planner didn't get that.";
     updateComposer();
     return;
@@ -842,8 +863,8 @@ body.addEventListener("click", event => {
   if (id === "skip-name") void send({ kind: "skip_name" });
   if (id === "start-session" && onNeetCode()) void send({ kind: "session_command", command: "start", tabId: panelTabId });
   if (id === "planner-go") void send({ kind: "planner_go", tabId: panelTabId });
-  if (id === "planner-swap") { beginPlannerWait(); render(); void send({ kind: "planner_swap" }); }
-  if (id === "planner-clear") { beginPlannerWait(); render(); void send({ kind: "planner_clear" }); }
+  if (id === "planner-swap") { rememberSuggestion(); beginPlannerWait(); render(); void send({ kind: "planner_swap" }); }
+  if (id === "planner-clear") { rememberSuggestion(); beginPlannerWait(); render(); void send({ kind: "planner_clear" }); }
   if (id === "planner-retry") { beginPlannerWait(); render(); void send({ kind: "planner_get" }); }
   if (id === "time-up-extend") void send({ kind: "session_command", command: "time_up_extend" });
   if (id === "time-up-debrief") void send({ kind: "session_command", command: "time_up_debrief" });
@@ -945,7 +966,7 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "session_state") {
     session = message.state;
-    if (session?.state === "ended" || (session?.state === "active" && session.problem)) { suggestion = undefined; plannerSaid = []; }
+    if (session?.state === "ended" || (session?.state === "active" && session.problem)) { suggestion = undefined; plannerLog = []; }
     if (session?.state === "active" && !session.problem) {
       if (!suggestion && !plannerWaiting()) beginPlannerWait();
     } else endPlannerWait();
@@ -982,7 +1003,7 @@ chrome.runtime.onMessage.addListener(message => {
     else beginPlannerWait();
     render();
   }
-  if (message?.kind === "planner_open") { suggestion = undefined; plannerSaid = []; endPlannerWait(); render(); }
+  if (message?.kind === "planner_open") { suggestion = undefined; plannerLog = []; endPlannerWait(); render(); }
   if (message?.kind === "recap_state") {
     const next = message.message as RecapState;
     if (recap?.session_id !== next.session_id) recapNoted = "";

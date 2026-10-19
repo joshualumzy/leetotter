@@ -35,7 +35,7 @@ tests/test_planner_flow.py:
 
     Planner.answer on a chat request: "steer" stores the reading (replacing any active steer), "clear"
     clears it, "ask" and "unreadable" store nothing; each shows a card whose message is the understood
-    line. "unrelated" returns [] and leaves the card as it was. Every card carries the active steer's label.
+    line. "unrelated" re-sends the card as it was, so the panel stops waiting. Every card carries the active steer's label.
     Planner.clear_steer(session_id): the card's Clear; removes the steer and plans an unsteered suggestion,
     not logged as a swap. Planner.fail on a chat request says the steer wasn't saved.
 """
@@ -216,7 +216,7 @@ def test_different_intents_store_what_was_read(tmp_path, text, reading):
 
 def test_a_message_that_is_not_about_practice_is_ignored(tmp_path):
     shown = Shown(tmp_path)
-    assert shown.say("ha, my cat just walked on the keyboard", reply(COIN_CHANGE, "unrelated")) == []
+    assert shown.say("ha, my cat just walked on the keyboard", reply(COIN_CHANGE, "unrelated")) == [shown.card]
     assert shown.planner.card == shown.card
     assert shown.steer() is None
 
