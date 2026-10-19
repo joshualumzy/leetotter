@@ -119,3 +119,17 @@ def test_planner_failure_sends_fallback_card(tmp_path, monkeypatch):
         cards = [m for m in connection.sent if m["type"] == "suggestion"]
         assert len(cards) == 1 and cards[0]["source"] == "fallback" and cards[0]["message"]
     asyncio.run(scenario())
+
+
+def test_resuming_between_problems_asks_the_planner(tmp_path, monkeypatch):
+    async def scenario():
+        setup(tmp_path, monkeypatch, ["house-robber"])
+        socket._coordinator.handle(msg("session_start"))
+        socket._coordinator.handle(msg("session_pause"))
+        connection = Connection([msg("hello"), msg("session_resume")])
+        await socket._handle(connection)
+        assert any(m["type"] == "session_state" and m["state"] == "active" and m["problem"] is None
+                   for m in connection.sent)
+        suggestions = [m for m in connection.sent if m["type"] == "suggestion"]
+        assert [m["slug"] for m in suggestions] == ["house-robber"]
+    asyncio.run(scenario())

@@ -546,3 +546,11 @@ def test_the_fallback_ignores_a_steer_nothing_eligible_meets(tmp_path):
     assert fallback["steer"] == "more tries"
 
 
+
+
+def test_clear_drops_the_chat_since_the_card_was_shown(tmp_path):
+    shown = Shown(tmp_path)
+    request = shown.planner.chat(shown.session_id, "fewer arrays")
+    assert request is not None and request.chat == ("fewer arrays",)
+    cleared = shown.planner.clear_steer(shown.session_id)
+    assert cleared.chat == ()

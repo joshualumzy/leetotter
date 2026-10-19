@@ -35,7 +35,9 @@ function showReaderAlert(): void { panel({ kind: "reader_error", message: reader
 let savedInOrder: Promise<void> = Promise.resolve();
 function save(): Promise<void> {
   const readerState: Saved = { readerError, readerActivity, focusedWindow, sessionTabId, boundFocus };
-  savedInOrder = savedInOrder.then(() => chrome.storage.session.set({ readerState }));
+  savedInOrder = savedInOrder
+    .then(() => chrome.storage.session.set({ readerState }))
+    .catch(error => { console.error("Leetotter could not save the session state:", error); });
   return savedInOrder;
 }
 function problemUrl(url?: string): boolean { return Boolean(url && /^https:\/\/neetcode\.io\/problems\/[^/]+/.test(url)); }
@@ -64,7 +66,8 @@ function setPanelForTab(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return Promise.resolve();
   return chrome.sidePanel.setOptions(neetcodeUrl(tab.url)
     ? { tabId: tab.id, path: "panel.html", enabled: true }
-    : { tabId: tab.id, enabled: false });
+    : { tabId: tab.id, enabled: false })
+    .catch(error => { console.error("Leetotter could not set the panel for a tab:", error); });
 }
 async function configureSidePanel(): Promise<chrome.tabs.Tab[]> {
   await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -74,20 +77,25 @@ async function configureSidePanel(): Promise<chrome.tabs.Tab[]> {
   return tabs;
 }
 const ready = (async () => {
-  const saved = (await chrome.storage.session.get("readerState")).readerState as Saved | undefined;
-  if (saved) {
-    readerError = saved.readerError;
-    readerActivity = saved.readerActivity; focusedWindow = saved.focusedWindow;
-    sessionTabId = saved.sessionTabId ?? null;
-    boundFocus = saved.boundFocus;
-  } else {
-    const window = await chrome.windows.getLastFocused();
-    focusedWindow = window.focused ? window.id! : chrome.windows.WINDOW_ID_NONE;
+  try {
+    const saved = (await chrome.storage.session.get("readerState")).readerState as Saved | undefined;
+    if (saved) {
+      readerError = saved.readerError;
+      readerActivity = saved.readerActivity; focusedWindow = saved.focusedWindow;
+      sessionTabId = saved.sessionTabId ?? null;
+      boundFocus = saved.boundFocus;
+    } else {
+      const window = await chrome.windows.getLastFocused();
+      focusedWindow = window.focused ? window.id! : chrome.windows.WINDOW_ID_NONE;
+    }
+    const tabs = (await configureSidePanel()).filter(tab => problemUrl(tab.url));
+    if (sessionTabId !== null) await trackBoundTab();
+    await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode: tab.id === sessionTabId ? mode : "idle" }).catch(() => {})));
+    await save();
+  } catch (error) {
+    console.error("Leetotter could not finish starting:", error);
+    panel({ kind: "error", message: `Leetotter could not finish starting: ${error instanceof Error ? error.message : String(error)}` });
   }
-  const tabs = (await configureSidePanel()).filter(tab => problemUrl(tab.url));
-  if (sessionTabId !== null) await trackBoundTab();
-  await Promise.all(tabs.map(tab => tab.id === undefined ? Promise.resolve() : chrome.tabs.sendMessage(tab.id, { kind: "watch_mode", mode: tab.id === sessionTabId ? mode : "idle" }).catch(() => {})));
-  await save();
 })();
 const connection = new CompanionConnection(
   "ws://127.0.0.1:" + __LEETOTTER_PORT__,
@@ -475,4 +483,4 @@ chrome.runtime.onInstalled.addListener(() => { void ready.then(() => configureSi
 chrome.windows.onFocusChanged.addListener(id => {
   void ready.then(async () => { focusedWindow = id; sendFocus(); await save(); });
 });
-connection.start();
+void ready.then(() => connection.start());

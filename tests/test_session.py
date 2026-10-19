@@ -149,7 +149,7 @@ def test_idle_state(tmp_path):
     s = current(coord)
     assert same_time(s["ts"], START)
     assert {k: v for k, v in s.items() if k != "ts"} == {
-        "type": "session_state", "state": "idle", "paused_reason": None, "check_message": None,
+        "type": "session_state", "state": "idle", "session_id": None, "paused_reason": None, "check_message": None,
         "active_seconds": 0, "running": False, "problem": None, "accepted": False, "mode": "idle",
         "cap_minutes": None, "cap_seconds_left": None, "time_up": None, "followup": None,
     }
@@ -160,7 +160,7 @@ def test_active_state_and_on_connect_and_get_state_agree(tmp_path):
     out = coord.handle(start_msg())
     assert out[0] == current(coord) == state(coord.on_connect())
     assert {k: v for k, v in out[0].items() if k != "ts"} == {
-        "type": "session_state", "state": "active", "paused_reason": None, "check_message": None,
+        "type": "session_state", "state": "active", "session_id": 1, "paused_reason": None, "check_message": None,
         "active_seconds": 0, "running": True, "problem": None, "accepted": False, "mode": "watching",
         "cap_minutes": None, "cap_seconds_left": None, "time_up": None, "followup": None,
     }
@@ -774,7 +774,7 @@ def test_restart_restores_an_unfinished_session_as_paused_with_reason_restart(tm
     fresh = reopen(path, clock, 3600)
     s = current(fresh)
     assert {k: v for k, v in s.items() if k != "ts"} == {
-        "type": "session_state", "state": "paused", "paused_reason": "restart", "check_message": None,
+        "type": "session_state", "state": "paused", "session_id": 1, "paused_reason": "restart", "check_message": None,
         "active_seconds": 120, "running": False,
         "problem": {"slug": SLUG_A, "title": TITLE_A}, "reference_status": "not_checked_yet",
         "reference_message": "Reference not checked yet", "accepted": False, "mode": "paused",

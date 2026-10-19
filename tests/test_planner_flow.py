@@ -281,15 +281,13 @@ def test_ending_the_session_takes_the_card_down_and_discards_a_waiting_answer(tm
 
 # --- chat -------------------------------------------------------------------------------------------
 
-def test_chat_goes_to_the_planner_while_a_card_is_shown_or_being_chosen(tmp_path):
+def test_chat_goes_to_the_planner_only_while_a_card_is_shown(tmp_path):
     coord, _, path, planner = setup(tmp_path)
     coord.handle(start_msg())
     assert planner.chat(coord.session_id, "more dynamic programming") is None  # nothing asked of the Planner yet
     request = planner.problem_left(coord.session_id)
-    steered = planner.chat(coord.session_id, "more dynamic programming")  # still choosing: replaces the pending request
-    assert steered.trigger == "chat" and steered.session_id == coord.session_id
-    assert answered(planner, request, reply(HOUSE_ROBBER)) == []
-    shown = card(answered(planner, steered, reply(HOUSE_ROBBER, "ask", ask=[{"categories": ["1-D Dynamic Programming"], "patterns": [], "difficulties": [], "direction": "more"}], understood="A dynamic programming problem next.")))
+    assert planner.chat(coord.session_id, "more dynamic programming") is None  # still choosing: no card yet
+    shown = card(answered(planner, request, reply(HOUSE_ROBBER, "ask", ask=[{"categories": ["1-D Dynamic Programming"], "patterns": [], "difficulties": [], "direction": "more"}], understood="A dynamic programming problem next.")))
     talk = planner.chat(coord.session_id, "more dynamic programming")
     assert talk.trigger == "chat" and talk.session_id == coord.session_id
     assert talk.message == "more dynamic programming"

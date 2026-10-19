@@ -1,12 +1,14 @@
 """Fixed grading rules and review logging for completed attempts."""
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 import logging
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from companion.attempts import attempts as grouped_attempts
 from companion.catalog import load_catalog
 from companion.model import help_floor
 from companion.store import open_store
@@ -116,32 +118,25 @@ def _excluded_sessions(db):
     return {session for (session,) in db.execute("SELECT id FROM sessions WHERE excluded = 1")}
 
 
+def _event_timestamp(db, session):
+    """A current timestamp that never goes backwards for this session's stored events."""
+    now = datetime.now(timezone.utc)
+    row = db.execute("SELECT ts FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 1", (session,)).fetchone()
+    if row is not None:
+        try:
+            last = datetime.fromisoformat(row[0])
+        except (TypeError, ValueError):
+            last = None
+        if last is not None and last.tzinfo is not None and last > now:
+            return row[0]
+    return now.isoformat()
+
+
 def _attempts(events):
-    active = {}
-    pending_open = {}
-    for event in events:
-        id_, session, _, kind, payload = event
-        if kind == "problem_opened":
-            previous = active.get(session)
-            if previous is not None and previous["slug"] != payload["slug"]:
-                pending_open[session] = {"start": id_, "slug": payload["slug"], "session": session, "events": [event]}
-            elif previous is None:
-                active[session] = {"start": id_, "slug": payload["slug"], "session": session, "events": [event]}
-            else:
-                previous["events"].append(event)
-        elif kind == "problem_left":
-            attempt = active.pop(session, None)
-            if attempt is not None and attempt["slug"] == payload["slug"]:
-                attempt["events"].append(event)
-                attempt["left"] = event
-                attempt["accepted"] = payload["accepted"]
-                yield attempt
-                if session in pending_open:
-                    active[session] = pending_open.pop(session)
-        elif session in active:
-            event_slug = payload.get("slug")
-            if event_slug is None or event_slug == active[session]["slug"]:
-                active[session]["events"].append(event)
+    for attempt in grouped_attempts(events):
+        if attempt["left"] is not None:
+            attempt["accepted"] = attempt["left"][4]["accepted"]
+            yield attempt
 
 
 def _first_attempt(db, events, start, slug):
@@ -249,6 +244,98 @@ def _grader_grade(client, model, slug, reference, attempt):
                         {"role": "user", "content": f"Invalid grader labels: {error}. Return corrected JSON only."}]
 
 
+def _record_analysis_retry(db_path, question_id, permanent):
+    with open_store(db_path) as db:
+        if permanent:
+            db.execute("INSERT INTO grader_retries (start_event_id, failed_tries) VALUES (?, 3) "
+                       "ON CONFLICT(start_event_id) DO UPDATE SET failed_tries = 3", (question_id,))
+        else:
+            db.execute("INSERT INTO grader_retries (start_event_id, failed_tries) VALUES (?, 1) "
+                       "ON CONFLICT(start_event_id) DO UPDATE SET failed_tries = grader_retries.failed_tries + 1",
+                       (question_id,))
+
+
+def _grade_analysis_question(client, db_path, outcome, question_id, session, question, events, trigger):
+    later = [(id_, kind, payload) for id_, event_session, _, kind, payload in events
+             if event_session == session and id_ > question_id and payload.get("question_id") == question_id]
+    if any(kind == "followup_skipped" for _, kind, _ in later):
+        return
+    answers = [payload for _, kind, payload in later if kind == "followup_answered"]
+    if not answers or not answers[-1]["has_reasoning"]:
+        return
+    slug = question["slug"]
+    openings = [id_ for id_, event_session, _, kind, payload in events
+                if event_session == session and id_ < question_id and kind == "problem_opened" and payload["slug"] == slug]
+    if not openings:
+        outcome.failures[question_id] = f"Complexity question {question_id} has no problem attempt."
+        outcome.failed.append(question_id)
+        return
+    start = openings[-1]
+    left = next((id_ for id_, event_session, _, kind, payload in events
+                 if event_session == session and id_ > start and kind == "problem_left" and payload["slug"] == slug), None)
+    if left is None:
+        return
+    with open_store(db_path) as db:
+        if db.execute("SELECT 1 FROM reviews WHERE event_id = ? AND item_type = 'category:analysis'", (question_id,)).fetchone():
+            return
+        retry = db.execute("SELECT failed_tries FROM grader_retries WHERE start_event_id = ?", (question_id,)).fetchone()
+        tries = retry[0] if retry else 0
+        if tries >= 3 or (tries == 1 and trigger != "next_problem") or (tries == 2 and trigger != "next_start"):
+            return
+        solve = db.execute("SELECT grade, first_attempt, reviewed_at FROM reviews WHERE event_id = ? AND item_type = 'problem'", (left,)).fetchone()
+        if solve is None or solve[0] is None:
+            return
+        if not solve[1] or solve[0] == "again":
+            return
+        status = db.execute('SELECT content, status FROM "references" WHERE problem_key = ?', (slug,)).fetchone()
+    if status is None or status[1] not in {"checked", "resolved_by_you"}:
+        return
+    reference = json.loads(status[0])
+    attempt_events = [(id_, kind, payload) for id_, event_session, _, kind, payload in events
+                      if event_session == session and start <= id_ <= question_id]
+    messages = [{"role": "system", "content": ANALYSIS_PROMPT},
+                {"role": "user", "content": json.dumps({"slug": slug, "reference": reference,
+                    "question": question["question"], "answers": answers, "events": attempt_events})}]
+    replies = []
+    failures = []
+    for model in client.config.roles["grader"]:
+        try:
+            replies.append(client.call_role("grader", messages, AnalysisVerdict, model=model))
+        except Exception as error:
+            logger.exception("Analysis grader %s failed for question %s", model, question_id)
+            outcome.failures[question_id] = f"Analysis grader {model} failed for question {question_id}: {error}"
+            failures.append(model)
+    if len(replies) != 2:
+        tries += 1
+        with open_store(db_path) as db:
+            db.execute("INSERT INTO grader_retries (start_event_id, failed_tries) VALUES (?, ?) "
+                       "ON CONFLICT(start_event_id) DO UPDATE SET failed_tries = excluded.failed_tries",
+                       (question_id, tries))
+        if not replies or tries < 3:
+            outcome.failed.append(question_id)
+            return
+    grades = [analysis_grade(reply.complexity_verdict) for reply in replies]
+    if None in grades:  # no reasoning gives no credit, even when the other grader supplies a grade
+        with open_store(db_path) as db:
+            db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'analysis_resolved', ?)",
+                       (session, _event_timestamp(db, session), json.dumps({"question_id": question_id, "slug": slug, "reason": "no_reasoning"})))
+        return
+    grade, disagreement = combine(*grades) if len(grades) == 2 else (grades[0], False)
+    if not analysis_counts(first_attempt=solve[1], solve_grade=solve[0],
+                           complexity_stated=any(reply.complexity_stated_earlier for reply in replies)):
+        with open_store(db_path) as db:
+            db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'analysis_resolved', ?)",
+                       (session, _event_timestamp(db, session), json.dumps({"question_id": question_id, "slug": slug, "reason": "complexity_stated"})))
+        return
+    with open_store(db_path) as db:
+        category, difficulty = _details(db, slug)
+        db.execute("INSERT OR IGNORE INTO reviews (session_id, event_id, item_type, item_key, grade, "
+                   "first_attempt, difficulty, grader_disagreement, failed_grader, reviewed_at) "
+                   "VALUES (?, ?, 'category:analysis', ?, ?, 1, ?, ?, ?, ?)",
+                   (session, question_id, category, grade, difficulty, int(disagreement),
+                    failures[0] if failures else None, solve[2]))
+
+
 def _grade_analysis(client, db_path, outcome, only_slug, trigger):
     with open_store(db_path) as db:
         events = _events(db)
@@ -261,84 +348,17 @@ def _grade_analysis(client, db_path, outcome, only_slug, trigger):
         if any(event_session == session and kind == "analysis_resolved" and payload.get("question_id") == question_id
                for _, event_session, _, kind, payload in events):
             continue
-        later = [(id_, kind, payload) for id_, event_session, _, kind, payload in events
-                 if event_session == session and id_ > question_id and payload.get("question_id") == question_id]
-        if any(kind == "followup_skipped" for _, kind, _ in later):
-            continue
-        answers = [payload for _, kind, payload in later if kind == "followup_answered"]
-        if not answers or not answers[-1]["has_reasoning"]:
-            continue
-        slug = question["slug"]
-        openings = [id_ for id_, event_session, _, kind, payload in events
-                    if event_session == session and id_ < question_id and kind == "problem_opened" and payload["slug"] == slug]
-        if not openings:
-            outcome.failures[question_id] = f"Complexity question {question_id} has no problem attempt."
+        try:
+            _grade_analysis_question(client, db_path, outcome, question_id, session, question, events, trigger)
+        except Exception as error:
+            message = f"Cannot grade complexity question {question_id} ({question.get('slug')}): {error}"
+            logger.exception(message)
             outcome.failed.append(question_id)
-            continue
-        start = openings[-1]
-        left = next((id_ for id_, event_session, _, kind, payload in events
-                     if event_session == session and id_ > start and kind == "problem_left" and payload["slug"] == slug), None)
-        if left is None:
-            continue
-        with open_store(db_path) as db:
-            if db.execute("SELECT 1 FROM reviews WHERE event_id = ? AND item_type = 'category:analysis'", (question_id,)).fetchone():
-                continue
-            retry = db.execute("SELECT failed_tries FROM grader_retries WHERE start_event_id = ?", (question_id,)).fetchone()
-            tries = retry[0] if retry else 0
-            if tries >= 3 or (tries == 1 and trigger != "next_problem") or (tries == 2 and trigger != "next_start"):
-                continue
-            solve = db.execute("SELECT grade, first_attempt, reviewed_at FROM reviews WHERE event_id = ? AND item_type = 'problem'", (left,)).fetchone()
-            if solve is None or solve[0] is None:
-                continue
-            if not solve[1] or solve[0] == "again":
-                continue
-            status = db.execute('SELECT content, status FROM "references" WHERE problem_key = ?', (slug,)).fetchone()
-        if status is None or status[1] not in {"checked", "resolved_by_you"}:
-            continue
-        reference = json.loads(status[0])
-        attempt_events = [(id_, kind, payload) for id_, event_session, _, kind, payload in events
-                          if event_session == session and start <= id_ <= question_id]
-        messages = [{"role": "system", "content": ANALYSIS_PROMPT},
-                    {"role": "user", "content": json.dumps({"slug": slug, "reference": reference,
-                        "question": question["question"], "answers": answers, "events": attempt_events})}]
-        replies = []
-        failures = []
-        for model in client.config.roles["grader"]:
+            outcome.failures[question_id] = message
             try:
-                replies.append(client.call_role("grader", messages, AnalysisVerdict, model=model))
-            except Exception as error:
-                logger.exception("Analysis grader %s failed for question %s", model, question_id)
-                outcome.failures[question_id] = f"Analysis grader {model} failed for question {question_id}: {error}"
-                failures.append(model)
-        if len(replies) != 2:
-            tries += 1
-            with open_store(db_path) as db:
-                db.execute("INSERT INTO grader_retries (start_event_id, failed_tries) VALUES (?, ?) "
-                           "ON CONFLICT(start_event_id) DO UPDATE SET failed_tries = excluded.failed_tries",
-                           (question_id, tries))
-            if not replies or tries < 3:
-                outcome.failed.append(question_id)
-                continue
-        grades = [analysis_grade(reply.complexity_verdict) for reply in replies]
-        if None in grades:  # no reasoning gives no credit, even when the other grader supplies a grade
-            with open_store(db_path) as db:
-                db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'analysis_resolved', ?)",
-                           (session, events[-1][2], json.dumps({"question_id": question_id, "slug": slug, "reason": "no_reasoning"})))
-            continue
-        grade, disagreement = combine(*grades) if len(grades) == 2 else (grades[0], False)
-        if not analysis_counts(first_attempt=solve[1], solve_grade=solve[0],
-                               complexity_stated=any(reply.complexity_stated_earlier for reply in replies)):
-            with open_store(db_path) as db:
-                db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'analysis_resolved', ?)",
-                           (session, events[-1][2], json.dumps({"question_id": question_id, "slug": slug, "reason": "complexity_stated"})))
-            continue
-        with open_store(db_path) as db:
-            category, difficulty = _details(db, slug)
-            db.execute("INSERT OR IGNORE INTO reviews (session_id, event_id, item_type, item_key, grade, "
-                       "first_attempt, difficulty, grader_disagreement, failed_grader, reviewed_at) "
-                       "VALUES (?, ?, 'category:analysis', ?, ?, 1, ?, ?, ?, ?)",
-                       (session, question_id, category, grade, difficulty, int(disagreement),
-                        failures[0] if failures else None, solve[2]))
+                _record_analysis_retry(db_path, question_id, isinstance(error, ValueError))
+            except Exception:
+                logger.exception("Could not record analysis grading failure for question %s", question_id)
 
 
 def grade_pending(client, *, db_path=None, only_slug=None, trigger="initial"):

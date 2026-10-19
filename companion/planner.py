@@ -461,9 +461,9 @@ class Planner:
         return self._request("swap", session_id)
 
     def chat(self, session_id, text):
-        if not self.card and not self._waiting:
+        if not self.card:
             return None
-        owner = self._card_owner(session_id) if self.card else self._waiting.session_id
+        owner = self._card_owner(session_id)
         self._chat.append(text)
         return self._request("chat", owner, text)
 
@@ -475,6 +475,7 @@ class Planner:
             db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES (?, 'steer_clear', '', ?)",
                        (self.clock().isoformat(), session_id))
         self.card = None
+        self._chat = []
         return self._request("clear", session_id)
 
     def go(self):

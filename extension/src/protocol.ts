@@ -69,19 +69,19 @@ export type Message =
   | { type: ReaderMessageType; ts: string; session_id?: string; payload: Record<string, unknown> };
 
 export type Followup = { question_id: number; question: string; complexity: boolean };
-export type SessionState = { type: "session_state"; ts: string; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | "closed" | "restart" | null; check_message: string | null; cap_minutes: number | null; cap_seconds_left: number | null; time_up: { can_extend: boolean } | null; active_seconds: number; running: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" | "debrief"; reference_status?: "checked" | "resolved_by_you" | "not_checked_yet"; reference_message?: string; followup?: Followup | null };
+export type SessionState = { type: "session_state"; ts: string; session_id?: number | null; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | "closed" | "restart" | null; check_message: string | null; cap_minutes: number | null; cap_seconds_left: number | null; time_up: { can_extend: boolean } | null; active_seconds: number; running: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" | "debrief"; reference_status?: "checked" | "resolved_by_you" | "not_checked_yet"; reference_message?: string; followup?: Followup | null };
 export type SettingsState = { type: "settings_state"; ts: string; name: string | null; theme: "match" | "light" | "dark" };
 export type TutorMessage =
-  | { type: "tutor_start"; ts: string; turn_id: number; request: "help" | "chat"; press_index: number | null }
-  | { type: "tutor_chunk"; ts: string; turn_id: number; attempt: number; text: string }
-  | { type: "tutor_done"; ts: string; turn_id: number; reply_text: string; gap: string; gap_note: string | null; help_kind: string; follow_up_question: string | null; linked?: string[] }
-  | { type: "tutor_error"; ts: string; turn_id: number | null; message: string };
+  | { type: "tutor_start"; ts: string; turn_id: number; request: "help" | "chat"; press_index: number | null; slug?: string; session_id?: number }
+  | { type: "tutor_chunk"; ts: string; turn_id: number; attempt: number; text: string; slug?: string; session_id?: number }
+  | { type: "tutor_done"; ts: string; turn_id: number; reply_text: string; gap: string; gap_note: string | null; help_kind: string; follow_up_question: string | null; linked?: string[]; slug?: string; session_id?: number }
+  | { type: "tutor_error"; ts: string; turn_id: number | null; message: string; slug?: string; session_id?: number };
 export type StoredTurn =
   | { turn_id: number; kind: "press"; press_index: number }
   | { turn_id: number; kind: "chat"; text: string }
   | { turn_id: number; kind: "reply"; text: string; gap: string; gap_note: string | null; help_kind: string; linked?: string[] }
   | { turn_id: number; kind: "failed"; reason: string; message: string };
-export type ChatState = { type: "chat_state"; ts: string; turns: StoredTurn[]; streaming: number | null };
+export type ChatState = { type: "chat_state"; ts: string; session_id?: number | null; turns: StoredTurn[]; streaming: number | null };
 export type ReaderMessageType = "problem_opened" | "problem_statement" | "code_changed" | "code_snapshot" | "run_result" | "submit_result" | "focus_changed" | "reader_check";
 export const MISSING_READER_MESSAGE = "Leetotter can't see this NeetCode page. Reload the tab.";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
@@ -164,7 +164,8 @@ export function parseMessage(raw: string): Message {
   // The companion's recap messages are the one wire exception: they carry no ts.
   const tsOptional = message.type === "recap_state" || message.type === "recap_noted";
   if ((!("ts" in message) && !tsOptional) || ("ts" in message && (typeof message.ts !== "string" || !message.ts))) throw new Error("Message requires ts");
-  const numericSession = message.type === "recap_state" || message.type === "recap_noted";
+  const numericSession = ["recap_state", "recap_noted", "session_state", "chat_state",
+    "tutor_start", "tutor_chunk", "tutor_done", "tutor_error"].includes(String(message.type));
   if ("session_id" in message && !numericSession && (typeof message.session_id !== "string" || !message.session_id)) throw new Error("Invalid session_id");
   if (message.type === "status" && message.state !== "connected") throw new Error("Invalid status state");
   if (message.type === "error" && (typeof message.message !== "string" || !message.message)) throw new Error("Error requires message");
@@ -180,9 +181,12 @@ export function parseMessage(raw: string): Message {
     if (message.type === "tutor_chunk" && (!Number.isInteger(message.attempt) || (message.attempt as number) < 0 || typeof message.text !== "string")) throw new Error("Invalid tutor_chunk");
     if (message.type === "tutor_done" && (!nonempty(message.reply_text) || !nonempty(message.gap) || !(message.gap_note === null || typeof message.gap_note === "string") || !nonempty(message.help_kind) || !(message.follow_up_question === null || typeof message.follow_up_question === "string") || !linkedSlugs(message.linked))) throw new Error("Invalid tutor_done");
     if (message.type === "tutor_error" && (typeof message.message !== "string" || !message.message)) throw new Error("Invalid tutor_error");
+    if (message.slug !== undefined && !nonempty(message.slug)) throw new Error("Invalid Tutor problem slug");
+    if (message.session_id !== undefined && !positiveInteger(message.session_id)) throw new Error("Invalid Tutor session id");
   }
   if (message.type === "chat_state") {
-    if (!Array.isArray(message.turns) || !(message.streaming === null || positiveInteger(message.streaming)) || !message.turns.every(value => {
+    if (!Array.isArray(message.turns) || !(message.streaming === null || positiveInteger(message.streaming)) ||
+      !(message.session_id === undefined || message.session_id === null || positiveInteger(message.session_id)) || !message.turns.every(value => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return false;
       const turn = value as Record<string, unknown>;
       if (!Number.isInteger(turn.turn_id) || (turn.turn_id as number) < 1) return false;
@@ -218,7 +222,8 @@ export function parseMessage(raw: string): Message {
       (!(message.name === null || (typeof message.name === "string" && message.name.length <= 40)) ||
        !["match", "light", "dark"].includes(String(message.theme)))) throw new Error("Invalid settings_state payload");
   if (message.type === "session_state") {
-    if (!["idle", "active", "paused", "ended"].includes(String(message.state)) || !["idle", "watching", "paused", "debrief"].includes(String(message.mode)) ||
+    if (!(message.session_id === undefined || message.session_id === null || positiveInteger(message.session_id)) ||
+      !["idle", "active", "paused", "ended"].includes(String(message.state)) || !["idle", "watching", "paused", "debrief"].includes(String(message.mode)) ||
       !Number.isInteger(message.active_seconds) || typeof message.running !== "boolean" || typeof message.accepted !== "boolean" ||
       !(message.paused_reason === null || ["button", "focus", "check", "disconnect", "closed", "restart"].includes(String(message.paused_reason))) ||
       !(message.check_message === null || typeof message.check_message === "string") ||

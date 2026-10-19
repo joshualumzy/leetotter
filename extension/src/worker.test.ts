@@ -465,8 +465,8 @@ describe("worker reader delivery", () => {
   });
 
   it("forwards the contents-page self-check while the bound tab remains on NeetCode", async () => {
-    await start(); pushSession("watching"); await dispatch({ kind: "get_mode" });
-    socket.readyState = 1;
+    await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" });
+    await settleFocus();
     updated.at(-1)?.(7, { url: "https://neetcode.io/practice/" }, { id: 7, url: "https://neetcode.io/practice/" });
     vi.mocked(chrome.tabs.get).mockResolvedValue({ id: 7, url: "https://neetcode.io/practice/" } as chrome.tabs.Tab);
     const message = "Open a problem and I'll pick the timer back up.";
@@ -645,4 +645,27 @@ describe("Planner, recap, cap and reference relay", () => {
   });
 });
 
+});
+
+describe("worker startup and storage failures", () => {
+  it("keeps saving after one session storage write fails", async () => {
+    vi.mocked(chrome.storage.session.set).mockRejectedValueOnce(new Error("quota"));
+    await start();
+    vi.mocked(chrome.storage.session.set).mockClear();
+    pushSession("watching");
+    await vi.waitFor(() => expect(chrome.storage.session.set).toHaveBeenCalled());
+    expect(await dispatch({ kind: "get_mode" })).toBe("watching");
+  });
+
+  it("opens the socket only after the saved state and panel setup finish loading", async () => {
+    let resolveGet!: (value: any) => void;
+    vi.mocked(chrome.storage.session.get).mockReturnValueOnce(new Promise(resolve => { resolveGet = resolve; }));
+    socket = undefined as any;
+    vi.resetModules();
+    await import("./worker");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(socket).toBeUndefined();
+    resolveGet({ readerState: saved.readerState });
+    await vi.waitFor(() => expect(socket).toBeDefined());
+  });
 });

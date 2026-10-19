@@ -5,6 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 
+from companion.attempts import attempts as grouped_attempts
 from companion.catalog import load_catalog
 from companion.reference import StoredReference
 
@@ -97,17 +98,9 @@ def _excluded_sessions(db) -> set[int]:
 def _attempts(db) -> list[_Attempt]:
     """Every worked attempt in a session, including one never left; imported solves have no session and never appear."""
     excluded = _excluded_sessions(db)
-    attempts = []
-    current: _Attempt | None = None
-
-    def finish():
-        nonlocal current
-        if current is not None:
-            attempts.append(current)
-            current = None
-
-    rows = db.execute("SELECT id, session_id, type, payload FROM events WHERE session_id IS NOT NULL ORDER BY id")
-    for event_id, session_id, kind, raw in rows:
+    events = []
+    for event_id, session_id, kind, raw in db.execute(
+            "SELECT id, session_id, type, payload FROM events WHERE session_id IS NOT NULL ORDER BY id"):
         if session_id in excluded:
             continue
         try:
@@ -115,39 +108,23 @@ def _attempts(db) -> list[_Attempt]:
         except ValueError:
             logger.warning("Past links skipped an unreadable %s event %s", kind, event_id)
             continue
-        if current is not None and current.session_id != session_id:
-            finish()
-        if kind == "problem_opened":
-            if current is not None and current.slug != payload.get("slug"):
-                finish()
-            if current is None:
-                current = _Attempt(payload["slug"], payload["title"], session_id, [], last_id=event_id)
-            else:
-                current.title = payload.get("title") or current.title
-                current.last_id = event_id
-            continue
-        if current is None:
-            continue
-        if kind == "problem_left":
-            if payload.get("slug") != current.slug:
-                continue
-            current.add(event_id, kind, payload)
-            if payload.get("accepted"):
-                current.accepted = True
-                current.accept_id = current.accept_id or event_id
-            finish()
-            continue
-        if payload.get("slug") == current.slug:
-            current.add(event_id, kind, payload)
+        events.append((event_id, session_id, None, kind, payload))
+    attempts = []
+    for grouped in grouped_attempts(events):
+        attempt = _Attempt(grouped["slug"], grouped["title"] or grouped["slug"], grouped["session"], [],
+                           last_id=grouped["start"])
+        for event_id, _, _, kind, payload in grouped["events"]:
+            attempt.add(event_id, kind, payload)
             if kind == "submit_result" and payload.get("accepted"):
-                current.accepted = True
-                current.accept_id = current.accept_id or event_id
+                attempt.accepted = True
+                attempt.accept_id = attempt.accept_id or event_id
             elif kind == "accept_counted":
-                current.accepted = True
-                current.accept_id = current.accept_id or event_id
-        elif kind in CODE:
-            current.add(event_id, kind, payload)
-    finish()
+                attempt.accepted = True
+                attempt.accept_id = attempt.accept_id or event_id
+        if grouped["left"] is not None and grouped["left"][4].get("accepted"):
+            attempt.accepted = True
+            attempt.accept_id = attempt.accept_id or grouped["left"][0]
+        attempts.append(attempt)
     latest = {}
     for attempt in attempts:
         if attempt.worked:

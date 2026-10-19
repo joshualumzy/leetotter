@@ -82,6 +82,7 @@ let lastTypingReaction = 0;
 let pointer: { x: number; y: number } | null = null;
 let chat = emptyChat();
 let chatSlug: string | null = null;
+let chatSession: number | null = null;
 let draft = "";
 let composerNote = "";
 let composerMode: "hidden" | "tutor" | "planner" = "hidden";
@@ -788,7 +789,7 @@ function renderChat(): void {
 function renderComposer(view: PanelView): void {
   // Until the session has a problem, the Planner is the only one to talk to, and only once it has a card to talk about.
   const plannerMode = view.body === "active" && !session?.problem;
-  const visible = activeTab === "session" && (plannerMode ? (Boolean(suggestion) || plannerWaiting()) && !plannerTimedOut : ["active", "paused", "debrief"].includes(view.body));
+  const visible = activeTab === "session" && (plannerMode ? Boolean(suggestion) && !plannerTimedOut : ["active", "paused", "debrief"].includes(view.body));
   composer!.hidden = !visible || settingsOpen;
   composerMode = composer!.hidden ? "hidden" : plannerMode ? "planner" : "tutor";
   if (composer!.hidden) { composer!.replaceChildren(); return; }
@@ -883,7 +884,20 @@ function startPacer(turn_id: number, attempt: number, text: string): { attempt: 
   pacers.set(turn_id, entry);
   return entry;
 }
+type TurnOwner = { slug: string | null; session: number | null };
+const turnOwners = new Map<number, TurnOwner>();
 function receiveTutor(message: TutorMessage): void {
+  if (message.turn_id !== null) {
+    if (message.type === "tutor_start") {
+      turnOwners.set(message.turn_id, { slug: message.slug ?? chatSlug, session: message.session_id ?? chatSession });
+    }
+    const owner = turnOwners.get(message.turn_id);
+    const slugWrong = message.slug !== undefined ? message.slug !== chatSlug : owner !== undefined && owner.slug !== chatSlug;
+    const sessionWrong = message.session_id !== undefined ? message.session_id !== chatSession : owner !== undefined && owner.session !== chatSession;
+    if (slugWrong || sessionWrong) {
+      pacers.delete(message.turn_id); turnOwners.delete(message.turn_id); return;
+    }
+  }
   if (message.type === "tutor_chunk") {
     const current = pacers.get(message.turn_id);
     if (!current) startPacer(message.turn_id, message.attempt, message.text);
@@ -901,6 +915,7 @@ function receiveTutor(message: TutorMessage): void {
   }
   if (message.type === "tutor_error" && message.turn_id !== null) pacers.delete(message.turn_id);
   chat = applyChat(chat, message);
+  if ((message.type === "tutor_done" || message.type === "tutor_error") && message.turn_id !== null) turnOwners.delete(message.turn_id);
   if (!document.getElementById("chat-stream") && chat.turns.length) render();
   else if (document.getElementById("chat-stream") && !chat.turns.length) render();
   else renderChat();
@@ -1299,7 +1314,11 @@ chrome.runtime.onMessage.addListener(message => {
       if (!suggestion && !plannerWaiting()) beginPlannerWait();
     } else endPlannerWait();
     const slug = session?.problem?.slug || null;
-    if (slug !== chatSlug) { chatSlug = slug; chat = emptyChat(); pacers.clear(); if (slug) requestChatState(); }
+    const sessionId = session?.session_id ?? null;
+    if (slug !== chatSlug || sessionId !== chatSession) {
+      chatSlug = slug; chatSession = sessionId; chat = emptyChat(); pacers.clear();
+      if (slug) requestChatState();
+    }
     if (startAfterEnd && session?.state === "ended") session = { ...session, state: "idle", mode: "idle" };
     if (session?.state === "active") startAfterEnd = false;
     if (session?.mode !== "watching") clearReaction();

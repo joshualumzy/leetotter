@@ -65,6 +65,7 @@ _reflection_tasks = set()
 _reflection_lock = None
 _model_lock = threading.Lock()
 _pending_workers = set()
+RESET_WORKER_WAIT = 10.0
 _resetting = False
 
 
@@ -83,20 +84,43 @@ def _get_models():
 def _tracked(func):
     """Run `func` in a worker thread, recording it so a reset can wait for it to finish or fail."""
     done = threading.Event()
+    started = threading.Event()
     _pending_workers.add(done)
 
     def run():
+        started.set()
         try:
             return func()
         finally:
             done.set()
             _pending_workers.discard(done)
 
+    def cancel():
+        # The wrapper was never handed to a thread: do not leave a reset waiting on it forever.
+        if not started.is_set():
+            _pending_workers.discard(done)
+
+    run.cancel = cancel
     return run
 
 
+async def _in_thread(func):
+    run = _tracked(func)
+    try:
+        future = asyncio.get_running_loop().run_in_executor(None, run)
+    except BaseException:
+        run.cancel()
+        raise
+    return await future
+
+
 async def _wait_for_workers():
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + RESET_WORKER_WAIT
     while _pending_workers:
+        if loop.time() >= deadline:
+            raise TimeoutError(f"{len(_pending_workers)} background worker(s) did not finish within "
+                               f"{RESET_WORKER_WAIT:g}s")
         await asyncio.sleep(0.01)
 
 
@@ -337,9 +361,15 @@ async def _handle(connection):
                     global _resetting
                     _resetting = True
                     try:
+                        try:
+                            await _cancel_background_tasks()
+                        except TimeoutError as error:
+                            logger.exception("Reset stopped because a background worker did not finish")
+                            await _broadcast([{"type": "error", "ts": _timestamp(),
+                                               "message": f"Reset stopped: {error}. Nothing was erased."}], None)
+                            return
                         if _coordinator.state in ("active", "paused"):
                             _coordinator.handle({"type": "session_end", "ts": _timestamp()})
-                        await _cancel_background_tasks()
                         reset_progress(store_path())
                         _reference_statements.clear()
                         _coordinator.reset()
@@ -437,6 +467,11 @@ async def _handle(connection):
                                 request = _planner.session_started(_coordinator.session_id)
                                 if request:
                                     _schedule_planner(request)
+                            elif kind == "session_resume":
+                                if _coordinator.state == "active" and _coordinator.problem is None:
+                                    request = _planner.resume(_coordinator.session_id)
+                                    if request:
+                                        _schedule_planner(request)
                             elif kind in ("session_done", "session_skip"):
                                 _schedule_planner(_planner.problem_left(_coordinator.session_id))
                                 _schedule_grading("next_problem")
@@ -552,11 +587,17 @@ async def _run_turn(turn, started):
         if _resetting:
             _coordinator.fail_turn(turn, "shutdown", "The companion stopped before the Tutor finished.")
             return
-        loop.run_in_executor(None, _tracked(work))
+        run = _tracked(work)
+        try:
+            loop.run_in_executor(None, run)
+        except Exception:
+            run.cancel()
+            raise
         while True:
             item = await queue.get()
             if item[0] == "chunk":
                 await _broadcast([{"type": "tutor_chunk", "ts": _timestamp(), "turn_id": turn.turn_id,
+                                   "session_id": turn.session_id, "slug": turn.slug,
                                    "attempt": item[1], "text": item[2]}], None)
                 continue
             if item[0] == "done":
@@ -580,7 +621,8 @@ async def _run_turn(turn, started):
             outgoing = _coordinator.fail_turn(turn, "error", message)
         except Exception:
             logger.exception("Could not log Tutor turn %s as failed", turn.turn_id)
-            outgoing = [{"type": "tutor_error", "ts": _timestamp(), "turn_id": turn.turn_id, "message": message}]
+            outgoing = [{"type": "tutor_error", "ts": _timestamp(), "turn_id": turn.turn_id,
+                         "session_id": turn.session_id, "slug": turn.slug, "message": message}]
         try:
             await _broadcast(outgoing, None)
         except Exception:
@@ -615,7 +657,7 @@ async def _run_planner(request):
     if _resetting:
         return
     try:
-        reply = await asyncio.to_thread(_tracked(lambda: ask_planner(_get_models(), request)))
+        reply = await _in_thread(lambda: ask_planner(_get_models(), request))
         await _broadcast(_planner.answer(request, reply), None)
     except Exception as error:
         logger.exception("Planner request failed")
@@ -670,9 +712,9 @@ async def _run_reference(problem, statement):
     slug = problem["slug"]
     checked = False
     try:
-        result = await asyncio.to_thread(_tracked(
+        result = await _in_thread(
             lambda: write_and_check(slug, problem["title"], _get_models(), db_path=store_path(),
-                                    statement=statement, grade_waiting=False)))
+                                    statement=statement, grade_waiting=False))
         if result.status == "checked":
             checked = True
             await _run_grading("initial")
@@ -705,8 +747,8 @@ async def _run_reflection(session_id):
                 await asyncio.gather(*tuple(_grading_tasks), return_exceptions=True)
             if _resetting:
                 return
-            state = await asyncio.to_thread(_tracked(
-                lambda: reflect_session(_get_models(), store_path(), session_id)))
+            state = await _in_thread(
+                lambda: reflect_session(_get_models(), store_path(), session_id))
             await _broadcast([state], None)
         except Exception as error:
             logger.exception("Reflector failed for session %s", session_id)
@@ -732,8 +774,8 @@ async def _run_feedback(session_id, note_id):
         return
     async with _reflection_lock:
         try:
-            state = await asyncio.to_thread(_tracked(
-                lambda: reflect_feedback(_get_models(), store_path(), session_id, note_id)))
+            state = await _in_thread(
+                lambda: reflect_feedback(_get_models(), store_path(), session_id, note_id))
             await _broadcast([state], None)
         except Exception as error:
             logger.exception("Reflector feedback failed for note %s", note_id)
@@ -766,7 +808,7 @@ async def _run_grading(trigger="initial", only_slug=None):
             return grade_pending(GraderClient(), db_path=store_path(), trigger=trigger, only_slug=only_slug)
 
         try:
-            outcome = await asyncio.to_thread(_tracked(work))
+            outcome = await _in_thread(work)
             if outcome.failed:
                 for attempt_id in outcome.failed:
                     message = outcome.failures.get(attempt_id, "Grading is delayed; an attempt remains ungraded.")
@@ -791,8 +833,9 @@ async def serve_companion(port=8765, models=None):
     async with serve(_handle, "127.0.0.1", port, origins=[ALLOWED_ORIGIN]) as server:
         tick_task = asyncio.create_task(_ticker())
         _schedule_grading("next_start")
-        for session_id in dict.fromkeys([*pending_sessions(store_path()), *_coordinator.interrupted]):
-            _schedule_reflection(session_id)
+        owed = [*pending_sessions(store_path()), *_coordinator.interrupted]
+        if owed:
+            _schedule_reflection(max(owed))
         try:
             yield server
         finally:

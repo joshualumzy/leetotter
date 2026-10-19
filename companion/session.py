@@ -60,6 +60,8 @@ class SessionCoordinator:
         self.extensions = set()  # problem slugs that have taken their one extension
         self.debrief = False  # the current problem is in the Tutor's debrief mode
         self.turn = None  # id of the Tutor turn in flight; one at a time
+        self.turn_slug = None  # the problem that turn was asked on
+        self.turn_session = None  # the session that turn was asked in
         self.pending_solve_slug = None  # the first accept awaiting its after-solve Tutor turn
         self.suggested_slug = None  # the Planner's current suggestion, set by the socket
         self.interrupted = []  # older open sessions ended during this startup
@@ -111,6 +113,8 @@ class SessionCoordinator:
         self.extensions = set()
         self.debrief = False
         self.turn = None
+        self.turn_slug = None
+        self.turn_session = None
         self.pending_solve_slug = None
         self.suggested_slug = None
 
@@ -384,7 +388,7 @@ class SessionCoordinator:
                 if self.session_id is not None:
                     question = open_followup(db, session_id=self.session_id, slug=self.problem["slug"])
             reference_status = row[0] if row and row[0] in {"checked", "resolved_by_you"} else "not_checked_yet"
-        state = {"type": "session_state", "ts": now.isoformat(), "state": self.state,
+        state = {"type": "session_state", "ts": now.isoformat(), "state": self.state, "session_id": self.session_id,
                 "paused_reason": self.paused_reason, "check_message": self.check_message,
                 "active_seconds": self._seconds(now), "running": self.state == "active",
                 "problem": self.problem, "accepted": self.accepted, "mode": self._mode(),
@@ -674,15 +678,17 @@ class SessionCoordinator:
                 message = f"Couldn't prepare the Tutor's context: {exc}"
                 self._event(db, self.session_id, now.isoformat(), "help_failed",
                             {"turn_id": turn_id, "slug": slug, "reason": "context", "message": message})
-                return [self._tutor_error(now, turn_id, message)], None
+                return [self._tutor_error(now, turn_id, message, slug, self.session_id)], None
         self.turn = turn_id
+        self.turn_slug = slug
+        self.turn_session = self.session_id
         asked = request.kind == "chat" and asks_about_similar(request.text)
         schema = reply_schema(request, allowed=(link.slug for link in links), asked=asked, answer=answer is not None,
                               complexity_due=(solve or {}).get("complexity_due", False),
                               followups_forbidden=(solve or {}).get("followups_forbidden", False))
         turn = Turn(turn_id, self.session_id, slug, request, messages, schema, answer)
-        return [{"type": "tutor_start", "ts": now.isoformat(), "turn_id": turn_id, "request": kind,
-                 "press_index": request.press_index}], turn
+        return [{"type": "tutor_start", "ts": now.isoformat(), "turn_id": turn_id, "session_id": self.session_id,
+                 "request": kind, "press_index": request.press_index, "slug": slug}], turn
 
     def _problem_events(self, db):
         """(id, type, payload) of this session's events about the current problem, oldest first: every event
@@ -839,7 +845,10 @@ class SessionCoordinator:
                 elif kind == "help_failed":
                     turns.append({"turn_id": payload["turn_id"], "kind": "failed", "reason": payload["reason"],
                                   "message": payload["message"]})
-        return {"type": "chat_state", "ts": now.isoformat(), "turns": turns, "streaming": self.turn}
+        streaming = (self.turn if self.state in ("active", "paused") and self.problem is not None
+                     and self.turn_slug == self.problem["slug"] and self.turn_session == self.session_id else None)
+        return {"type": "chat_state", "ts": now.isoformat(), "session_id": self.session_id,
+                "turns": turns, "streaming": streaming}
 
     def finish_turn(self, turn: Turn, reply, model: str) -> list[dict]:
         """Log a validated reply and send it; it is stored whatever the session's state is now."""
@@ -879,8 +888,9 @@ class SessionCoordinator:
                     write_missed(db, session_id=turn.session_id, slug=turn.slug, event_id=help_event_id,
                                  attempt_start=attempt_start)
         self._release(turn)
-        return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id, "reply_text": reply.reply_text,
-                 **labels, "follow_up_question": follow_up}]
+        return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id,
+                 "session_id": turn.session_id, "slug": turn.slug,
+                 "reply_text": reply.reply_text, **labels, "follow_up_question": follow_up}]
 
     def _record_solve_followup(self, db, turn: Turn, reply, now):
         """Record the Tutor's follow-up decision, unless the accept was left or disputed labels forbid it.
@@ -912,15 +922,19 @@ class SessionCoordinator:
                             {"turn_id": turn.turn_id, "slug": turn.slug, "reason": reason, "message": message})
         finally:
             self._release(turn)
-        return [self._tutor_error(now, turn.turn_id, message)]
+        return [self._tutor_error(now, turn.turn_id, message, turn.slug, turn.session_id)]
 
     def _release(self, turn):
         if self.turn == turn.turn_id:
             self.turn = None
+            self.turn_slug = None
+            self.turn_session = None
 
     @staticmethod
-    def _tutor_error(now, turn_id, message):
-        return {"type": "tutor_error", "ts": now.isoformat(), "turn_id": turn_id, "message": message}
+    def _tutor_error(now, turn_id, message, slug=None, session_id=None):
+        return {"type": "tutor_error", "ts": now.isoformat(), "turn_id": turn_id,
+                **({"slug": slug} if slug is not None else {}),
+                **({"session_id": session_id} if session_id is not None else {}), "message": message}
 
     def tick(self) -> list[dict]:
         now = self.clock()

@@ -85,6 +85,7 @@ export class CompanionConnection {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error("WebSocket protocol error:", message);
+        this.errored = true;
         this.onState({ kind: "error", message });
       }
     };

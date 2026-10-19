@@ -193,6 +193,26 @@ describe("panel actions", () => {
     notify({ kind: "tutor", message: { type: "tutor_error", ts: "now", turn_id: null, message: "Wait a moment" } });
     expect(document.querySelector(".chat-notice")?.textContent).toBe("Wait a moment");
   });
+  it("drops a Tutor reply that belongs to a problem you have left", () => {
+    const first = { ...session, state: "active", mode: "watching", running: true, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: first });
+    notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 9, request: "chat", press_index: null, slug: "duplicate-integer" } });
+    notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 9, attempt: 1, text: "Two Sum tip", slug: "duplicate-integer" } });
+    notify({ kind: "session_state", state: { ...first, problem: { slug: "two-sum", title: "Two Sum" } } });
+    notify({ kind: "tutor", message: { type: "tutor_done", ts: "now", turn_id: 9, reply_text: "Two Sum tip", gap: "none", gap_note: null, help_kind: "question", follow_up_question: null, slug: "duplicate-integer" } });
+    expect(document.querySelector(".chat-reply")).toBeNull();
+    expect(document.querySelector(".chat-failed")).toBeNull();
+  });
+  it("drops a Tutor reply from the previous session even when the same problem reopens", () => {
+    const first = { ...session, session_id: 1, state: "active", mode: "watching", running: true, problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
+    notify({ kind: "session_state", state: first });
+    notify({ kind: "tutor", message: { type: "tutor_start", ts: "now", turn_id: 9, session_id: 1, request: "chat", press_index: null, slug: "duplicate-integer" } });
+    notify({ kind: "tutor", message: { type: "tutor_chunk", ts: "now", turn_id: 9, session_id: 1, attempt: 1, text: "Old session tip", slug: "duplicate-integer" } });
+    notify({ kind: "session_state", state: { ...first, session_id: 2 } });
+    expect(document.querySelector(".chat-reply")).toBeNull();
+    notify({ kind: "tutor", message: { type: "tutor_done", ts: "now", turn_id: 9, session_id: 1, reply_text: "Old session tip", gap: "none", gap_note: null, help_kind: "question", follow_up_question: null, slug: "duplicate-integer" } });
+    expect(document.querySelector(".chat-reply")).toBeNull();
+  });
   it("keeps the composer visible with a reason while paused and rejects over-limit dictation", async () => {
     await bindPanelTab();
     const active = { ...session, state: "active", mode: "watching", problem: { slug: "duplicate-integer", title: "Duplicate Integer" } } as SessionState;
@@ -623,31 +643,18 @@ describe("panel actions", () => {
       expect(document.getElementById("planner-swap")).toBeTruthy();
       expect(document.getElementById("planner-clear")).toBeTruthy();
     });
-    it("shows the otter choosing a problem, with the composer open for a steer, until the suggestion arrives", () => {
+    it("shows the otter choosing a problem without offering the composer until the card arrives", () => {
       showStart();
       startSession();
       const card = document.querySelector(".planner-waiting-card")!;
       expect(card.textContent).toContain("Choosing a problem for you...");
       expect(card.querySelector(".dots")).toBeTruthy();
       expect(card.querySelector("svg.otter")).toBeTruthy();
-      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
+      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
       notify({ kind: "suggestion", message: suggestion });
       expect(document.querySelector(".planner-waiting-card")).toBeNull();
       expect(document.querySelector(".suggestion-card")?.textContent).toContain("House Robber");
       expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
-    });
-    it("sends a steer typed while the first problem is being chosen and shows it above the wait", async () => {
-      showStart();
-      startSession();
-      const input = document.getElementById("chat-input") as HTMLTextAreaElement;
-      input.value = "more dynamic programming";
-      input.dispatchEvent(new window.Event("input", { bubbles: true }));
-      click("chat-send");
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "planner_chat", text: "more dynamic programming" });
-      await vi.waitFor(() => expect(document.querySelector(".chat-you")?.textContent).toBe("more dynamic programming"));
-      expect(document.querySelector(".planner-waiting-card")).toBeTruthy();
-      notify({ kind: "suggestion", message: suggestion });
-      expect(document.querySelector(".chat-you")?.textContent).toBe("more dynamic programming");
     });
     it("keeps a past card, the steer and the wait in order until the next suggestion replaces the wait", async () => {
       showStart();
@@ -707,7 +714,7 @@ describe("panel actions", () => {
         expect(document.querySelector(".suggestion-card")).toBeNull();
         expect(document.querySelector(".past-card")?.textContent).toContain("House Robber");
         expect(document.querySelector(".planner-waiting-card")?.textContent).toContain("Choosing a problem for you...");
-        expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
+        expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
         notify({ kind: "suggestion", message: { ...suggestion, slug: "two-sum", title: "Two Sum" } });
         expect(document.querySelector(".planner-waiting-card")).toBeNull();
         expect(document.querySelector(".past-card")?.textContent).toContain("House Robber");

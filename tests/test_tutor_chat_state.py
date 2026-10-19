@@ -42,6 +42,24 @@ def test_the_conversation_lists_presses_messages_replies_and_failures_in_order(t
     ], streaming.turn_id)
 
 
+def test_streaming_is_reported_only_on_the_problem_that_asked(tmp_path):
+    coord, _, _ = active(tmp_path)
+    _, turn = begin(coord, "chat", "on A")
+    coord.handle(opened(SLUG_B, TITLE_B))
+    assert turns(coord) == ([], None)
+    assert turn.turn_id > 0
+
+
+def test_streaming_from_a_previous_session_is_not_reported_on_the_same_problem(tmp_path):
+    coord, _, _ = active(tmp_path)
+    _, turn = begin(coord, "chat", "in the old session")
+    coord.handle(msg("session_end"))
+    coord.handle(start_msg())
+    coord.handle(opened())
+    assert turns(coord) == ([], None)
+    assert turn.turn_id > 0
+
+
 def test_only_the_current_attempt_is_shown_and_nothing_after_the_session_ends(tmp_path):
     coord, _, _ = active(tmp_path)
     _, turn = begin(coord, "chat", "on A")

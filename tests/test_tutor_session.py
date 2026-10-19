@@ -50,7 +50,8 @@ def test_a_press_starts_a_turn_logs_the_request_and_names_its_press(tmp_path):
     request, = of_type(path, "help_request")
     assert request[1] == {"slug": SLUG_A, "press_index": 1}
     turn_id = turn.turn_id
-    assert out == [{"type": "tutor_start", "ts": out[0]["ts"], "turn_id": turn_id, "request": "help", "press_index": 1}]
+    assert out == [{"type": "tutor_start", "ts": out[0]["ts"], "turn_id": turn_id, "session_id": 1,
+                    "request": "help", "press_index": 1, "slug": SLUG_A}]
     with open_store(path) as db:
         assert db.execute("SELECT type FROM events WHERE id = ?", (turn_id,)).fetchone() == ("help_request",)
     assert "first time on this problem" in context(turn)
@@ -102,7 +103,8 @@ def test_a_finished_turn_is_logged_with_its_labels_and_sent_to_the_panel(tmp_pat
                          "gap": "other", "gap_note": "confuses index and value", "help_kind": "question",
                          "reply_text": "What could you remember as you go?", "follow_up_question": None,
                          "linked": [], "model": "x-test-1"}
-    assert out == [{"type": "tutor_done", "ts": out[0]["ts"], "turn_id": turn.turn_id, "reply_text": "What could you remember as you go?",
+    assert out == [{"type": "tutor_done", "ts": out[0]["ts"], "turn_id": turn.turn_id, "session_id": 1,
+                    "slug": SLUG_A, "reply_text": "What could you remember as you go?",
                     "gap": "other", "gap_note": "confuses index and value", "help_kind": "question", "follow_up_question": None,
                     "linked": []}]
 
@@ -123,7 +125,8 @@ def test_a_failed_turn_is_logged_and_does_not_count_as_a_press(tmp_path):
     coord, _, path = active(tmp_path)
     _, turn = begin(coord)
     out = coord.fail_turn(turn, "timeout", "The Tutor didn't answer in time. Ask again.")
-    assert out == [{"type": "tutor_error", "ts": out[0]["ts"], "turn_id": turn.turn_id, "message": "The Tutor didn't answer in time. Ask again."}]
+    assert out == [{"type": "tutor_error", "ts": out[0]["ts"], "turn_id": turn.turn_id, "session_id": 1,
+                    "slug": SLUG_A, "message": "The Tutor didn't answer in time. Ask again."}]
     assert of_type(path, "help_failed")[0][1] == {"turn_id": turn.turn_id, "slug": SLUG_A, "reason": "timeout",
                                                    "message": "The Tutor didn't answer in time. Ask again."}
     out, _ = begin(coord)

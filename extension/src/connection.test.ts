@@ -61,7 +61,7 @@ describe("companion connection", () => {
     connection.stop();
   });
 
-  it("shows unknown server messages as errors", () => {
+  it("shows unknown server messages as errors and clears them on the next healthy message", () => {
     const sockets: FakeSocket[] = [];
     const states: {kind: string; message?: string}[] = [];
     const connection = new CompanionConnection("ws://127.0.0.1:8765", () => {
@@ -70,6 +70,8 @@ describe("companion connection", () => {
     connection.start();
     sockets[0].onmessage?.({ data: '{"type":"mystery","ts":"2026-10-15T00:00:00Z"}' });
     expect(states.at(-1)).toEqual({ kind: "error", message: "Unknown message type: mystery" });
+    sockets[0].onmessage?.({ data: '{"type":"import_status","ts":"2026-10-15T00:00:01Z","imported":false}' });
+    expect(states.at(-1)).toEqual({ kind: "connected" });
     connection.stop();
   });
 

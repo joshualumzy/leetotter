@@ -7,6 +7,7 @@ the exclusion is recorded on the session (`sessions.excluded`), so later Past li
 import json
 from datetime import datetime, timezone
 
+from companion.attempts import attempts as grouped_attempts
 from companion.catalog import CATEGORIES, load_catalog
 from companion.grading import GRADES, category_grade, solve_grade
 from companion.memory import item_memory
@@ -45,35 +46,18 @@ def _events(db):
 
 def _attempts(events):
     """Each time a problem was opened in Leetotter, oldest first, including one still open."""
-    by_session = {}
-    for event in events:
-        if event[1] is not None:
-            by_session.setdefault(event[1], []).append(event)
     attempts = []
-    for session, rows in by_session.items():
-        current = None
-        for event in rows:
-            id_, _, ts, kind, payload = event
-            if kind == "problem_opened":
-                if current is not None and current["slug"] != payload["slug"]:
-                    attempts.append(current)
-                if current is None or current["slug"] != payload["slug"]:
-                    current = {"session": session, "slug": payload["slug"], "opened": ts,
-                               "opened_id": id_, "left_id": None, "events": [], "accepted": False}
-                current["events"].append(event)
-            elif kind == "problem_left":
-                if current is not None and current["slug"] == payload["slug"]:
-                    current["events"].append(event)
-                    current["left_id"] = id_
-                    current["accepted"] = current["accepted"] or bool(payload.get("accepted"))
-                    attempts.append(current)
-                    current = None
-            elif current is not None:
-                current["events"].append(event)
-                if kind == "submit_result" and payload.get("accepted"):
-                    current["accepted"] = True
-        if current is not None:
-            attempts.append(current)
+    for attempt in grouped_attempts(events):
+        if attempt["session"] is None:
+            continue
+        accepted = any(kind == "submit_result" and payload.get("accepted")
+                       for _, _, _, kind, payload in attempt["events"])
+        if attempt["left"] is not None:
+            accepted = accepted or bool(attempt["left"][4].get("accepted"))
+        attempts.append({"session": attempt["session"], "slug": attempt["slug"], "opened": attempt["opened"],
+                         "opened_id": attempt["start"],
+                         "left_id": attempt["left"][0] if attempt["left"] is not None else None,
+                         "events": attempt["events"], "accepted": accepted})
     return attempts
 
 
