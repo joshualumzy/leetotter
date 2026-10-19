@@ -590,6 +590,46 @@ describe("Planner, recap, cap and reference relay", () => {
     expect(await dispatch({ kind: "get_recap_state" })).toBeUndefined();
     expect(await dispatch({ kind: "recap_seen", session_id: 0 })).toEqual({ error: "Invalid recap request." });
   });
+  it("asks for the recap list on connection and forwards Recaps, Progress and reset messages", async () => {
+    await start(); socket.readyState = 1;
+    socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
+    expect(socket.sent).toContainEqual(expect.objectContaining({ type: "recaps_get" }));
+    const recaps = { type: "recaps_state", ts: "now", unread: false, recaps: [] };
+    socket.onmessage?.({ data: JSON.stringify(recaps) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "recaps_state", state: recaps });
+    expect(await dispatch({ kind: "get_recaps_state" })).toEqual(recaps);
+    const health = { graded: 1, disagreements: 0, disagreement_share: 0, ungraded: 0 };
+    const progress = { type: "progress_state", ts: "now", health, header: { on_your_own: 1, coming_back: 0, to_do: 149, strong: 0, rusty: 0, total: 150 }, categories: [] };
+    socket.onmessage?.({ data: JSON.stringify(progress) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "progress_state", state: progress });
+    const detail = { type: "progress_category_state", ts: "now", category: "Tries", level: "building", done: 0, total: 3, rusty: false, next: "To reach solid: 3 problems still to do on your own", problems: [], counts: { not_tried: 3, imported_only: 0 }, health };
+    socket.onmessage?.({ data: JSON.stringify(detail) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "progress_category_state", state: detail });
+    socket.onmessage?.({ data: JSON.stringify({ type: "reset_done", ts: "now" }) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "reset_done" });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "session_binding", tabId: null });
+    await vi.waitFor(() => expect(sent.some(item => item.message?.kind === "watch_mode" && item.message.mode === "idle")).toBe(true));
+    expect(await dispatch({ kind: "get_recaps_state" })).toBeUndefined();
+  });
+  it("relays the Recaps and Progress requests, grade corrections and the reset", async () => {
+    await start(); socket.readyState = 1;
+    expect(await dispatch({ kind: "recaps_get" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "recaps_get" });
+    expect(await dispatch({ kind: "progress_get" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "progress_get" });
+    expect(await dispatch({ kind: "progress_category", category: "Tries" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "progress_category", payload: { category: "Tries" } });
+    expect(await dispatch({ kind: "progress_category", category: "" })).toEqual({ error: "Invalid category." });
+    expect(await dispatch({ kind: "grade_correct", review_id: 4, grade: "shaky" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "grade_correct", payload: { review_id: 4, grade: "shaky" } });
+    expect(await dispatch({ kind: "grade_correct", review_id: 0, grade: "great" })).toEqual({ error: "Invalid grade correction." });
+    expect(await dispatch({ kind: "session_exclude", session_id: 3 })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "session_exclude", payload: { session_id: 3 } });
+    expect(await dispatch({ kind: "session_exclude", session_id: 0 })).toEqual({ error: "Invalid session." });
+    expect(await dispatch({ kind: "reset_progress", confirm: "RESET" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "reset_progress", payload: { confirm: "RESET" } });
+    expect(await dispatch({ kind: "reset_progress", confirm: "no" })).toEqual({ error: "Type RESET to confirm." });
+  });
   it("renders planner and reference errors loudly through the panel", async () => {
     await start(); socket.readyState = 1;
     socket.onmessage?.({ data: JSON.stringify({ type: "error", ts: "now", message: "The Planner failed and no eligible problems are available to suggest." }) });

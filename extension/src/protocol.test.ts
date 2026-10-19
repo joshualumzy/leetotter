@@ -144,3 +144,86 @@ describe("Planner, recap, time cap and reference messages", () => {
     ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow();
   });
 });
+
+
+describe("Recaps, Progress and reset messages", () => {
+  it("accepts the Recaps tab list newest first with its unread flag", () => {
+    const state = {
+      type: "recaps_state", ts: "now", unread: true,
+      recaps: [
+        { session_id: 13, date: "2026-10-19T09:00:00+00:00", status: "ready", bullets: ["Dropped: visited marking."], has_bullets: true, seen: false, message: null },
+        { session_id: 12, date: "2026-10-18T09:00:00+00:00", status: "failed", bullets: [], has_bullets: false, seen: true, message: "Session review is missing: offline" },
+      ],
+    };
+    expect(parseMessage(JSON.stringify(state))).toMatchObject(state);
+    expect(parseMessage('{"type":"recaps_get","ts":"now"}')).toMatchObject({ type: "recaps_get" });
+    for (const invalid of [
+      { ...state, recaps: "none" },
+      { ...state, unread: "yes" },
+      { ...state, recaps: [{ ...state.recaps[0], status: "unknown" }] },
+      { ...state, recaps: [{ ...state.recaps[0], bullets: [1] }] },
+    ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow();
+    expect(() => parseMessage('{"type":"recaps_get","ts":"now","payload":{}}')).toThrow("Invalid recaps_get payload");
+  });
+  it("accepts the Progress map and a category detail exactly as the companion sends them", () => {
+    const health = { graded: 16, disagreements: 1, disagreement_share: 0.0625, ungraded: 1 };
+    const state = {
+      type: "progress_state", ts: "now", health,
+      header: { on_your_own: 62, coming_back: 40, to_do: 48, strong: 5, rusty: 2, total: 150 },
+      categories: [{ name: "Tries", level: "solid", done: 3, total: 3, rusty: false }],
+    };
+    expect(parseMessage(JSON.stringify(state))).toMatchObject(state);
+    const detail = {
+      type: "progress_category_state", ts: "now", category: "Tries", level: "solid", done: 3, total: 3, rusty: false,
+      next: "To reach strong: a clean solve on a new Medium or Hard problem",
+      counts: { not_tried: 0, imported_only: 0 }, health,
+      problems: [{
+        problem: "implement-trie-prefix-tree", title: "Implement Trie", status: "on_your_own", status_text: "on your own",
+        pending: false, pending_reason: null, disagreement: false,
+        latest: { review_id: 4, attempt: 9, grade: "good", word: "solid", reason: "solved on your own", at: "now", disagreement: false, failed_grader: null },
+        earlier_count: 0, earlier: [],
+      }],
+    };
+    expect(parseMessage(JSON.stringify(detail))).toMatchObject(detail);
+    expect(parseMessage('{"type":"progress_get","ts":"now"}')).toMatchObject({ type: "progress_get" });
+    expect(parseMessage('{"type":"progress_category","ts":"now","payload":{"category":"Tries"}}')).toMatchObject({ type: "progress_category" });
+    for (const invalid of [
+      { ...state, header: { ...state.header, total: "150" } },
+      { ...state, categories: [{ ...state.categories[0], level: "great" }] },
+      { ...state, health: { ...health, disagreement_share: "6%" } },
+      { ...detail, problems: [{ ...detail.problems[0], status: "done" }] },
+      { ...detail, problems: [{ ...detail.problems[0], latest: { ...detail.problems[0].latest, grade: "solid" } }] },
+    ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow();
+    expect(() => parseMessage('{"type":"progress_get","ts":"now","payload":{}}')).toThrow("Invalid progress_get payload");
+    expect(() => parseMessage('{"type":"progress_category","ts":"now","payload":{"category":""}}')).toThrow("Invalid progress_category payload");
+  });
+  it("accepts grade corrections and session exclusions in the shapes the companion validates", () => {
+    expect(parseMessage('{"type":"grade_correct","ts":"now","payload":{"review_id":4,"grade":"solid"}}')).toMatchObject({ type: "grade_correct" });
+    expect(parseMessage('{"type":"grade_correct","ts":"now","payload":{"problem":"implement-trie-prefix-tree","attempt":9,"grade":"again"}}')).toMatchObject({ type: "grade_correct" });
+    expect(parseMessage('{"type":"session_exclude","ts":"now","payload":{"session_id":3}}')).toMatchObject({ type: "session_exclude" });
+    for (const invalid of [
+      { type: "grade_correct", ts: "now", payload: { review_id: 0, grade: "good" } },
+      { type: "grade_correct", ts: "now", payload: { review_id: 4, grade: "great" } },
+      { type: "grade_correct", ts: "now", payload: { review_id: 4, problem: "x", attempt: 1, grade: "good" } },
+      { type: "grade_correct", ts: "now", payload: { grade: "good" } },
+      { type: "session_exclude", ts: "now", payload: { session_id: "3" } },
+    ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow();
+  });
+  it("accepts the reset request and done message", () => {
+    expect(parseMessage('{"type":"reset_progress","ts":"now","payload":{"confirm":"RESET"}}')).toMatchObject({ type: "reset_progress" });
+    expect(parseMessage('{"type":"reset_done","ts":"now"}')).toMatchObject({ type: "reset_done" });
+    expect(() => parseMessage('{"type":"reset_progress","ts":"now","payload":{"confirm":"reset"}}')).toThrow("Invalid reset_progress payload");
+    expect(() => parseMessage('{"type":"reset_done","ts":"now","payload":{}}')).toThrow("Invalid reset_done payload");
+  });
+  it("keeps linked problem slugs in Tutor replies without requiring them of older messages", () => {
+    const done = { type: "tutor_done", ts: "now", turn_id: 1, reply_text: "Try it like Two Sum", gap: "pattern", gap_note: null, help_kind: "analogy", follow_up_question: null, linked: ["two-sum"] };
+    expect(parseMessage(JSON.stringify(done))).toMatchObject(done);
+    expect(parseMessage(JSON.stringify({ ...done, linked: [] }))).toMatchObject({ linked: [] });
+    expect(parseMessage(JSON.stringify({ ...done, linked: undefined }))).toMatchObject({ type: "tutor_done" });
+    expect(() => parseMessage(JSON.stringify({ ...done, linked: "two-sum" }))).toThrow("Invalid tutor_done");
+    expect(() => parseMessage(JSON.stringify({ ...done, linked: [""] }))).toThrow("Invalid tutor_done");
+    const chat = { type: "chat_state", ts: "now", streaming: null, turns: [{ turn_id: 1, kind: "reply", text: "Try a set", gap: "pattern", gap_note: null, help_kind: "analogy", linked: ["two-sum"] }] };
+    expect(parseMessage(JSON.stringify(chat))).toMatchObject(chat);
+    expect(() => parseMessage(JSON.stringify({ ...chat, turns: [{ ...chat.turns[0], linked: [1] }] }))).toThrow("Invalid chat_state");
+  });
+});

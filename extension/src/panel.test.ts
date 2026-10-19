@@ -757,31 +757,13 @@ describe("panel actions", () => {
       expect((document.getElementById("composer") as HTMLElement).hidden).toBe(false);
       expect((document.getElementById("chat-input") as HTMLTextAreaElement).placeholder).toBe("Tell the Planner what to focus on…");
     });
-    it.each([
-      ["preparing", [], undefined],
-      ["ready", ["Dropped: visited marking."], undefined],
-      ["failed", [], "Session review is missing: offline"],
-    ] as const)("shows a %s recap above the Start card and nothing else", (status, bullets, message) => {
+    it("leaves no recap card above Start: the Recaps tab's dot is the only signal", () => {
       showStart();
       notify({ kind: "suggestion", message: suggestion });
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status, bullets: [...bullets], ...(message ? { message } : {}) } });
-      const cards = [...document.getElementById("session-body")!.children].filter(child => child.classList.contains("card"));
-      expect(cards[0]?.classList.contains("recap-card")).toBe(true);
-      expect(cards[1]?.querySelector("#start-session")).toBeTruthy();
+      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
+      expect(document.querySelector(".recap-card")).toBeNull();
+      expect(document.getElementById("start-session")).toBeTruthy();
       expect(document.querySelector(".suggestion-card")).toBeNull();
-      expect((document.getElementById("composer") as HTMLElement).hidden).toBe(true);
-    });
-    it("keeps a closed recap closed for that session, but shows the next session's recap", () => {
-      showStart();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
-      click("recap-close");
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 12 });
-      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
-      expect(document.querySelector(".recap-card")).toBeNull();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
-      expect(document.querySelector(".recap-card")).toBeNull();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 13, status: "ready", bullets: ["Kept: two pointers."] } });
-      expect(document.querySelector(".recap-card")?.textContent).toContain("Kept: two pointers.");
     });
     it("shows the Tutor composer and no suggestion card while a problem is open", () => {
       showStart();
@@ -829,48 +811,6 @@ describe("panel actions", () => {
       expect(document.querySelector(".reference-status")?.textContent).toBe("Reference not checked yet");
       notify({ kind: "session_state", state: { ...active, reference_status: "checked" as const, reference_message: undefined } });
       expect(document.querySelector(".reference-status")).toBeNull();
-    });
-    it("shows the otter preparing notes, then the recap bullets and feedback box", () => {
-      showStart();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "preparing", bullets: [] } });
-      expect(document.querySelector(".recap-card")?.textContent).toContain("Notes on your last session");
-      expect(document.getElementById("recap-refresh")).toBeNull();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
-      expect(document.querySelector(".recap-card")?.textContent).toContain("Dropped: visited marking.");
-      expect(document.getElementById("recap-feedback")).toBeTruthy();
-      const input = document.getElementById("recap-feedback") as HTMLInputElement;
-      input.value = "That drop was wrong";
-      input.dispatchEvent(new window.Event("input", { bubbles: true }));
-      click("recap-close");
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_feedback", session_id: 12, text: "That drop was wrong" });
-      notify({ kind: "recap_noted", message: { type: "recap_noted", session_id: 12, note_id: 9, message: "Noted. For a grade correction, use Progress." } });
-      expect(document.querySelector(".recap-noted")?.textContent).toContain("Noted");
-      sendMessage.mockClear();
-      click("recap-close");
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 12 });
-      expect(document.querySelector(".recap-card")).toBeNull();
-    });
-    it("shows no recap card when a ready recap has nothing to report", () => {
-      showStart();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: [] } });
-      expect(document.querySelector(".recap-card")).toBeNull();
-      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
-    });
-    it("closes the recap as seen without sending an empty feedback note", () => {
-      showStart();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "ready", bullets: ["Dropped: visited marking."] } });
-      click("recap-close");
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 12 });
-      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
-      expect(document.querySelector(".recap-card")).toBeNull();
-    });
-    it("shows a failed recap and a failed feedback review loudly", () => {
-      showStart();
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "failed", bullets: [], message: "Session review is missing: offline" } });
-      expect(document.querySelector(".recap-card")?.getAttribute("role")).toBe("alert");
-      expect(document.querySelector(".recap-card")?.textContent).toContain("Session review is missing: offline");
-      notify({ kind: "recap_state", message: { type: "recap_state", session_id: 12, status: "feedback_failed", bullets: ["Dropped: visited marking."], message: "Feedback review failed; your note was saved." } });
-      expect(document.querySelector(".recap-card [role=alert]")?.textContent).toContain("your note was saved");
     });
     it("shows the time-up card, debrief actions and Skip", () => {
       const active = { ...session, state: "active", mode: "watching", running: true, cap_minutes: 35, problem: { slug: "two-sum", title: "Two Sum" }, time_up: { can_extend: true } };
@@ -922,6 +862,250 @@ describe("panel actions", () => {
       expect(document.querySelector(".alert")?.textContent).toContain("The Planner failed");
     });
   });
+  describe("tabs, Recaps, Progress and reset", () => {
+    const showStart = () => {
+      notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match" } });
+      notify({ kind: "session_state", state: session });
+    };
+    const health = { graded: 16, disagreements: 1, disagreement_share: 1 / 16, ungraded: 1 };
+    const progress = {
+      type: "progress_state" as const, ts: "now", health,
+      header: { on_your_own: 62, coming_back: 40, to_do: 48, strong: 5, rusty: 2, total: 150 },
+      categories: [
+        { name: "Arrays & Hashing", level: "solid" as const, done: 8, total: 9, rusty: true },
+        { name: "Two Pointers", level: "building" as const, done: 1, total: 5, rusty: false },
+        { name: "Sliding Window", level: "building" as const, done: 0, total: 6, rusty: false },
+        { name: "Stack", level: "building" as const, done: 0, total: 7, rusty: false },
+        { name: "Binary Search", level: "building" as const, done: 0, total: 7, rusty: false },
+        { name: "Linked List", level: "building" as const, done: 0, total: 11, rusty: false },
+        { name: "Trees", level: "building" as const, done: 0, total: 15, rusty: false },
+        { name: "Heap / Priority Queue", level: "building" as const, done: 0, total: 7, rusty: false },
+        { name: "Backtracking", level: "building" as const, done: 0, total: 9, rusty: false },
+        { name: "Tries", level: "solid" as const, done: 3, total: 3, rusty: false },
+        { name: "Graphs", level: "building" as const, done: 0, total: 13, rusty: false },
+        { name: "Advanced Graphs", level: "building" as const, done: 0, total: 6, rusty: false },
+        { name: "1-D Dynamic Programming", level: "building" as const, done: 0, total: 12, rusty: false },
+        { name: "2-D Dynamic Programming", level: "building" as const, done: 0, total: 11, rusty: false },
+        { name: "Greedy", level: "building" as const, done: 0, total: 8, rusty: false },
+        { name: "Intervals", level: "building" as const, done: 0, total: 6, rusty: false },
+        { name: "Math & Geometry", level: "building" as const, done: 0, total: 8, rusty: false },
+        { name: "Bit Manipulation", level: "building" as const, done: 0, total: 7, rusty: false },
+      ],
+    };
+    const detail = {
+      type: "progress_category_state" as const, ts: "now", category: "Tries", level: "solid" as const, done: 3, total: 3, rusty: false,
+      next: "To reach strong: a clean solve on a new Medium or Hard problem; complexity not yet tested",
+      counts: { not_tried: 4, imported_only: 2 }, health,
+      problems: [
+        { problem: "implement-trie-prefix-tree", title: "Implement Trie", status: "on_your_own" as const, status_text: "on your own", pending: false, pending_reason: null, disagreement: false,
+          latest: { review_id: 4, attempt: 9, grade: "good" as const, word: "solid" as const, reason: "solved on your own", at: "now", disagreement: false, failed_grader: null },
+          earlier_count: 1, earlier: [{ review_id: 2, attempt: 3, grade: "again" as const, word: "missed" as const, reason: "needed a snippet", at: "then", disagreement: false, failed_grader: null }] },
+        { problem: "design-add-and-search-words", title: "Design Add and Search Words", status: "unfinished" as const, status_text: "started, unfinished", pending: true, pending_reason: "graders" as const, disagreement: false,
+          latest: null, earlier_count: 0, earlier: [] },
+      ],
+    };
+    const recap = (session_id: number, status: "preparing" | "ready" | "failed" | "feedback_failed", bullets: string[], seen = false, date = "2026-10-15T09:00:00+00:00", message: string | null = null) =>
+      ({ session_id, date, status, bullets, has_bullets: Boolean(bullets.length), seen, message });
+    const recaps = (items: ReturnType<typeof recap>[], unread = false) =>
+      notify({ kind: "recaps_state", state: { type: "recaps_state", ts: "now", recaps: items, unread } });
+    const openRecaps = () => { click("tab-recaps"); sendMessage.mockClear(); };
+    const openProgress = () => { click("tab-progress"); sendMessage.mockClear(); };
+
+    it("shows the three tabs, asks for recaps on open and remembers the chosen tab in memory", () => {
+      showStart();
+      expect(document.getElementById("tabs")?.textContent).toContain("Session");
+      expect(document.getElementById("tabs")?.textContent).toContain("Recaps");
+      expect(document.getElementById("tabs")?.textContent).toContain("Progress");
+      expect((document.getElementById("recaps-unread") as HTMLElement).hidden).toBe(true);
+      click("tab-recaps");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recaps_get" });
+      recaps([recap(13, "ready", ["Kept: two pointers."])], true);
+      expect((document.getElementById("recaps-unread") as HTMLElement).hidden).toBe(false);
+      click("tab-progress");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_get" });
+      notify({ kind: "session_state", state: session });
+      expect(document.querySelector(".progress-view")).toBeTruthy();
+      click("tab-session");
+      expect(document.getElementById("start-session")).toBeTruthy();
+      recaps([], false);
+      expect((document.getElementById("recaps-unread") as HTMLElement).hidden).toBe(true);
+    });
+
+    it("lists recaps newest first with dates, preparing, failed and a seen mark once on each ready recap", () => {
+      showStart();
+      openRecaps();
+      recaps([
+        recap(15, "preparing", [], false, "2026-10-19T09:00:00+00:00"),
+        recap(14, "ready", ["Dropped: visited marking."], false, "2026-10-18T09:00:00+00:00"),
+        recap(13, "ready", [], false, "2026-10-17T09:00:00+00:00"),
+        recap(12, "failed", [], false, "2026-10-16T09:00:00+00:00", "Session review is missing: offline"),
+        recap(11, "feedback_failed", ["Kept: two pointers."], true, "2026-10-15T09:00:00+00:00", "Feedback review failed; your note was saved."),
+      ], true);
+      const items = [...document.querySelectorAll<HTMLElement>(".recap-item")];
+      expect(items.map(item => item.dataset.session)).toEqual(["15", "14", "13", "12", "11"]);
+      expect(items[0].textContent).toContain("19 Oct 2026");
+      expect(items[0].textContent).toContain("still writing them up");
+      expect(items[0].querySelector("svg.otter")).toBeTruthy();
+      expect(items[1].textContent).toContain("Dropped: visited marking.");
+      expect(document.getElementById("recap-feedback-14")).toBeTruthy();
+      expect(items[2].textContent).toContain("Smooth session. Nothing to flag.");
+      expect(document.getElementById("recap-feedback-13")).toBeNull();
+      expect(items[3].getAttribute("role")).toBe("alert");
+      expect(items[3].textContent).toContain("Session review is missing: offline");
+      expect(items[4].querySelector("[role=alert]")?.textContent).toContain("your note was saved");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 14 });
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 13 });
+      expect(sendMessage).not.toHaveBeenCalledWith({ kind: "recap_seen", session_id: 15 });
+      sendMessage.mockClear();
+      recaps([recap(14, "ready", ["Dropped: visited marking."], true, "2026-10-18T09:00:00+00:00")], false);
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_seen" }));
+    });
+
+    it("sends recap feedback from the box and shows Noted without resending seen", () => {
+      showStart();
+      openRecaps();
+      recaps([recap(14, "ready", ["Dropped: visited marking."])]);
+      const input = document.getElementById("recap-feedback-14") as HTMLInputElement;
+      expect(input.placeholder).toBe("Anything off or missing?");
+      input.value = "That drop was wrong";
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      click("recap-close-14");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_feedback", session_id: 14, text: "That drop was wrong" });
+      notify({ kind: "recap_noted", message: { type: "recap_noted", session_id: 14, note_id: 9, message: "Noted. For a grade correction, use Progress." } });
+      expect(document.querySelector(".recap-noted")?.textContent).toContain("Noted");
+      expect(document.getElementById("recap-feedback-14")).toBeNull();
+      sendMessage.mockClear();
+      click("recap-close-14");
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_seen" }));
+    });
+
+    it("draws the Progress map in category order with the three-part header and rusty tags", () => {
+      showStart();
+      openProgress();
+      notify({ kind: "progress_state", state: progress });
+      expect(document.querySelector(".progress-view")?.textContent).toContain("62 on your own · 40 coming back · 48 to do");
+      expect(document.querySelector(".progress-view")?.textContent).toContain("5 of 18 strong · 2 rusty");
+      const rows = [...document.querySelectorAll<HTMLElement>(".category-row")];
+      expect(rows).toHaveLength(18);
+      expect(rows.slice(0, 10).map(row => row.dataset.category)).toEqual([
+        "Arrays & Hashing", "Two Pointers", "Sliding Window", "Stack", "Binary Search",
+        "Linked List", "Trees", "Heap / Priority Queue", "Backtracking", "Tries",
+      ]);
+      expect(rows[0].textContent).toContain("solid");
+      expect(rows[0].textContent).toContain("8 of 9");
+      expect(rows[0].querySelector(".rusty")).toBeTruthy();
+      expect(rows[3].querySelector(".rusty")).toBeNull();
+      expect(document.querySelectorAll(".progress-bar i")).toHaveLength(3);
+    });
+
+    it("opens a category's detail, corrects a grade, unfolds earlier grades and re-asks after a progress change", () => {
+      showStart();
+      openProgress();
+      notify({ kind: "progress_state", state: progress });
+      sendMessage.mockClear();
+      (document.querySelector('[data-category="Tries"]') as HTMLElement).click();
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_category", payload: { category: "Tries" } });
+      notify({ kind: "progress_category_state", state: detail });
+      const card = document.querySelector(".category-detail")!;
+      expect(card.textContent).toContain("To reach strong: a clean solve");
+      expect(card.textContent).toContain("Implement Trie");
+      expect(card.textContent).toContain("on your own");
+      expect(card.textContent).toContain("solid");
+      expect(card.textContent).toContain("solved on your own");
+      expect(card.textContent).toContain("grade pending");
+      expect(card.textContent).toContain("4 not tried · 2 solved before Leetotter, not yet tested");
+      expect(card.textContent).toContain("Grading health: graders agree on 94%");
+      expect(card.textContent).toContain("1 earlier");
+      expect(card.textContent).not.toContain("needed a snippet");
+      click("earlier-implement-trie-prefix-tree");
+      expect(document.querySelector(".category-detail")?.textContent).toContain("needed a snippet");
+      click("correct-4");
+      expect(document.querySelector(".category-detail")?.textContent).toContain("solid");
+      sendMessage.mockClear();
+      click("grade-4-shaky");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "grade_correct", review_id: 4, grade: "shaky" });
+      sendMessage.mockClear();
+      notify({ kind: "progress_state", state: progress });
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_category", payload: { category: "Tries" } });
+    });
+
+    it("drops a stale category answer and excludes a session only after a confirm step", () => {
+      showStart();
+      openProgress();
+      notify({ kind: "progress_state", state: progress });
+      recaps([recap(14, "ready", ["Dropped: visited marking."])]);
+      (document.querySelector('[data-category="Tries"]') as HTMLElement).click();
+      (document.querySelector('[data-category="Arrays & Hashing"]') as HTMLElement).click();
+      notify({ kind: "progress_category_state", state: { ...detail, category: "Tries" } });
+      expect(document.querySelector(".category-detail")?.textContent).not.toContain("Implement Trie");
+      notify({ kind: "progress_category_state", state: { ...detail, category: "Arrays & Hashing", problems: [] } });
+      expect(document.querySelector(".category-detail")?.textContent).toContain("Arrays & Hashing");
+      const select = document.getElementById("exclude-session") as HTMLSelectElement;
+      select.value = "14";
+      select.dispatchEvent(new window.Event("change", { bubbles: true }));
+      click("exclude-session-start");
+      expect(document.querySelector(".exclude-confirm")?.textContent).toContain("can't be undone");
+      sendMessage.mockClear();
+      click("exclude-session-cancel");
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "session_exclude" }));
+      expect(document.querySelector(".exclude-confirm")).toBeNull();
+      click("exclude-session-start");
+      click("exclude-session-confirm");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "session_exclude", session_id: 14 });
+    });
+
+    it("resets all progress in two steps and returns to the first-run flow", () => {
+      showStart();
+      click("header-otter");
+      click("reset-progress");
+      expect(document.getElementById("settings-card")?.textContent).toContain("can't be undone");
+      expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "reset_progress" }));
+      click("reset-cancel");
+      expect(document.getElementById("reset-warning")).toBeNull();
+      click("reset-progress");
+      click("reset-continue");
+      const input = document.getElementById("reset-confirm") as HTMLInputElement;
+      input.value = "reset";
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      expect((document.getElementById("reset-send") as HTMLButtonElement).disabled).toBe(true);
+      input.value = "RESET";
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      expect((document.getElementById("reset-send") as HTMLButtonElement).disabled).toBe(false);
+      sendMessage.mockClear();
+      click("reset-send");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "reset_progress", confirm: "RESET" });
+      notify({ kind: "reset_done" });
+      expect(document.getElementById("first-run")).toBeTruthy();
+      expect(document.getElementById("settings-card")).toBeNull();
+    });
+
+    it("shows a reset error and leaves the confirm step in place", async () => {
+      showStart();
+      click("header-otter");
+      sendMessage.mockImplementation(async (message: any) => message.kind === "reset_progress"
+        ? { error: "Tutor service isn't connected." }
+        : { sent: true });
+      click("reset-progress");
+      click("reset-continue");
+      const input = document.getElementById("reset-confirm") as HTMLInputElement;
+      input.value = "RESET";
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      click("reset-send");
+      await vi.waitFor(() => expect(document.querySelector(".alert")?.textContent).toContain("Tutor service isn't connected."));
+      expect(document.getElementById("settings-card")).toBeTruthy();
+      expect(document.getElementById("reset-send")).toBeTruthy();
+    });
+
+    it("keeps linked reply slugs in the conversation without rendering extra lines", () => {
+      const active = { ...session, state: "active" as const, mode: "watching" as const, running: true, problem: { slug: "two-sum", title: "Two Sum" } };
+      notify({ kind: "session_state", state: active });
+      notify({ kind: "chat_state", message: { type: "chat_state", ts: "now", streaming: null, turns: [{ turn_id: 7, kind: "reply", text: "Try it like Two Sum", gap: "pattern", gap_note: null, help_kind: "analogy", linked: ["two-sum"] }] } });
+      expect(document.querySelector(".chat-reply")?.textContent).toContain("Try it like Two Sum");
+      expect(document.getElementById("chat-stream")?.textContent).not.toContain("two-sum");
+    });
+  });
+
   it("has no remote asset URLs", () => {
     const html = readFileSync(new URL("../panel.html", import.meta.url), "utf8");
     const css = readFileSync(new URL("../panel.css", import.meta.url), "utf8");

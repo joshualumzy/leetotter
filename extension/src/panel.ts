@@ -1,5 +1,6 @@
 import type { ConnectionState } from "./connection";
-import { MISSING_READER_MESSAGE, type RecapNoted, type RecapState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
+import { MISSING_READER_MESSAGE, type ProgressCategoryState, type ProgressState, type RecapItem, type RecapNoted, type RecapsState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
+import { categoryCount, earlierLabel, healthLine, progressSummary, recapDate, strongSummary, untriedLine } from "./tabs-view";
 import { capLine, clock, panelView, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
 import { otter, touchForDate } from "./otter";
@@ -20,7 +21,9 @@ const timer = document.getElementById("timer");
 const clockNode = document.getElementById("clock");
 const controls = document.getElementById("controls");
 const composer = document.getElementById("composer");
-if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !clockNode || !controls || !composer) throw new Error("Panel elements are missing");
+const tabs = document.getElementById("tabs");
+const recapsUnreadNode = document.getElementById("recaps-unread");
+if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !clockNode || !controls || !composer || !tabs || !recapsUnreadNode) throw new Error("Panel elements are missing");
 
 let transport: ConnectionState = { kind: "offline" };
 let session: SessionState | undefined;
@@ -48,12 +51,24 @@ type PlannerEntry = { kind: "said"; text: string } | { kind: "card"; suggestion:
 let plannerLog: PlannerEntry[] = [];
 let plannerTimedOut = false;
 let plannerTimer: number | undefined;
-let recap: RecapState | undefined;
-let recapDismissedFor: number | null = null;
-let recapNoted: string = "";
+let activeTab: "session" | "recaps" | "progress" = "session";
+let recaps: RecapsState["recaps"] | undefined;
+let recapsUnread = false;
+const recapSeenSent = new Set<number>();
+const recapHidden = new Set<number>();
+const recapDrafts = new Map<number, string>();
+const recapNoted = new Map<number, string>();
+let progress: ProgressState | undefined;
+let categoryDetail: ProgressCategoryState | undefined;
+let openCategory: string | null = null;
+let correction: number | null = null;
+const earlierOpen = new Set<string>();
+let excludeSessionId: number | null = null;
+let excludeStep: "idle" | "confirm" = "idle";
+let resetStep: "idle" | "warning" | "confirm" = "idle";
+let resetText = "";
 let referenceState: ReferenceState | undefined;
 let referenceNotice = "";
-let recapDraft = "";
 let flagTurn: number | null = null;
 let flagDraft = "";
 const flagNoted = new Set<number>();
@@ -305,45 +320,211 @@ function plannerTimeoutCard(): HTMLElement {
   card.append(button("planner-retry", "Try again", "btn primary"));
   return card;
 }
-function recapCard(): HTMLElement | null {
-  if (!recap) return null;
-  const card = element("section", "card recap-card");
-  if (recap.status === "preparing") {
+function recapCard(item: RecapItem): HTMLElement {
+  const card = element("section", "card recap-item");
+  card.dataset.session = String(item.session_id);
+  appendText(card, "p", recapDate(item.date), "recap-date");
+  if (item.status === "preparing") {
     const otterNode = element("figure", "recap-otter"); otterNode.innerHTML = otter("doze");
     card.append(otterNode);
-    appendText(card, "h4", "Notes on your last session");
+    appendText(card, "h4", "Notes on your session");
     appendText(card, "p", "The otter is still writing them up. They will appear here when ready.");
     return card;
   }
-  if (recap.status === "failed") {
+  if (item.status === "failed") {
     card.setAttribute("role", "alert");
     appendText(card, "h4", "Session review is missing");
-    appendText(card, "p", recap.message || "The recap could not be written; it will be retried next time.");
-    card.append(button("recap-close", "Close", "link"));
+    appendText(card, "p", item.message || "The recap could not be written; it will be retried next time.");
+    card.append(button(`recap-close-${item.session_id}`, "Close", "link"));
     return card;
   }
-  if (recap.status === "ready" && !recap.bullets.length) return null;
-  appendText(card, "h4", recap.status === "feedback_failed" ? "Recap" : "Session recap");
-  if (recap.status === "feedback_failed") {
-    const alert = appendText(card, "p", recap.message || "The feedback review failed; your note was saved.", "recap-alert");
+  appendText(card, "h4", item.status === "feedback_failed" ? "Recap" : "Session recap");
+  if (item.status === "feedback_failed") {
+    const alert = appendText(card, "p", item.message || "The feedback review failed; your note was saved.", "alert recap-alert");
     alert.setAttribute("role", "alert");
   }
-  if (recap.bullets.length) {
+  if (item.bullets.length) {
     appendText(card, "p", "What changed:", "quiet");
     const list = element("ul", "recap-bullets");
-    for (const bullet of recap.bullets) appendText(list, "li", bullet);
+    for (const bullet of item.bullets) appendText(list, "li", bullet);
     card.append(list);
+  } else {
+    appendText(card, "p", "Smooth session. Nothing to flag.", "quiet");
   }
-  if (recapNoted) {
-    appendText(card, "p", recapNoted, "recap-noted");
-  } else if (recap.bullets.length && recap.status !== "feedback_failed") {
+  const noted = recapNoted.get(item.session_id);
+  if (noted) {
+    appendText(card, "p", noted, "recap-noted");
+  } else if (item.bullets.length && item.status !== "feedback_failed") {
     const input = element("input", "field recap-feedback") as HTMLInputElement;
-    input.id = "recap-feedback"; input.placeholder = "Anything off or missing?"; input.value = recapDraft; input.maxLength = 500;
+    input.id = `recap-feedback-${item.session_id}`;
+    input.placeholder = "Anything off or missing?";
+    input.value = recapDrafts.get(item.session_id) || "";
+    input.maxLength = 500;
     input.setAttribute("aria-label", "Anything off or missing?");
     card.append(input);
   }
-  card.append(button("recap-close", "Close", "link"));
+  card.append(button(`recap-close-${item.session_id}`, "Close", "link"));
   return card;
+}
+function renderRecaps(): void {
+  const view = element("section", "recaps-view");
+  const visible = (recaps || []).filter(item => !recapHidden.has(item.session_id));
+  if (!visible.length) {
+    appendText(view, "p", recaps ? "No recaps yet. They appear here after a session." : "Loading recaps…", "quiet");
+  } else {
+    for (const item of visible) view.append(recapCard(item));
+  }
+  for (const item of visible) {
+    if (item.status !== "ready" || item.seen || recapSeenSent.has(item.session_id)) continue;
+    recapSeenSent.add(item.session_id);
+    void send({ kind: "recap_seen", session_id: item.session_id });
+  }
+  body!.append(view);
+}
+function levelClass(level: string): string {
+  return `level level-${level.replace(/ /g, "-")}`;
+}
+function progressBar(): HTMLElement {
+  const bar = element("div", "progress-bar");
+  const parts = [
+    ["own", progress!.header.on_your_own, "on your own"],
+    ["back", progress!.header.coming_back, "coming back"],
+    ["todo", progress!.header.to_do, "to do"],
+  ] as const;
+  for (const [key, count, label] of parts) {
+    const segment = element("i", key);
+    segment.style.flex = String(count);
+    segment.setAttribute("aria-label", `${count} ${label}`);
+    if (!count) segment.style.display = "none";
+    bar.append(segment);
+  }
+  return bar;
+}
+function gradeRow(parent: HTMLElement, entry: ProgressCategoryState["problems"][number]["latest"], problem: string): void {
+  if (!entry) return;
+  const row = element("div", "problem-grade");
+  appendText(row, "span", entry.word, `grade-word ${entry.word}`);
+  appendText(row, "span", entry.reason, "grade-reason");
+  row.append(button(`correct-${entry.review_id}`, "correct", "link"));
+  parent.append(row);
+  if (correction === entry.review_id) {
+    const choices = element("div", "correction");
+    for (const word of ["solid", "shaky", "missed"] as const) {
+      choices.append(button(`grade-${entry.review_id}-${word}`, word, "btn"));
+    }
+    parent.append(choices);
+  }
+  const problemItem = categoryDetail?.problems.find(item => item.problem === problem);
+  if (problemItem && problemItem.earlier_count > 0) {
+    parent.append(button(`earlier-${problem}`, earlierLabel(problemItem.earlier_count), "link earlier-toggle"));
+    if (earlierOpen.has(problem)) {
+      const earlier = element("div", "earlier");
+      for (const old of problemItem.earlier) {
+        const line = element("div", "problem-grade");
+        appendText(line, "span", old.word, `grade-word ${old.word}`);
+        appendText(line, "span", old.reason, "grade-reason");
+        earlier.append(line);
+      }
+      parent.append(earlier);
+    }
+  }
+}
+function categoryProblems(parent: HTMLElement): void {
+  if (!categoryDetail) {
+    appendText(parent, "p", "Loading…", "quiet");
+    return;
+  }
+  if (!categoryDetail.problems.length) {
+    appendText(parent, "p", "No problems attempted here yet.", "quiet");
+    return;
+  }
+  for (const item of categoryDetail.problems) {
+    const node = element("div", "problem");
+    const head = element("div", "problem-head");
+    appendText(head, "span", item.title, "problem-title");
+    appendText(head, "span", item.status_text, "problem-status");
+    node.append(head);
+    if (item.pending) {
+      const waiting = item.pending_reason === "reference" ? "grade pending (reference)" : "grade pending (graders)";
+      appendText(node, "span", waiting, "problem-pending");
+    }
+    if (item.latest) gradeRow(node, item.latest, item.problem);
+    else if (!item.pending) appendText(node, "span", "not graded yet", "quiet");
+    parent.append(node);
+  }
+}
+function excludeControl(parent: HTMLElement): void {
+  const sessions = recaps || [];
+  if (!sessions.length) return;
+  if (excludeSessionId === null || !sessions.some(item => item.session_id === excludeSessionId)) {
+    excludeSessionId = sessions[0].session_id;
+  }
+  if (excludeStep === "confirm") {
+    const warning = element("div", "exclude-confirm");
+    appendText(warning, "p", "This removes that session's grades from Progress. It can't be undone.");
+    const row = element("div", "row");
+    row.append(button("exclude-session-confirm", "Exclude", "btn"), button("exclude-session-cancel", "Cancel", "link"));
+    warning.append(row);
+    parent.append(warning);
+    return;
+  }
+  const row = element("div", "exclude-row");
+  const select = element("select", "field") as HTMLSelectElement;
+  select.id = "exclude-session";
+  select.setAttribute("aria-label", "Session to exclude");
+  for (const item of sessions) {
+    const option = document.createElement("option");
+    option.value = String(item.session_id);
+    option.textContent = recapDate(item.date);
+    select.append(option);
+  }
+  select.value = String(excludeSessionId);
+  row.append(select, button("exclude-session-start", "Exclude session…", "link"));
+  parent.append(row);
+}
+function renderCategoryDetail(name: string): HTMLElement {
+  const card = element("section", "category-detail");
+  appendText(card, "h4", name);
+  if (!categoryDetail || categoryDetail.category !== name) {
+    appendText(card, "p", "Loading…", "quiet");
+    return card;
+  }
+  appendText(card, "p", categoryDetail.next, "category-next");
+  categoryProblems(card);
+  const untried = untriedLine(categoryDetail.counts);
+  if (untried) appendText(card, "p", untried, "quiet");
+  excludeControl(card);
+  appendText(card, "p", healthLine(categoryDetail.health), "quiet progress-health");
+  return card;
+}
+function renderProgress(): void {
+  const view = element("section", "progress-view");
+  if (!progress) {
+    appendText(view, "p", "Loading progress…", "quiet");
+    body!.append(view);
+    return;
+  }
+  const head = element("div", "progress-head");
+  const numbers = element("div", "progress-nums");
+  appendText(numbers, "span", progressSummary(progress.header));
+  appendText(numbers, "span", strongSummary(progress.header, progress.categories.length));
+  head.append(numbers, progressBar());
+  view.append(head);
+  const list = element("div", "category-list");
+  for (const category of progress.categories) {
+    const row = element("button", `category-row${openCategory === category.name ? " on" : ""}`) as HTMLButtonElement;
+    row.type = "button";
+    row.dataset.category = category.name;
+    appendText(row, "span", category.name, "category-name");
+    appendText(row, "span", category.level, levelClass(category.level));
+    appendText(row, "span", categoryCount(category.done, category.total), "category-count");
+    if (category.rusty) appendText(row, "span", "rusty", "rusty");
+    list.append(row);
+    if (openCategory === category.name) list.append(renderCategoryDetail(category.name));
+  }
+  view.append(list);
+  appendText(view, "p", healthLine(progress.health), "quiet progress-health");
+  body!.append(view);
 }
 function timeUpCard(): HTMLElement {
   const card = element("section", "card time-up-card");
@@ -399,6 +580,30 @@ function settingsCard(): HTMLElement {
   }
   select.value = settings?.theme || "match"; themeLabel.append(select); card.append(themeLabel);
   appendText(card, "p", "Your name stays on this Mac and is only used for the otter's remarks.", "fine");
+  appendText(card, "h4", "Reset", "reset-title");
+  if (resetStep === "idle") {
+    card.append(button("reset-progress", "Reset all my progress", "btn"));
+  } else if (resetStep === "warning") {
+    const warning = element("div", "reset-warning");
+    warning.id = "reset-warning";
+    appendText(warning, "p", "This erases every session, review, note and your name. It can't be undone.");
+    const row = element("div", "row");
+    row.append(button("reset-continue", "Continue", "btn"), button("reset-cancel", "Cancel", "link"));
+    warning.append(row);
+    card.append(warning);
+  } else {
+    const label = element("label");
+    appendText(label, "span", "Type RESET to confirm");
+    const input = element("input", "field") as HTMLInputElement;
+    input.id = "reset-confirm"; input.value = resetText; input.autocomplete = "off"; input.maxLength = 5;
+    label.append(input); card.append(label);
+    appendText(card, "p", "This can't be undone.", "fine");
+    const row = element("div", "row");
+    const sendReset = button("reset-send", "Reset everything", "btn");
+    sendReset.disabled = resetText !== "RESET";
+    row.append(sendReset, button("reset-cancel", "Cancel", "link"));
+    card.append(row);
+  }
   if (referenceNotice) {
     const note = appendText(card, "p", referenceNotice, "reference-notice");
     note.id = "reference-notice";
@@ -555,7 +760,7 @@ function renderChat(): void {
 function renderComposer(view: PanelView): void {
   // Until the session has a problem, the Planner is the only one to talk to, and only once it has a card to talk about.
   const plannerMode = view.body === "active" && !session?.problem;
-  const visible = plannerMode ? (Boolean(suggestion) || plannerWaiting()) && !plannerTimedOut : ["active", "paused", "debrief"].includes(view.body);
+  const visible = activeTab === "session" && (plannerMode ? (Boolean(suggestion) || plannerWaiting()) && !plannerTimedOut : ["active", "paused", "debrief"].includes(view.body));
   composer!.hidden = !visible || settingsOpen;
   composerMode = composer!.hidden ? "hidden" : plannerMode ? "planner" : "tutor";
   if (composer!.hidden) { composer!.replaceChildren(); return; }
@@ -675,10 +880,26 @@ function receiveTutor(message: TutorMessage): void {
   newRemark(view);
   if (pacers.size) pace();
 }
+function renderTabs(view: PanelView): void {
+  tabs!.hidden = view.body === "offline";
+  for (const [id, tab] of [["tab-session", "session"], ["tab-recaps", "recaps"], ["tab-progress", "progress"]] as const) {
+    document.getElementById(id)!.classList.toggle("on", activeTab === tab);
+  }
+  recapsUnreadNode!.hidden = !recapsUnread;
+}
+function appendAlerts(view: PanelView): void {
+  for (const message of [...view.alerts, actionError]) if (message) {
+    const alert = appendText(body!, "div", message, "alert");
+    alert.setAttribute("role", "alert");
+    // After an extension reload the open NeetCode tab keeps no reader; one click reloads it.
+    if (message === MISSING_READER_MESSAGE && sessionTabId != null) alert.append(" ", button("reload-tab", "Reload tab", "btn"));
+  }
+}
 function render(): void {
   const view = panelView({ transport, session_state: session, settings, readerError, sessionTabId, panelTabId, boundTabExists, panelOnProblemPage: onProblemPage(), problemOpen: onCurrentProblem() });
   renderHeader(view);
   renderComposer(view);
+  renderTabs(view);
   // The conversation survives a redraw as the same elements, so scroll position, selection and code scrolling stay put.
   const keptStream = document.getElementById("chat-stream");
   const scrollTop = body!.scrollTop;
@@ -698,67 +919,69 @@ function render(): void {
     appendText(offline, "p", "The panel checks again every few seconds.", "quiet");
     body!.append(offline); decorateOtters(); return;
   }
-  if (settingsOpen) body!.append(settingsCard());
-  for (const message of [...view.alerts, actionError]) if (message) {
-    const alert = appendText(body!, "div", message, "alert");
-    alert.setAttribute("role", "alert");
-    // After an extension reload the open NeetCode tab keeps no reader; one click reloads it.
-    if (message === MISSING_READER_MESSAGE && sessionTabId != null) alert.append(" ", button("reload-tab", "Reload tab", "btn"));
+  if (settingsOpen) {
+    appendAlerts(view);
+    body!.append(settingsCard());
+    decorateOtters();
+    return;
+  }
+  appendAlerts(view);
+  if (activeTab !== "session") {
+    if (activeTab === "recaps") renderRecaps();
+    else renderProgress();
+    body!.scrollTop = scrollTop;
+    decorateOtters();
+    return;
   }
   const referenceMessage = session?.reference_message || (session?.reference_status === "not_checked_yet" ? "Reference not checked yet" : "");
-  if (!settingsOpen && referenceMessage && session?.problem && ["active", "paused", "time_up", "debrief"].includes(view.body)) {
+  if (referenceMessage && session?.problem && ["active", "paused", "time_up", "debrief"].includes(view.body)) {
     appendText(body!, "p", referenceMessage, "reference-status");
   }
-  if (!settingsOpen && referenceNotice) appendText(body!, "p", referenceNotice, "reference-notice");
-  if (!settingsOpen) {
-    if (view.body === "first_run") body!.append(firstRun());
-    if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0).elapsed}`, "quiet");
-    if (["start", "ended"].includes(view.body)) {
-      // A waiting recap comes before the Start card; a suggestion stays stored until the session starts.
-      const recapNode = recap && recap.session_id !== recapDismissedFor ? recapCard() : null;
-      if (recapNode) body!.append(recapNode);
-      body!.append(startCard());
+  if (referenceNotice) appendText(body!, "p", referenceNotice, "reference-notice");
+  if (view.body === "first_run") body!.append(firstRun());
+  if (view.body === "ended") appendText(body!, "p", `Session ended · ${timerText(session?.active_seconds || 0).elapsed}`, "quiet");
+  if (["start", "ended"].includes(view.body)) {
+    body!.append(startCard());
+  }
+  if (view.body === "active" && !session?.problem) {
+    for (const entry of plannerLog) {
+      if (entry.kind === "said") appendText(body!, "div", entry.text, "chat-line chat-you");
+      else body!.append(pastSuggestionCard(entry.suggestion));
     }
-    if (view.body === "active" && !session?.problem) {
-      for (const entry of plannerLog) {
-        if (entry.kind === "said") appendText(body!, "div", entry.text, "chat-line chat-you");
-        else body!.append(pastSuggestionCard(entry.suggestion));
-      }
-      if (plannerWaiting() && plannerTimedOut) body!.append(plannerTimeoutCard());
-      else if (plannerWaiting()) body!.append(plannerWaitingCard());
-      else if (suggestion) {
-        const suggestionNode = suggestionCard();
-        if (suggestionNode) body!.append(suggestionNode);
-      }
+    if (plannerWaiting() && plannerTimedOut) body!.append(plannerTimeoutCard());
+    else if (plannerWaiting()) body!.append(plannerWaitingCard());
+    else if (suggestion) {
+      const suggestionNode = suggestionCard();
+      if (suggestionNode) body!.append(suggestionNode);
     }
-    if (view.body === "active" && !chat.turns.length && !plannerWaiting()) {
-      const node = element("figure", "active-otter");
-      node.innerHTML = otter(session?.accepted ? "shell" : "float");
-      appendText(node, "figcaption", session?.accepted ? "Accepted! Keep polishing, or move on." : "I'm here to help whenever you need me.");
-      body!.append(node);
-    }
-    if (["active", "paused", "time_up", "debrief"].includes(view.body) && chat.turns.length) {
-      const stream = keptStream || element("section", "chat-stream");
-      stream.id = "chat-stream";
-      body!.append(stream);
-    }
-    if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
-    if (view.body === "active" && session?.problem && !session.accepted) {
-      const actions = element("div", "problem-actions");
-      actions.append(button("skip-problem", "Skip this problem", "link"));
-      body!.append(actions);
-    }
-    if (view.body === "time_up") body!.append(timeUpCard());
-    if (view.body === "debrief") body!.append(debriefActions());
-    if (view.body === "welcome_back") {
-      const card = element("section", "card welcome-back");
-      appendText(card, "h4", "Pick up where you left off?");
-      const minutes = Math.floor((session?.active_seconds || 0) / 60);
-      const duration = `${minutes} min`;
-      appendText(card, "p", session?.problem?.title ? `${session.problem.title}, ${duration}` : duration);
-      card.append(button("welcome-resume", "Resume", "btn primary"), button("end-and-start", "End and start a new one", "link"));
-      body!.append(card);
-    }
+  }
+  if (view.body === "active" && !chat.turns.length && !plannerWaiting()) {
+    const node = element("figure", "active-otter");
+    node.innerHTML = otter(session?.accepted ? "shell" : "float");
+    appendText(node, "figcaption", session?.accepted ? "Accepted! Keep polishing, or move on." : "I'm here to help whenever you need me.");
+    body!.append(node);
+  }
+  if (["active", "paused", "time_up", "debrief"].includes(view.body) && chat.turns.length) {
+    const stream = keptStream || element("section", "chat-stream");
+    stream.id = "chat-stream";
+    body!.append(stream);
+  }
+  if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
+  if (view.body === "active" && session?.problem && !session.accepted) {
+    const actions = element("div", "problem-actions");
+    actions.append(button("skip-problem", "Skip this problem", "link"));
+    body!.append(actions);
+  }
+  if (view.body === "time_up") body!.append(timeUpCard());
+  if (view.body === "debrief") body!.append(debriefActions());
+  if (view.body === "welcome_back") {
+    const card = element("section", "card welcome-back");
+    appendText(card, "h4", "Pick up where you left off?");
+    const minutes = Math.floor((session?.active_seconds || 0) / 60);
+    const duration = `${minutes} min`;
+    appendText(card, "p", session?.problem?.title ? `${session.problem.title}, ${duration}` : duration);
+    card.append(button("welcome-resume", "Resume", "btn primary"), button("end-and-start", "End and start a new one", "link"));
+    body!.append(card);
   }
   body!.append(historyRow());
   body!.scrollTop = scrollTop;
@@ -802,6 +1025,17 @@ function saveName(id: string): void {
   void send({ kind: "settings_set", key: "name", value }).then(ok => { if (!ok && pendingName === request) pendingName = null; });
 }
 headerOtter.addEventListener("click", () => { settingsOpen = !settingsOpen; render(); });
+tabs.addEventListener("click", event => {
+  const id = (event.target as HTMLElement).closest("button")?.id;
+  if (id === "tab-session") { activeTab = "session"; settingsOpen = false; render(); }
+  if (id === "tab-recaps") { activeTab = "recaps"; settingsOpen = false; void send({ kind: "recaps_get" }); render(); }
+  if (id === "tab-progress") {
+    activeTab = "progress"; settingsOpen = false;
+    void send({ kind: "progress_get" });
+    if (!recaps) void send({ kind: "recaps_get" });
+    render();
+  }
+});
 async function sendChat(): Promise<void> {
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   if (!input || input.disabled) return;
@@ -855,7 +1089,70 @@ composer.addEventListener("keydown", event => {
   if (enterAction(event.key, event.shiftKey) === "send") { event.preventDefault(); void sendChat(); }
 });
 body.addEventListener("click", event => {
+  const categoryRow = (event.target as HTMLElement).closest<HTMLElement>("[data-category]");
+  if (categoryRow?.dataset.category) {
+    const name = categoryRow.dataset.category;
+    correction = null; earlierOpen.clear(); excludeStep = "idle";
+    if (openCategory === name) {
+      openCategory = null; categoryDetail = undefined;
+    } else {
+      openCategory = name; categoryDetail = undefined;
+      void send({ kind: "progress_category", payload: { category: name } });
+    }
+    render();
+    return;
+  }
   const id = (event.target as HTMLElement).closest("button")?.id;
+  if (id?.startsWith("earlier-")) {
+    const problem = id.slice("earlier-".length);
+    if (earlierOpen.has(problem)) earlierOpen.delete(problem); else earlierOpen.add(problem);
+    render();
+    return;
+  }
+  if (id?.startsWith("correct-")) {
+    const reviewId = Number(id.slice("correct-".length));
+    correction = correction === reviewId ? null : reviewId;
+    render();
+    return;
+  }
+  if (id?.startsWith("grade-")) {
+    const match = /^grade-(\d+)-(solid|shaky|missed)$/.exec(id);
+    if (match) {
+      const review_id = Number(match[1]);
+      correction = null;
+      void send({ kind: "grade_correct", review_id, grade: match[2] });
+      render();
+    }
+    return;
+  }
+  if (id === "exclude-session-start") { excludeStep = "confirm"; render(); return; }
+  if (id === "exclude-session-cancel") { excludeStep = "idle"; render(); return; }
+  if (id === "exclude-session-confirm") {
+    const sessionId = excludeSessionId;
+    excludeStep = "idle";
+    if (sessionId !== null) void send({ kind: "session_exclude", session_id: sessionId });
+    render();
+    return;
+  }
+  if (id === "reset-progress") { resetStep = "warning"; resetText = ""; render(); return; }
+  if (id === "reset-continue") { resetStep = "confirm"; resetText = ""; render(); return; }
+  if (id === "reset-cancel") { resetStep = "idle"; resetText = ""; render(); return; }
+  if (id === "reset-send") {
+    if (resetText !== "RESET") return;
+    void send({ kind: "reset_progress", confirm: "RESET" });
+    return;
+  }
+  if (id?.startsWith("recap-close-")) {
+    const sessionId = Number(id.slice("recap-close-".length));
+    const text = (recapDrafts.get(sessionId) || "").trim();
+    if (text) {
+      void send({ kind: "recap_feedback", session_id: sessionId, text }).then(ok => { if (ok) { recapDrafts.delete(sessionId); render(); } });
+    } else {
+      recapHidden.add(sessionId);
+      render();
+    }
+    return;
+  }
   if (id === "close-settings") { settingsOpen = false; render(); }
   if (id === "reload-tab" && sessionTabId != null) void chrome.tabs.reload(sessionTabId);
   if (id === "save-first-name") saveName("first-name");
@@ -870,15 +1167,6 @@ body.addEventListener("click", event => {
   if (id === "time-up-debrief") void send({ kind: "session_command", command: "time_up_debrief" });
   if (id === "time-up-skip" || id === "debrief-skip" || id === "skip-problem") void send({ kind: "session_command", command: "skip" });
   if (id === "debrief-done") void send({ kind: "session_command", command: "done" });
-  if (id === "recap-close" && recap) {
-    if (recapDraft.trim() && recap.status === "ready") {
-      void send({ kind: "recap_feedback", session_id: recap.session_id, text: recapDraft.trim() }).then(ok => { if (ok) recapDraft = ""; });
-    } else {
-      void send({ kind: "recap_seen", session_id: recap.session_id });
-      recapDismissedFor = recap.session_id;
-      recap = undefined; recapNoted = ""; recapDraft = ""; render();
-    }
-  }
   if (id?.startsWith("copy-reference-")) {
     const item = referenceState?.references.find(reference => reference.slug === id.slice("copy-reference-".length));
     if (item?.prompt) {
@@ -937,7 +1225,12 @@ body.addEventListener("input", event => {
     return;
   }
   if (target.classList.contains("flag-line")) { flagDraft = target.value; return; }
-  if (target.id === "recap-feedback") { recapDraft = target.value; return; }
+  if (target.id.startsWith("recap-feedback-")) { recapDrafts.set(Number(target.id.slice("recap-feedback-".length)), target.value); return; }
+  if (target.id === "reset-confirm") {
+    resetText = target.value;
+    (document.getElementById("reset-send") as HTMLButtonElement | null)!.disabled = resetText !== "RESET";
+    return;
+  }
   if (target.id.startsWith("verdict-")) referenceDrafts.set(target.id.slice("verdict-".length), target.value);
 });
 root.addEventListener("pointermove", event => {
@@ -957,6 +1250,7 @@ body.addEventListener("keydown", event => {
 body.addEventListener("change", event => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
   if (target.id === "settings-theme") void send({ kind: "settings_set", key: "theme", value: target.value });
+  if (target.id === "exclude-session") excludeSessionId = Number(target.value);
 });
 chrome.runtime.onMessage.addListener(message => {
   if (message?.kind === "transport") {
@@ -1004,13 +1298,42 @@ chrome.runtime.onMessage.addListener(message => {
     render();
   }
   if (message?.kind === "planner_open") { suggestion = undefined; plannerLog = []; endPlannerWait(); render(); }
-  if (message?.kind === "recap_state") {
-    const next = message.message as RecapState;
-    if (recap?.session_id !== next.session_id) recapNoted = "";
-    recap = next;
+  if (message?.kind === "recap_state") { void send({ kind: "recaps_get" }); }
+  if (message?.kind === "recaps_state") {
+    const state = message.state as RecapsState;
+    recaps = state.recaps;
+    recapsUnread = state.unread;
     render();
   }
-  if (message?.kind === "recap_noted") { const noted = message.message as RecapNoted; recapNoted = noted.message; recapDraft = ""; render(); }
+  if (message?.kind === "recap_noted") {
+    const noted = message.message as RecapNoted;
+    recapNoted.set(noted.session_id, noted.message);
+    recapDrafts.delete(noted.session_id);
+    render();
+  }
+  if (message?.kind === "progress_state") {
+    progress = message.state as ProgressState;
+    if (openCategory) void send({ kind: "progress_category", payload: { category: openCategory } });
+    render();
+  }
+  if (message?.kind === "progress_category_state") {
+    const state = message.state as ProgressCategoryState;
+    if (state.category === openCategory) { categoryDetail = state; render(); }
+  }
+  if (message?.kind === "reset_done") {
+    settingsOpen = false;
+    activeTab = "session";
+    recaps = undefined; recapsUnread = false;
+    recapSeenSent.clear(); recapHidden.clear(); recapDrafts.clear(); recapNoted.clear();
+    progress = undefined; categoryDetail = undefined; openCategory = null; correction = null;
+    earlierOpen.clear(); excludeSessionId = null; excludeStep = "idle";
+    resetStep = "idle"; resetText = "";
+    pendingName = null; nameAcknowledgement = "";
+    imported = false; importResult = "";
+    suggestion = undefined; plannerLog = [];
+    session = undefined; settings = undefined; actionError = "";
+    render();
+  }
   if (message?.kind === "reference_state") { referenceState = message.state as ReferenceState; render(); }
   if (message?.kind === "reference_flagged") {
     const turnId = message.message?.message_id;
@@ -1040,13 +1363,13 @@ void Promise.all([
   chrome.runtime.sendMessage({ kind: "get_import_state" }),
   chrome.runtime.sendMessage({ kind: "get_session_binding" }),
   chrome.runtime.sendMessage({ kind: "get_suggestion" }),
-  chrome.runtime.sendMessage({ kind: "get_recap_state" }),
+  chrome.runtime.sendMessage({ kind: "get_recaps_state" }),
   chrome.runtime.sendMessage({ kind: "get_reference_state" }),
-]).then(([status, currentSession, currentSettings, error, importState, binding, currentSuggestion, currentRecap, currentReference]) => {
+]).then(([status, currentSession, currentSettings, error, importState, binding, currentSuggestion, currentRecaps, currentReference]) => {
   transport = status; session = currentSession; settings = currentSettings; readerError = error || "";
   suggestion = currentSuggestion || undefined;
   if (session?.state === "active" && !session.problem && !suggestion) beginPlannerWait();
-  recap = currentRecap || undefined;
+  if (currentRecaps) { recaps = currentRecaps.recaps; recapsUnread = currentRecaps.unread; }
   referenceState = currentReference || undefined;
   imported = importState?.imported || false; if (importState?.result) importResult = importState.result.already_imported ? "NeetCode history was already imported." : `Imported ${importState.result.matched} solved problems.`;
   receivedAt = Date.now(); void refreshBinding(binding?.tabId ?? null);

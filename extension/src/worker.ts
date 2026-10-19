@@ -1,5 +1,5 @@
 import { CompanionConnection, type ConnectionState } from "./connection";
-import { MISSING_READER_MESSAGE, readerTypes, validateReaderPayload, validateImportUrls, type ReaderMessageType, type RecapState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
+import { MISSING_READER_MESSAGE, readerTypes, validateReaderPayload, validateImportUrls, type ProgressCategoryState, type ProgressState, type ReaderMessageType, type RecapState, type RecapsState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
 import { reactionForReaderEvent } from "./reader-reaction";
 
 declare const __LEETOTTER_PORT__: number;
@@ -19,6 +19,9 @@ let sessionState: SessionState | undefined;
 let settingsState: SettingsState | undefined;
 let suggestion: Suggestion | undefined;
 let recapState: RecapState | undefined;
+let recapsState: RecapsState | undefined;
+let progressState: ProgressState | undefined;
+let progressCategoryState: ProgressCategoryState | undefined;
 let referenceState: ReferenceState | undefined;
 let plannerTabId: number | null = null;
 let sessionTabId: number | null = null;
@@ -97,6 +100,7 @@ const connection = new CompanionConnection(
       connection.send({ type: "settings_get", ts: new Date().toISOString() });
       connection.send({ type: "chat_get", ts: new Date().toISOString() });
       connection.send({ type: "planner_get", ts: new Date().toISOString() });
+      connection.send({ type: "recaps_get", ts: new Date().toISOString() });
       connection.send({ type: "reference_get", ts: new Date().toISOString() });
       resyncFocus();
     }
@@ -119,6 +123,20 @@ const connection = new CompanionConnection(
     }
     if (message.type === "recap_state") { recapState = message; panel({ kind: "recap_state", message }); return; }
     if (message.type === "recap_noted") { panel({ kind: "recap_noted", message }); return; }
+    if (message.type === "recaps_state") { recapsState = message; panel({ kind: "recaps_state", state: message }); return; }
+    if (message.type === "progress_state") { progressState = message; panel({ kind: "progress_state", state: message }); return; }
+    if (message.type === "progress_category_state") { progressCategoryState = message; panel({ kind: "progress_category_state", state: message }); return; }
+    if (message.type === "reset_done") {
+      recapState = undefined; recapsState = undefined; progressState = undefined; progressCategoryState = undefined;
+      sessionState = undefined; suggestion = undefined;
+      imported = false; importResult = undefined;
+      mode = "idle"; sessionTabId = null; boundFocus = undefined; plannerTabId = null;
+      orphanReported = false; disconnectResumeSent = false;
+      panel({ kind: "reset_done" });
+      panel({ kind: "session_binding", tabId: null });
+      void ready.then(async () => { await save(); await setMode("idle"); });
+      return;
+    }
     if (message.type === "reference_state") { referenceState = message; panel({ kind: "reference_state", state: message }); return; }
     if (message.type === "reference_flagged") { panel({ kind: "reference_flagged", message }); connection.send({ type: "reference_get", ts: new Date().toISOString() }); return; }
     if (message.type === "reference_verdict") { panel({ kind: "reference_verdict", message }); connection.send({ type: "reference_get", ts: new Date().toISOString() }); return; }
@@ -224,6 +242,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.kind === "get_settings_state") return settingsState;
     if (message?.kind === "get_suggestion") return suggestion;
     if (message?.kind === "get_recap_state") return recapState;
+    if (message?.kind === "get_recaps_state") return recapsState;
     if (message?.kind === "get_reference_state") return referenceState;
     if (["help_request", "chat_message", "chat_get"].includes(message?.kind)) {
       if (message.kind === "chat_message" && (typeof message.text !== "string" || !message.text.trim() || [...message.text.trim()].length > 4000)) return { error: "Message must be 1 to 4000 characters." };
@@ -254,6 +273,31 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const sent = connection.send({ type: "recap_seen", ts: new Date().toISOString(), payload: { session_id: message.session_id } });
       if (sent && recapState?.session_id === message.session_id) recapState = undefined;
       return sent ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "recaps_get") {
+      return connection.send({ type: "recaps_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "progress_get") {
+      return connection.send({ type: "progress_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "progress_category") {
+      if (typeof message.category !== "string" || !message.category) return { error: "Invalid category." };
+      return connection.send({ type: "progress_category", ts: new Date().toISOString(), payload: { category: message.category } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "grade_correct") {
+      const byReview = Number.isInteger(message.review_id) && message.review_id > 0 && message.problem === undefined && message.attempt === undefined;
+      const byAttempt = typeof message.problem === "string" && message.problem.length > 0 && Number.isInteger(message.attempt) && message.attempt > 0 && message.review_id === undefined;
+      if (!(byReview || byAttempt) || !["good", "hard", "again", "solid", "shaky", "missed"].includes(message.grade)) return { error: "Invalid grade correction." };
+      const payload = byReview ? { review_id: message.review_id, grade: message.grade } : { problem: message.problem, attempt: message.attempt, grade: message.grade };
+      return connection.send({ type: "grade_correct", ts: new Date().toISOString(), payload }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "session_exclude") {
+      if (!Number.isInteger(message.session_id) || message.session_id <= 0) return { error: "Invalid session." };
+      return connection.send({ type: "session_exclude", ts: new Date().toISOString(), payload: { session_id: message.session_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "reset_progress") {
+      if (message.confirm !== "RESET") return { error: "Type RESET to confirm." };
+      return connection.send({ type: "reset_progress", ts: new Date().toISOString(), payload: { confirm: "RESET" } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "reference_get") {
       return connection.send({ type: "reference_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
