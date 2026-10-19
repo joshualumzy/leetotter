@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { categoryCount, earlierLabel, healthLine, progressSummary, recapDate, strongSummary, untriedLine } from "./tabs-view";
+import { categoryCount, earlierLabel, healthLine, progressHeaderLines, progressSummary, recapDate, strongSummary, untriedLine } from "./tabs-view";
 
 describe("Recaps and Progress view text", () => {
   it("dates a recap by the day it started", () => {
@@ -11,6 +11,8 @@ describe("Recaps and Progress view text", () => {
     const header = { on_your_own: 62, coming_back: 40, to_do: 48, strong: 5, rusty: 2, total: 150 };
     expect(progressSummary(header)).toBe("62 on your own · 40 coming back · 48 to do");
     expect(strongSummary(header, 18)).toBe("5 of 18 strong · 2 rusty");
+    expect(progressHeaderLines(header, 18)).toEqual(["62 on your own · 40 coming back · 48 to do", "5 of 18 strong · 2 rusty"]);
+    expect(progressHeaderLines({ ...header, on_your_own: 150, coming_back: 0, to_do: 0 }, 18)).toEqual(["5 of 18 strong · 2 rusty"]);
   });
   it("keeps levels as counts, not percentages", () => {
     expect(categoryCount(7, 11)).toBe("7 of 11");

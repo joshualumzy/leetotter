@@ -17,6 +17,11 @@ export function strongSummary(header: ProgressHeader, categories: number): strin
   return header.rusty ? `${strong} · ${header.rusty} rusty` : strong;
 }
 
+export function progressHeaderLines(header: ProgressHeader, categories: number): string[] {
+  const strong = strongSummary(header, categories);
+  return header.total > 0 && header.on_your_own >= header.total ? [strong] : [progressSummary(header), strong];
+}
+
 export function categoryCount(done: number, total: number): string {
   return `${done} of ${total}`;
 }

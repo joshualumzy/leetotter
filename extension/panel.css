@@ -1162,6 +1162,24 @@ p {
   display:none
 }
 
+.tab-badge {
+  display:inline-block;
+  min-width:16px;
+  margin-left:5px;
+  padding:0 4px;
+  border-radius:9px;
+  background:var(--acc);
+  color:var(--bg);
+  font-size:11px;
+  line-height:16px;
+  text-align:center;
+  vertical-align:1px
+}
+
+.tab-badge[hidden] {
+  display:none
+}
+
 .recaps-view,.progress-view {
   display:flex;
   flex-direction:column;
@@ -1376,10 +1394,14 @@ p {
   text-align:right
 }
 
-.problem-pending {
+.problem-pending,.problem-disagreement {
   display:block;
   font-size:11px;
   color:#a8551e
+}
+
+.problem-grade .problem-disagreement {
+  display:inline
 }
 
 .problem-grade {

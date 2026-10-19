@@ -999,6 +999,68 @@ describe("panel actions", () => {
       expect(document.querySelectorAll(".progress-bar i")).toHaveLength(3);
     });
 
+    it("leads with the strong and rusty counts once every problem is done", () => {
+      showStart();
+      openProgress();
+      notify({ kind: "progress_state", state: { ...progress, header: { ...progress.header, on_your_own: 150, coming_back: 0, to_do: 0 } } });
+      const head = document.querySelector<HTMLElement>(".progress-head")!;
+      expect(head.querySelector(".progress-nums span")?.textContent).toBe("5 of 18 strong · 2 rusty");
+      expect(head.textContent).not.toContain("150 on your own");
+      expect(head.textContent).not.toContain("0 coming back");
+      expect(document.querySelectorAll(".progress-bar i")).toHaveLength(3);
+    });
+
+    it("marks the problem and each review where the graders disagreed", () => {
+      showStart();
+      openProgress();
+      notify({ kind: "progress_state", state: progress });
+      (document.querySelector('[data-category="Tries"]') as HTMLElement).click();
+      notify({ kind: "progress_category_state", state: {
+        ...detail,
+        problems: [
+          { ...detail.problems[0], disagreement: true,
+            latest: { ...detail.problems[0].latest!, disagreement: true },
+            earlier: [{ ...detail.problems[0].earlier[0], disagreement: true }] },
+          detail.problems[1],
+        ],
+      } });
+      const card = document.querySelector<HTMLElement>(".category-detail")!;
+      expect(card.textContent).toContain("Grading health: graders agree on 94%");
+      expect(card.querySelector(".problem > .problem-disagreement")?.textContent).toBe("graders disagreed");
+      expect(card.querySelector(".problem-grade > .problem-disagreement")?.textContent).toBe("graders disagreed");
+      expect(card.querySelectorAll(".problem")[1].querySelector(".problem-disagreement")).toBeNull();
+      click("earlier-implement-trie-prefix-tree");
+      expect(document.querySelector(".category-detail .earlier .problem-disagreement")?.textContent).toBe("graders disagreed");
+    });
+
+    it("badges the Progress tab with the reference-review count and lists them with a copy button", async () => {
+      showStart();
+      const badge = document.getElementById("progress-badge") as HTMLElement;
+      expect(badge.hidden).toBe(true);
+      openProgress();
+      notify({ kind: "progress_state", state: progress });
+      notify({ kind: "reference_state", state: { type: "reference_state", ts: "now", count: 2, references: [
+        { slug: "top-k-elements-in-list", title: "Top K Frequent Elements", uncertain: ["heap.complexity"], prompt: "Settle this reference" },
+        { slug: "unwritten-problem", title: "Unwritten Problem", uncertain: [], prompt: null, reason: "Reference is not ready yet" },
+      ] } });
+      expect(badge.hidden).toBe(false);
+      expect(badge.textContent).toBe("2");
+      const list = document.querySelector<HTMLElement>(".progress-view .reference-review")!;
+      expect(list.textContent).toContain("References needing review (2)");
+      expect(list.textContent).toContain("Top K Frequent Elements");
+      expect(list.textContent).toContain("Reference is not ready yet");
+      const realNavigator = globalThis.navigator;
+      const writeText = vi.fn(async () => {});
+      vi.stubGlobal("navigator", { clipboard: { writeText } });
+      click("copy-reference-top-k-elements-in-list");
+      expect(writeText).toHaveBeenCalledWith("Settle this reference");
+      await vi.waitFor(() => expect(document.querySelector(".reference-notice")?.textContent).toBe("Prompt copied."));
+      vi.stubGlobal("navigator", realNavigator);
+      notify({ kind: "reference_state", state: { type: "reference_state", ts: "now", count: 0, references: [] } });
+      expect(badge.hidden).toBe(true);
+      expect(document.querySelector(".progress-view .reference-review")).toBeNull();
+    });
+
     it("opens a category's detail, corrects a grade, unfolds earlier grades and re-asks after a progress change", () => {
       showStart();
       openProgress();

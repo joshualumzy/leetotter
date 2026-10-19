@@ -1,6 +1,6 @@
 import type { ConnectionState } from "./connection";
 import { MISSING_READER_MESSAGE, type ProgressCategoryState, type ProgressState, type RecapItem, type RecapNoted, type RecapsState, type ReferenceState, type SessionState, type SettingsState, type Suggestion } from "./protocol";
-import { categoryCount, earlierLabel, healthLine, progressSummary, recapDate, strongSummary, untriedLine } from "./tabs-view";
+import { categoryCount, earlierLabel, healthLine, progressHeaderLines, recapDate, untriedLine } from "./tabs-view";
 import { capLine, clock, panelView, timerText, type PanelView } from "./panel-view";
 import { remark } from "./remarks";
 import { otter, touchForDate } from "./otter";
@@ -23,7 +23,8 @@ const controls = document.getElementById("controls");
 const composer = document.getElementById("composer");
 const tabs = document.getElementById("tabs");
 const recapsUnreadNode = document.getElementById("recaps-unread");
-if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !clockNode || !controls || !composer || !tabs || !recapsUnreadNode) throw new Error("Panel elements are missing");
+const progressBadge = document.getElementById("progress-badge");
+if (!root || !body || !headerOtter || !title || !dot || !remarkNode || !timer || !clockNode || !controls || !composer || !tabs || !recapsUnreadNode || !progressBadge) throw new Error("Panel elements are missing");
 
 let transport: ConnectionState = { kind: "offline" };
 let session: SessionState | undefined;
@@ -400,11 +401,15 @@ function progressBar(): HTMLElement {
   }
   return bar;
 }
+function disagreementMarker(parent: HTMLElement): void {
+  appendText(parent, "span", "graders disagreed", "problem-disagreement");
+}
 function gradeRow(parent: HTMLElement, entry: ProgressCategoryState["problems"][number]["latest"], problem: string): void {
   if (!entry) return;
   const row = element("div", "problem-grade");
   appendText(row, "span", entry.word, `grade-word ${entry.word}`);
   appendText(row, "span", entry.reason, "grade-reason");
+  if (entry.disagreement) disagreementMarker(row);
   row.append(button(`correct-${entry.review_id}`, "correct", "link"));
   parent.append(row);
   if (correction === entry.review_id) {
@@ -423,6 +428,7 @@ function gradeRow(parent: HTMLElement, entry: ProgressCategoryState["problems"][
         const line = element("div", "problem-grade");
         appendText(line, "span", old.word, `grade-word ${old.word}`);
         appendText(line, "span", old.reason, "grade-reason");
+        if (old.disagreement) disagreementMarker(line);
         earlier.append(line);
       }
       parent.append(earlier);
@@ -448,6 +454,7 @@ function categoryProblems(parent: HTMLElement): void {
       const waiting = item.pending_reason === "reference" ? "grade pending (reference)" : "grade pending (graders)";
       appendText(node, "span", waiting, "problem-pending");
     }
+    if (item.disagreement) disagreementMarker(node);
     if (item.latest) gradeRow(node, item.latest, item.problem);
     else if (!item.pending) appendText(node, "span", "not graded yet", "quiet");
     parent.append(node);
@@ -506,8 +513,7 @@ function renderProgress(): void {
   }
   const head = element("div", "progress-head");
   const numbers = element("div", "progress-nums");
-  appendText(numbers, "span", progressSummary(progress.header));
-  appendText(numbers, "span", strongSummary(progress.header, progress.categories.length));
+  for (const line of progressHeaderLines(progress.header, progress.categories.length)) appendText(numbers, "span", line);
   head.append(numbers, progressBar());
   view.append(head);
   const list = element("div", "category-list");
@@ -523,6 +529,8 @@ function renderProgress(): void {
     if (openCategory === category.name) list.append(renderCategoryDetail(category.name));
   }
   view.append(list);
+  const review = referenceReviewSection({ verdicts: false, notice: true });
+  if (review) view.append(review);
   appendText(view, "p", healthLine(progress.health), "quiet progress-health");
   body!.append(view);
 }
@@ -558,6 +566,36 @@ function firstRun(): HTMLElement {
   block.append(button("skip-name", "Skip", "link"));
   appendText(block, "p", "Tap me anytime to change it.", "fine");
   return block;
+}
+function referenceReviewSection(options: { verdicts: boolean; notice: boolean }): HTMLElement | null {
+  if (!referenceState || referenceState.count <= 0) return null;
+  const state = referenceState;
+  const review = element("section", "reference-review");
+  appendText(review, "h4", `References needing review (${state.count})`);
+  appendText(review, "p", options.verdicts ? "Copy a prompt to a separate AI, then paste its verdict here." : "Copy a prompt to a separate AI, then paste its verdict in Settings.", "fine");
+  if (options.notice && referenceNotice) {
+    const note = appendText(review, "p", referenceNotice, "reference-notice");
+    note.id = "reference-notice";
+  }
+  for (const item of state.references) {
+    const details = element("details", "reference-item");
+    appendText(details, "summary", item.title);
+    if (!item.prompt) {
+      appendText(details, "p", item.reason || "The reference isn't ready yet.", "quiet");
+    } else {
+      const actions = element("div", "row");
+      actions.append(button(`copy-reference-${item.slug}`, "Copy prompt", "btn"));
+      details.append(actions);
+      if (options.verdicts) {
+        const input = element("textarea", "field reference-verdict") as HTMLTextAreaElement;
+        input.id = `verdict-${item.slug}`; input.rows = 3; input.placeholder = "Paste the verdict JSON";
+        input.value = referenceDrafts.get(item.slug) || "";
+        details.append(input, button(`reference-apply-${item.slug}`, "Apply", "btn primary"));
+      }
+    }
+    review.append(details);
+  }
+  return review;
 }
 function settingsCard(): HTMLElement {
   const card = element("section", "card settings"); card.id = "settings-card";
@@ -608,28 +646,8 @@ function settingsCard(): HTMLElement {
     const note = appendText(card, "p", referenceNotice, "reference-notice");
     note.id = "reference-notice";
   }
-  if (referenceState && referenceState.count > 0) {
-    const review = element("section", "reference-review");
-    appendText(review, "h4", `References needing review (${referenceState.count})`);
-    appendText(review, "p", "Copy a prompt to a separate AI, then paste its verdict here.", "fine");
-    for (const item of referenceState.references) {
-      const details = element("details", "reference-item");
-      appendText(details, "summary", item.title);
-      if (!item.prompt) {
-        appendText(details, "p", item.reason || "The reference isn't ready yet.", "quiet");
-      } else {
-        const actions = element("div", "row");
-        actions.append(button(`copy-reference-${item.slug}`, "Copy prompt", "btn"));
-        details.append(actions);
-        const input = element("textarea", "field reference-verdict") as HTMLTextAreaElement;
-        input.id = `verdict-${item.slug}`; input.rows = 3; input.placeholder = "Paste the verdict JSON";
-        input.value = referenceDrafts.get(item.slug) || "";
-        details.append(input, button(`reference-apply-${item.slug}`, "Apply", "btn primary"));
-      }
-      review.append(details);
-    }
-    card.append(review);
-  }
+  const review = referenceReviewSection({ verdicts: true, notice: false });
+  if (review) card.append(review);
   return card;
 }
 function block(pose: "doze" | "confused", heading: string, explanation: string): HTMLElement {
@@ -886,6 +904,10 @@ function renderTabs(view: PanelView): void {
     document.getElementById(id)!.classList.toggle("on", activeTab === tab);
   }
   recapsUnreadNode!.hidden = !recapsUnread;
+  const reviews = referenceState?.count || 0;
+  progressBadge!.hidden = reviews === 0;
+  progressBadge!.textContent = reviews ? String(reviews) : "";
+  progressBadge!.setAttribute("aria-label", `${reviews} ${reviews === 1 ? "reference needs" : "references need"} review`);
 }
 function appendAlerts(view: PanelView): void {
   for (const message of [...view.alerts, actionError]) if (message) {
