@@ -145,6 +145,46 @@ def test_a_focus_must_name_known_patterns(tmp_path):
                                              steer=steering("more memoisation", focus(patterns=["memoisation"]))))
 
 
+def test_a_pattern_the_learner_named_is_not_a_reveal(tmp_path):
+    shown = Shown(tmp_path, lambda db: reference(db, COIN_CHANGE, ["dynamic programming"]))
+    out = shown.say("can I do harder dynamic programming",
+                    reply(COIN_CHANGE, "steer", steer=steering("harder dynamic programming", focus(DP, difficulties=["Hard"])),
+                          understood="A dynamic programming problem it is."))
+    assert card(out)["message"] == "A dynamic programming problem it is."
+
+
+def test_a_pattern_the_learner_did_not_name_is_a_reveal_naming_the_word(tmp_path):
+    shown = Shown(tmp_path, lambda db: reference(db, COIN_CHANGE, ["dynamic programming"]))
+    request = shown.planner.chat(shown.session_id, "can I do harder DP")
+    bad = reply(COIN_CHANGE, "steer", steer=steering("harder DP", focus(DP, difficulties=["Hard"])),
+                understood="A dynamic programming problem it is.")
+    client = RecordedPlanner(bad, bad)
+    with pytest.raises(ValueError) as raised:
+        ask_planner(client, request)
+    assert "Understood line names 'dynamic programming', which the learner did not ask for; rewrite it without that word" in str(raised.value)
+    assert len(client.calls) == 2
+
+
+def test_an_understood_line_that_only_echoes_the_learner_is_rejected(tmp_path):
+    shown = Shown(tmp_path)
+    request = shown.planner.chat(shown.session_id, "more practice please")
+    bad = reply(COIN_CHANGE, "steer", steer=steering("more practice", focus(DP)),
+                understood="More practice, please.")
+    client = RecordedPlanner(bad, bad)
+    with pytest.raises(ValueError) as raised:
+        ask_planner(client, request)
+    assert "Understood line only repeats the learner's message; reply in your own words" in str(raised.value)
+    assert len(client.calls) == 2
+
+
+def test_a_normal_understood_line_is_accepted(tmp_path):
+    shown = Shown(tmp_path)
+    out = shown.say("more practice please",
+                    reply(COIN_CHANGE, "steer", steer=steering("more practice", focus(DP)),
+                          understood="A fresh dynamic programming one is up next."))
+    assert card(out)["message"] == "A fresh dynamic programming one is up next."
+
+
 def test_a_difficulty_only_focus_filters_the_shortlist(tmp_path):
     with open_store(tmp_path / "db.sqlite3") as db:
         candidates = allowed_next(db, session_id=None, now=NOW)
@@ -489,3 +529,8 @@ def test_the_fallback_ignores_a_steer_nothing_eligible_meets(tmp_path):
     fallback = card(shown.planner.fail(request, TimeoutError("planner timed out")))
     assert fallback["slug"] in {c["slug"] for c in request.allowed}
     assert fallback["steer"] == "more tries"
+
+
+def test_an_understood_line_with_stray_braces_is_rejected(tmp_path):
+    shown = Shown(tmp_path)
+    rejected(shown, "more easies please", reply(COIN_CHANGE, "steer", steer=steering("Easier", focus(difficulties=["Easy"])), understood="Sure thing.},"))
