@@ -323,9 +323,9 @@ def test_both_graders_failing_leaves_the_attempt_ungraded_and_reported_never_gue
         assert problem_grade(run.path) == [None]
     fake.replies = {"x-test-1": verdict(), "x-test-2": verdict()}
     outcome = grade_pending(fake, db_path=run.path, trigger="next_start")
-    assert outcome.graded == [left] and outcome.failed == []
-    problem = reviews(run.path)[0]
-    assert (problem["grade"], problem["failed_grader"], problem["reviewed_at"]) == ("good", None, event_ts(run.path, left))
+    assert outcome.graded == outcome.failed == []  # the next-start retry was the last one
+    assert len(fake.calls) == 6
+    assert problem_grade(run.path) == [None]
 
 
 def test_a_graded_attempt_is_never_graded_again(tmp_path):

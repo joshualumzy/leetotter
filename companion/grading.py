@@ -112,6 +112,10 @@ def _events(db):
             db.execute("SELECT id, session_id, ts, type, payload FROM events ORDER BY id")]
 
 
+def _excluded_sessions(db):
+    return {session for (session,) in db.execute("SELECT id FROM sessions WHERE excluded = 1")}
+
+
 def _attempts(events):
     active = {}
     pending_open = {}
@@ -135,7 +139,9 @@ def _attempts(events):
                 if session in pending_open:
                     active[session] = pending_open.pop(session)
         elif session in active:
-            active[session]["events"].append(event)
+            event_slug = payload.get("slug")
+            if event_slug is None or event_slug == active[session]["slug"]:
+                active[session]["events"].append(event)
 
 
 def _first_attempt(db, events, start, slug):
@@ -149,9 +155,14 @@ def _first_attempt(db, events, start, slug):
             break
         if earlier["slug"] != slug:
             continue
-        if db.execute("SELECT 1 FROM reviews WHERE item_type = 'problem' AND event_id = ?", (earlier["left"][0],)).fetchone():
+        if db.execute("SELECT 1 FROM reviews WHERE item_type = 'problem' AND session_id = ? "
+                      "AND event_id BETWEEN ? AND ?",
+                      (earlier["session"], earlier["start"], earlier["left"][0])).fetchone():
             return False
-        if earlier["accepted"] or any(kind in {"run_result", "submit_result", "help_request", "chat_message", "help_turn"}
+        if db.execute("SELECT 1 FROM handled_attempts WHERE start_event_id = ?", (earlier["start"],)).fetchone():
+            return False
+        if earlier["accepted"] or any(kind in {"run_result", "submit_result", "help_request", "chat_message", "help_turn",
+                                               "time_up_choice", "debrief_request"}
                                       and payload.get("slug") == slug for _, _, _, kind, payload in earlier["events"]):
             return False
     return True
@@ -241,8 +252,10 @@ def _grader_grade(client, model, slug, reference, attempt):
 def _grade_analysis(client, db_path, outcome, only_slug, trigger):
     with open_store(db_path) as db:
         events = _events(db)
+        excluded = _excluded_sessions(db)
     questions = [(id_, session, ts, payload) for id_, session, ts, kind, payload in events
                  if kind == "followup_asked" and payload.get("complexity")
+                 and session not in excluded
                  and (only_slug is None or payload["slug"] == only_slug)]
     for question_id, session, ts, question in questions:
         if any(event_session == session and kind == "analysis_resolved" and payload.get("question_id") == question_id
@@ -272,8 +285,7 @@ def _grade_analysis(client, db_path, outcome, only_slug, trigger):
                 continue
             retry = db.execute("SELECT failed_tries FROM grader_retries WHERE start_event_id = ?", (question_id,)).fetchone()
             tries = retry[0] if retry else 0
-            if (tries == 1 and trigger != "next_problem" or tries == 2 and trigger != "next_start"
-                    or tries >= 3 and trigger != "next_start"):
+            if tries >= 3 or (tries == 1 and trigger != "next_problem") or (tries == 2 and trigger != "next_start"):
                 continue
             solve = db.execute("SELECT grade, first_attempt, reviewed_at FROM reviews WHERE event_id = ? AND item_type = 'problem'", (left,)).fetchone()
             if solve is None or solve[0] is None:
@@ -336,7 +348,10 @@ def grade_pending(client, *, db_path=None, only_slug=None, trigger="initial"):
     outcome = GradingOutcome()
     with open_store(db_path) as db:
         events = _events(db)
+        excluded = _excluded_sessions(db)
     for attempt in _attempts(events):
+        if attempt["session"] in excluded:
+            continue
         if only_slug is not None and attempt["slug"] != only_slug:
             continue
         if not attempt["accepted"]:
@@ -350,8 +365,7 @@ def grade_pending(client, *, db_path=None, only_slug=None, trigger="initial"):
                     continue
                 count = db.execute("SELECT failed_tries FROM grader_retries WHERE start_event_id = ?", (start,)).fetchone()
                 tries = count[0] if count else 0
-                if (tries == 1 and trigger != "next_problem" or tries == 2 and trigger != "next_start"
-                        or tries >= 3 and trigger != "next_start"):
+                if tries >= 3 or (tries == 1 and trigger != "next_problem") or (tries == 2 and trigger != "next_start"):
                     continue
                 first = _first_attempt(db, events, start, slug)
                 existing = db.execute("SELECT id FROM reviews WHERE item_type = 'problem' AND event_id = ?", (left_id,)).fetchone()

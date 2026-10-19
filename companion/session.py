@@ -33,7 +33,7 @@ READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed",
 TURN_REQUESTS = frozenset({"chat_message", "help_request", "debrief_request", "solve_request"})
 TURN_EVENTS = TURN_REQUESTS | {"help_turn", "help_failed"}
 FOLLOWUP_EVENTS = frozenset({"followup_asked", "complexity_postponed", "followup_answered", "reasoning_requested", "followup_skipped", "analysis_resolved"})
-EVENT_TYPES = READER_TYPES | TURN_EVENTS | FOLLOWUP_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "time_up_shown", "time_up_choice", "session_restored"}
+EVENT_TYPES = READER_TYPES | TURN_EVENTS | FOLLOWUP_EVENTS | {"session_started", "session_paused", "session_resumed", "session_ended", "problem_left", "accept_counted", "time_up_shown", "time_up_choice", "session_restored", "off_plan"}
 CODE_EVENTS = frozenset({"code_snapshot", "code_changed"})
 RESTART_MESSAGE = "The companion restarted before the Tutor finished."
 logger = logging.getLogger(__name__)
@@ -61,6 +61,8 @@ class SessionCoordinator:
         self.debrief = False  # the current problem is in the Tutor's debrief mode
         self.turn = None  # id of the Tutor turn in flight; one at a time
         self.pending_solve_slug = None  # the first accept awaiting its after-solve Tutor turn
+        self.suggested_slug = None  # the Planner's current suggestion, set by the socket
+        self.interrupted = []  # older open sessions ended during this startup
         with open_store(db_path) as db:
             rows = db.execute("SELECT id, started_at FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC").fetchall()
             if rows:
@@ -110,6 +112,7 @@ class SessionCoordinator:
         self.debrief = False
         self.turn = None
         self.pending_solve_slug = None
+        self.suggested_slug = None
 
     def _close_open_turns(self, db, session_id, history, now):
         """A Tutor turn still open when the companion died is logged as failed, never left open."""
@@ -131,8 +134,33 @@ class SessionCoordinator:
                         {"turn_id": turn_id, "slug": slug, "reason": "restart", "message": RESTART_MESSAGE})
 
     def _interrupt(self, db, session_id, ended_at):
+        """End a session that cannot be replayed, leaving any accepted attempt gradable."""
+        current = accepted = None
+        for _, kind, raw in db.execute("SELECT id, type, payload FROM events WHERE session_id = ? ORDER BY id",
+                                       (session_id,)).fetchall():
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if kind == "problem_opened" and isinstance(payload.get("slug"), str):
+                if current is not None and current != payload["slug"]:
+                    self._event(db, session_id, ended_at, "problem_left",
+                                {"slug": current, "accepted": bool(accepted)})
+                    accepted = None
+                current = payload["slug"]
+            elif kind == "problem_left" and payload.get("slug") == current:
+                current, accepted = None, None
+            elif kind == "accept_counted" and payload.get("slug") == current:
+                accepted = True
+            elif (kind == "submit_result" and payload.get("accepted") and payload.get("slug") == current):
+                accepted = True
         db.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (ended_at, session_id))
+        if current is not None:
+            self._event(db, session_id, ended_at, "problem_left", {"slug": current, "accepted": bool(accepted)})
         self._event(db, session_id, ended_at, "session_interrupted", {})
+        self.interrupted.append(session_id)
 
     @staticmethod
     def _last_event_time(history, started_at):
@@ -160,9 +188,10 @@ class SessionCoordinator:
         time_up_shows = {}
         extensions = set()
         debrief = False
+        pending_solve_slug = None
         if not history or history[0][2] != "session_started":
             raise ValueError("Missing session_started event")
-        previous = started
+        previous = accounted_until = started
         for event_id, ts, kind, raw_payload in history:
             at = datetime.fromisoformat(ts)
             if at.tzinfo is None or at < previous:
@@ -170,8 +199,11 @@ class SessionCoordinator:
             payload = json.loads(raw_payload)
             if kind not in EVENT_TYPES or not isinstance(payload, dict):
                 raise ValueError(f"Unexpected {kind} event payload")
-            if kind != "session_restored" and active_since is not None and problem is not None:
-                problem_times[problem["slug"]] = problem_times.get(problem["slug"], 0.0) + (at - previous).total_seconds()
+            restart_failure = kind == "help_failed" and payload.get("reason") == "restart"
+            if kind != "session_restored" and not restart_failure and active_since is not None and problem is not None:
+                problem_times[problem["slug"]] = problem_times.get(problem["slug"], 0.0) + (at - accounted_until).total_seconds()
+            if kind != "session_restored" and not restart_failure:
+                accounted_until = at
             previous = at
             if kind == "session_started":
                 if started_seen or at != started:
@@ -189,6 +221,7 @@ class SessionCoordinator:
                 active_since = at
                 if pending_accept and problem and not accepted:
                     accepted = True
+                    pending_solve_slug = problem["slug"]
                 pending_accept = False
             elif kind == "session_restored":
                 seconds = payload.get("active_seconds")
@@ -205,6 +238,7 @@ class SessionCoordinator:
                     attempt_start = event_id
                     time_up = None
                     debrief = False
+                    pending_solve_slug = None
                 problem = {"slug": payload["slug"], "title": payload["title"]}
                 problem_times.setdefault(problem["slug"], 0.0)
             elif kind == "problem_left":
@@ -215,6 +249,7 @@ class SessionCoordinator:
                     accepted = pending_accept = False
                     time_up = None
                     debrief = False
+                    pending_solve_slug = None
             elif kind == "accept_counted":
                 if not isinstance(payload.get("slug"), str) or not payload["slug"]:
                     raise ValueError("Invalid accept_counted event")
@@ -222,6 +257,7 @@ class SessionCoordinator:
                     accepted = True
                     pending_accept = False
                     time_up = None
+                    pending_solve_slug = payload["slug"]
             elif kind == "submit_result":
                 if type(payload.get("accepted")) is not bool or not isinstance(payload.get("slug"), str) or not payload["slug"]:
                     raise ValueError("Invalid submit_result event")
@@ -266,6 +302,13 @@ class SessionCoordinator:
                 if (not isinstance(payload.get("slug"), str) or not payload["slug"]
                         or not isinstance(payload.get("cases"), list) or not payload["cases"]):
                     raise ValueError("Invalid run_result event")
+            elif kind == "help_turn":
+                if (payload.get("request") == "solve" and isinstance(payload.get("slug"), str)
+                        and payload["slug"] == pending_solve_slug):
+                    pending_solve_slug = None
+            elif kind == "off_plan":
+                if not isinstance(payload.get("slug"), str) or not payload["slug"]:
+                    raise ValueError("Invalid off_plan event")
             elif kind in FOLLOWUP_EVENTS:
                 if not isinstance(payload.get("slug"), str) or not payload["slug"]:
                     raise ValueError(f"Invalid {kind} event")
@@ -284,10 +327,11 @@ class SessionCoordinator:
             elif kind == "session_ended":
                 raise ValueError("Open session contains session_ended")
         if active_since is not None:
-            elapsed += (previous - active_since).total_seconds()
+            elapsed += (accounted_until - active_since).total_seconds()
         return {"elapsed": elapsed, "problem": problem, "accepted": accepted, "pending_accept": pending_accept,
                 "attempt_start": attempt_start, "problem_times": problem_times, "problem_since": None,
-                "time_up": time_up, "time_up_shows": time_up_shows, "extensions": extensions, "debrief": debrief}
+                "time_up": time_up, "time_up_shows": time_up_shows, "extensions": extensions, "debrief": debrief,
+                "pending_solve_slug": pending_solve_slug}
 
     def _event(self, db, session_id, ts, kind, payload):
         return db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, ?, ?)",
@@ -400,6 +444,7 @@ class SessionCoordinator:
         self.check_message = None
         self.pending_accept = False
         self.pending_solve_slug = None
+        self.suggested_slug = None
         self.time_up = None
         self.debrief = False
 
@@ -434,8 +479,7 @@ class SessionCoordinator:
         if kind == "tab_closed" and self.state != "active":
             return [self._state(now)]
         if kind in READER_TYPES and (self.state in ("idle", "ended") or
-            (self.state == "paused" and kind not in ("focus_changed", "reader_check", "submit_result")
-             and not (kind == "problem_opened" and self.paused_reason == "check"))):
+            (self.state == "paused" and kind not in ("focus_changed", "reader_check", "submit_result", "problem_opened"))):
             return [self._state(now)]
         with open_store(self.db_path) as db:
             if (kind == "problem_opened" and self.state == "paused" and self.paused_reason == "check"):
@@ -497,6 +541,10 @@ class SessionCoordinator:
                                    and catalog["locked"])):
                         self._resume(db, now)
                 elif kind == "problem_opened":
+                    if self.suggested_slug is not None and payload["slug"] != self.suggested_slug:
+                        self._event(db, self.session_id, now.isoformat(), "off_plan",
+                                    {"slug": payload["slug"], "suggested": self.suggested_slug})
+                    self.suggested_slug = None
                     if self.problem and self.problem["slug"] != payload["slug"]:
                         self._close_problem(now)
                         close_open_followups(db, session_id=self.session_id, ts=now.isoformat(),
@@ -542,6 +590,7 @@ class SessionCoordinator:
         self.extensions = set()
         self.debrief = False
         self.pending_solve_slug = None
+        self.suggested_slug = None
 
     def solve_turn_due(self):
         """The slug whose first accept still needs its after-solve Tutor turn, or None."""
@@ -804,49 +853,40 @@ class SessionCoordinator:
                 logger.warning("Follow-up answer for turn %s arrived after the question closed", turn.turn_id)
                 return self.fail_turn(turn, "closed", "That follow-up question is closed. It was skipped or already answered.")
         labels = {"gap": reply.gap, "gap_note": reply.gap_note, "help_kind": reply.help_kind, "linked": reply.linked}
-        try:
-            with open_store(self.db_path) as db:
-                help_event_id = self._event(db, turn.session_id, now.isoformat(), "help_turn", {
-                    "turn_id": turn.turn_id, "slug": turn.slug, "request": turn.request.kind,
-                    "press_index": turn.request.press_index, **labels, "reply_text": reply.reply_text,
-                    "follow_up_question": reply.follow_up_question, "model": model})
-                follow_up = reply.follow_up_question
-                if turn.request.kind == "solve" and not self._record_solve_followup(db, turn, reply, now):
-                    follow_up = None
-                if reply.help_kind == "full_solution":
-                    events = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id <= ? ORDER BY id",
-                                        (turn.session_id, turn.turn_id)).fetchall()
-                    attempt_start = None
-                    for event_id, kind, raw in events:
-                        payload = json.loads(raw)
-                        if kind == "problem_opened" and payload["slug"] == turn.slug and attempt_start is None:
-                            attempt_start = event_id
-                        elif kind == "problem_left" and payload["slug"] == turn.slug:
-                            attempt_start = None
-                    accepted_before_reply = attempt_start is not None and any(
-                        kind == "submit_result" and json.loads(raw).get("accepted") and json.loads(raw).get("slug") == turn.slug
-                        for event_id, kind, raw in db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id > ? AND id < ?",
-                                                             (turn.session_id, attempt_start, help_event_id)))
-            if reply.help_kind == "full_solution" and attempt_start is not None and not accepted_before_reply:
-                try:
-                    with open_store(self.db_path) as db:
-                        write_missed(db, session_id=turn.session_id, slug=turn.slug, event_id=help_event_id,
-                                     attempt_start=attempt_start)
-                except Exception as error:
-                    logger.exception("Could not record full-solution miss for turn %s", turn.turn_id)
-                    return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id,
-                             "reply_text": reply.reply_text, **labels, "follow_up_question": follow_up},
-                            {"type": "error", "ts": now.isoformat(), "message": f"Could not record the missed attempt: {error}"}]
-        finally:
-            self._release(turn)
+        with open_store(self.db_path) as db:
+            help_event_id = self._event(db, turn.session_id, now.isoformat(), "help_turn", {
+                "turn_id": turn.turn_id, "slug": turn.slug, "request": turn.request.kind,
+                "press_index": turn.request.press_index, **labels, "reply_text": reply.reply_text,
+                "follow_up_question": reply.follow_up_question, "model": model})
+            follow_up = reply.follow_up_question
+            if turn.request.kind == "solve" and not self._record_solve_followup(db, turn, reply, now):
+                follow_up = None
+            if reply.help_kind == "full_solution":
+                events = db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id <= ? ORDER BY id",
+                                    (turn.session_id, turn.turn_id)).fetchall()
+                attempt_start = None
+                for event_id, kind, raw in events:
+                    payload = json.loads(raw)
+                    if kind == "problem_opened" and payload["slug"] == turn.slug and attempt_start is None:
+                        attempt_start = event_id
+                    elif kind == "problem_left" and payload["slug"] == turn.slug:
+                        attempt_start = None
+                accepted_before_reply = attempt_start is not None and any(
+                    kind == "submit_result" and json.loads(raw).get("accepted") and json.loads(raw).get("slug") == turn.slug
+                    for event_id, kind, raw in db.execute("SELECT id, type, payload FROM events WHERE session_id = ? AND id > ? AND id < ?",
+                                                          (turn.session_id, attempt_start, help_event_id)))
+                if attempt_start is not None and not accepted_before_reply:
+                    write_missed(db, session_id=turn.session_id, slug=turn.slug, event_id=help_event_id,
+                                 attempt_start=attempt_start)
+        self._release(turn)
         return [{"type": "tutor_done", "ts": now.isoformat(), "turn_id": turn.turn_id, "reply_text": reply.reply_text,
                  **labels, "follow_up_question": follow_up}]
 
     def _record_solve_followup(self, db, turn: Turn, reply, now):
         """Record the Tutor's follow-up decision, unless the accept was left or disputed labels forbid it.
         Returns whether a question was recorded, so the panel never shows one the companion doesn't track."""
-        if (self.problem is None or self.problem["slug"] != turn.slug or not self.accepted
-                or self.attempt_start is None or turn.turn_id < self.attempt_start):
+        if (self.state == "ended" or self.problem is None or self.problem["slug"] != turn.slug
+                or not self.accepted or self.attempt_start is None or turn.turn_id < self.attempt_start):
             return False
         stored = load_reference(db, turn.slug)
         if stored is not None and stored.status == "needs_review" and stored.uncertain:

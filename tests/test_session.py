@@ -490,21 +490,25 @@ def test_active_reader_messages_are_stored_with_payload_ts_and_session(tmp_path)
     assert {r[2] for r in rows} == {1}
 
 
-def test_paused_ignores_all_reader_messages_except_the_three_allowed(tmp_path):
+def test_paused_ignores_code_reader_messages_but_still_tracks_the_open_problem(tmp_path):
     coord, clock, path = make(tmp_path)
     coord.handle(start_msg())
     coord.handle(opened())
     coord.handle(msg("session_pause"))
     before = events(path)
-    for message in (opened(SLUG_B, TITLE_B), changed(), snapshot(), run_result()):
+    for message in (changed(), snapshot(), run_result()):
         out = coord.handle(message)
         assert out[0]["type"] == "session_state" and out[0]["state"] == "paused"
     assert events(path) == before
     assert current(coord)["problem"] == {"slug": SLUG_A, "title": TITLE_A}
+    out = coord.handle(opened(SLUG_B, TITLE_B))
+    assert out[0]["state"] == "paused"
+    assert out[0]["problem"] == {"slug": SLUG_B, "title": TITLE_B}
     coord.handle(focus(tab=False))
     coord.handle(check(False, "x"))
     coord.handle(submit(accepted=False))
-    assert types(path)[len(before):] == ["focus_changed", "reader_check", "submit_result"]
+    assert types(path)[len(before):] == ["problem_opened", "problem_left", "focus_changed", "reader_check",
+                                         "submit_result"]
 
 
 # --- problems and accepts ------------------------------------------------------

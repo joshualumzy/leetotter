@@ -34,8 +34,12 @@ def item_memory(db, item_type, item_key, now):
         raise RuntimeError("Stored FSRS version differs from the pinned version")
     scheduler = Scheduler(parameters=json.loads(parameters), desired_retention=retention,
                           learning_steps=(), relearning_steps=(), enable_fuzzing=False)
-    rows = db.execute("SELECT grade, reviewed_at FROM reviews WHERE item_type = ? AND item_key = ? AND grade IS NOT NULL ORDER BY reviewed_at, id",
-                      (item_type, item_key)).fetchall()
+    rows = db.execute(
+        "SELECT reviews.grade, reviews.reviewed_at FROM reviews "
+        "LEFT JOIN sessions ON sessions.id = reviews.session_id "
+        "WHERE reviews.item_type = ? AND reviews.item_key = ? AND reviews.grade IS NOT NULL "
+        "AND COALESCE(sessions.excluded, 0) = 0 ORDER BY reviews.reviewed_at, reviews.id",
+        (item_type, item_key)).fetchall()
     if not rows:
         return None
     card = Card()

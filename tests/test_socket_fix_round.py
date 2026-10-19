@@ -34,14 +34,14 @@ def test_session_start_replaces_waiting_start_request(tmp_path, monkeypatch):
 def test_grading_failure_after_reference_check_reports_grading_not_reference(tmp_path, monkeypatch):
     async def scenario():
         setup(tmp_path, monkeypatch, [])
-        async def checked(*args, **kwargs):
+        def checked(*args, **kwargs):
             return SimpleNamespace(status="checked")
         async def grading(*args):
             raise RuntimeError("grader offline")
         sent = []
         async def broadcast(messages, sender):
             sent.extend(messages)
-        monkeypatch.setattr(socket.asyncio, "to_thread", checked)
+        monkeypatch.setattr(socket, "write_and_check", checked)
         monkeypatch.setattr(socket, "_run_grading", grading)
         monkeypatch.setattr(socket, "_broadcast", broadcast)
         problem = load_catalog().by_slug("minimum-size-subarray-sum")

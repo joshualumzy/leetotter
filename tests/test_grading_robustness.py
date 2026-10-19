@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from companion.grading import grade_pending
 from companion.model import ModelClient
 from companion.store import open_store
@@ -151,16 +153,16 @@ def test_full_solution_for_previous_problem_survives_navigation(tmp_path):
     assert problem_grade(run.path) == ["again"]
 
 
-def test_full_solution_miss_failure_keeps_help_turn_and_finishes_stream(tmp_path):
+def test_full_solution_miss_failure_rolls_back_the_help_turn(tmp_path):
     run = Run(tmp_path)
     run.start()
     run.open("not-in-catalog", "Unknown")
     _, turn = run.coord.begin_turn("chat", "show me")
     from tests.test_grading import reply
-    outgoing = run.coord.finish_turn(turn, reply("full_solution"), "x-test-2")
-    assert any(item["type"] == "error" for item in outgoing)
-    assert run.coord.turn is None
-    assert [row for row in open_events(run.path) if row[1] == "help_turn"]
+    with pytest.raises(ValueError, match="Unknown problem"):
+        run.coord.finish_turn(turn, reply("full_solution"), "x-test-2")
+    assert run.coord.turn == turn.turn_id  # still open, so the caller can log it failed
+    assert [row for row in open_events(run.path) if row[1] == "help_turn"] == []
 
 
 def test_reference_is_saved_even_if_grading_raises(tmp_path, monkeypatch):

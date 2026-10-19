@@ -135,7 +135,7 @@ def _validate_citations(db, change, event_ids, allowed_note_id):
             old = db.execute("SELECT status, rejected_note_id, rejected_after_event_id FROM hypotheses WHERE id = ?", (change.rejected_id,)).fetchone()
             if old is None or old[0] != "rejected" or old[1] is None:
                 raise ValueError("Named rejected hypothesis does not exist")
-            if not change.cited_event_ids or any(id_ <= old[2] for id_ in change.cited_event_ids):
+            if not change.cited_event_ids or (old[2] is not None and any(id_ <= old[2] for id_ in change.cited_event_ids)):
                 raise ValueError("Returning hypothesis needs evidence after rejection")
             if "back" not in change.recap_line.lower() and "return" not in change.recap_line.lower():
                 raise ValueError("Returning hypothesis recap must say it is back")
@@ -143,7 +143,8 @@ def _validate_citations(db, change, event_ids, allowed_note_id):
         if change.rejected_id is not None or change.hypothesis_id is None:
             raise ValueError("Changed hypothesis needs its existing id")
         old = db.execute("SELECT status FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()
-        if old is None or (old[0] != "open" and not (change.action == "drop" and old[0] == "rejected")):
+        if old is None or (old[0] != "open"
+                           and not (change.action == "drop" and old[0] in ("rejected", "dropped"))):
             raise ValueError("Changed hypothesis is not open")
         if change.action == "reword" and not (change.text or "").strip():
             raise ValueError("Reworded hypothesis needs text")
@@ -186,8 +187,8 @@ def _effective_changes(db, changes):
     effective, dropped = [], set()
     for change in changes:
         if change.action == "drop":
-            if change.hypothesis_id in dropped or db.execute(
-                    "SELECT status FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()[0] == "rejected":
+            status = db.execute("SELECT status FROM hypotheses WHERE id = ?", (change.hypothesis_id,)).fetchone()
+            if change.hypothesis_id in dropped or (status is not None and status[0] in ("rejected", "dropped")):
                 continue
             dropped.add(change.hypothesis_id)
         effective.append(change)
@@ -222,8 +223,11 @@ def _reached_150(db, session_id):
     prior = {}
     for slug, session, grade, meets, event_id, payload in db.execute(
         "SELECT reviews.item_key, reviews.session_id, reviews.grade, reviews.meets_expected, "
-        "reviews.event_id, events.payload FROM reviews LEFT JOIN events ON events.id = reviews.event_id "
-        "WHERE reviews.item_type = 'problem' AND reviews.grade IS NOT NULL ORDER BY reviews.reviewed_at, reviews.id"):
+        "reviews.event_id, events.payload FROM reviews "
+        "LEFT JOIN events ON events.id = reviews.event_id "
+        "LEFT JOIN sessions ON sessions.id = reviews.session_id "
+        "WHERE reviews.item_type = 'problem' AND reviews.grade IS NOT NULL "
+        "AND COALESCE(sessions.excluded, 0) = 0 ORDER BY reviews.reviewed_at, reviews.id"):
         if slug in slugs:
             result = (session, grade, meets, event_id, payload)
             latest[slug] = result

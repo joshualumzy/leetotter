@@ -147,8 +147,11 @@ def _join(parts):
 
 
 def _has_good_medium_or_hard(db, item_type, item_key):
-    return db.execute("SELECT 1 FROM reviews WHERE item_type = ? AND item_key = ? AND grade = 'good' "
-                      "AND difficulty IN ('Medium', 'Hard') LIMIT 1", (item_type, item_key)).fetchone() is not None
+    return db.execute(
+        "SELECT 1 FROM reviews LEFT JOIN sessions ON sessions.id = reviews.session_id "
+        "WHERE reviews.item_type = ? AND reviews.item_key = ? AND reviews.grade = 'good' "
+        "AND reviews.difficulty IN ('Medium', 'Hard') AND COALESCE(sessions.excluded, 0) = 0 LIMIT 1",
+        (item_type, item_key)).fetchone() is not None
 
 
 def _settings(db):
@@ -377,12 +380,13 @@ def correct_grade(db_path, *, grade, review_id=None, problem=None, attempt=None)
         review_id, event_id, _, _, old_grade, _, difficulty = row
         if old_grade is None:
             raise ValueError("This attempt has no grade yet")
-        db.execute("UPDATE reviews SET grade = ? WHERE id = ?", (grade, review_id))
+        meets = int(grade in ("good", "hard"))
+        db.execute("UPDATE reviews SET grade = ?, meets_expected = ? WHERE id = ?", (grade, meets, review_id))
         category = db.execute("SELECT id, difficulty FROM reviews WHERE event_id = ? AND item_type = 'category:solve'",
                               (event_id,)).fetchone()
         if category is not None:
-            db.execute("UPDATE reviews SET grade = ? WHERE id = ?",
-                       (category_grade(grade, category[1] or difficulty), category[0]))
+            db.execute("UPDATE reviews SET grade = ?, meets_expected = ? WHERE id = ?",
+                       (category_grade(grade, category[1] or difficulty), meets, category[0]))
         return review_id
 
 
@@ -397,3 +401,9 @@ def exclude_session(db_path, session_id):
             raise ValueError("A session must be ended before it can be excluded")
         db.execute("UPDATE sessions SET excluded = 1 WHERE id = ?", (session_id,))
         db.execute("DELETE FROM reviews WHERE session_id = ?", (session_id,))
+        db.execute("INSERT OR IGNORE INTO handled_attempts (start_event_id) "
+                   "SELECT id FROM events WHERE session_id = ? AND type = 'problem_opened'", (session_id,))
+        db.execute("DELETE FROM grading_failures WHERE start_event_id IN "
+                   "(SELECT id FROM events WHERE session_id = ?)", (session_id,))
+        db.execute("DELETE FROM grader_retries WHERE start_event_id IN "
+                   "(SELECT id FROM events WHERE session_id = ?)", (session_id,))
