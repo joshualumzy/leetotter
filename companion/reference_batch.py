@@ -6,13 +6,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from openai import APIConnectionError, APITimeoutError
+from pydantic import BaseModel, ConfigDict, Field
 
 from companion.catalog import load_catalog
 from companion.model import ModelClient, ModelUnavailable
-from companion.reference import write_and_check
+from companion.reference import validate_summary, write_and_check
 from companion.store import open_store
 
 REPORT_PATH = Path("docs/reference-batch-report.md")
+SUMMARY_REPORT_PATH = Path("docs/reference-summary-report.md")
+
+
+SUMMARY_FORMAT = """Write only the summary for a coding-problem reference, as JSON: {"summary": "..."}.
+It is one plain sentence saying what the problem asks, so a learner remembers which problem it was.
+It must be non-empty and must never name an approach or any pattern listed in the reference, case-insensitively.
+No solution code, no pattern names, no approach names."""
+
+
+class SummaryReply(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    summary: str = Field(min_length=1)
 
 
 @dataclass
@@ -30,6 +43,134 @@ def _stored(db_path):
     with open_store(db_path) as db:
         return {slug: (status, json.loads(content).get("uncertain", []))
                 for slug, content, status in db.execute('SELECT problem_key, content, status FROM "references"')}
+
+
+@dataclass
+class SummaryReport:
+    updated: int = 0
+    skipped: int = 0
+    failed: int = 0
+    failure_reasons: dict[str, str] = field(default_factory=dict)
+    stopped: str | None = None
+
+
+def _render_summary(report, total):
+    lines = ["# Reference summary backfill report", "", f"Catalog problems: {total}",
+             f"Updated: {report.updated}", f"Skipped: {report.skipped}", f"Failed: {report.failed}"]
+    if report.stopped:
+        lines += ["", f"Stopped: {report.stopped}"]
+    lines += ["", "## Failed", ""]
+    lines += [f"- `{slug}`: {reason}" for slug, reason in report.failure_reasons.items()] or ["None."]
+    return "\n".join(lines) + "\n"
+
+
+def write_summary(models, *, slug, title, patterns, approach_names) -> str:
+    """One short writer call for a summary, retried once with the error, then a loud failure."""
+    messages = [{"role": "system", "content": SUMMARY_FORMAT},
+                {"role": "user", "content": f"Problem slug: {slug}\nTitle: {title}\n"
+                                            f"Patterns: {', '.join(patterns) or 'none'}\n"
+                                            f"Approaches: {', '.join(approach_names) or 'none'}"}]
+    for attempt in range(2):
+        reply = models.call_role("reference_writer", messages, SummaryReply)
+        try:
+            validate_summary(reply.summary, patterns, approach_names)
+            return reply.summary
+        except ValueError as error:
+            if attempt:
+                raise ValueError(f"reference_writer reply invalid after retry: {error}") from error
+            messages = [*messages, {"role": "assistant", "content": reply.model_dump_json()},
+                        {"role": "user", "content": f"Invalid summary: {error}. Return corrected JSON only."}]
+
+
+def backfill_one(slug, title, models, *, db_path):
+    """Add a summary to one stored reference without touching its other fields or status."""
+    with open_store(db_path) as db:
+        row = db.execute('SELECT content FROM "references" WHERE problem_key = ?', (slug,)).fetchone()
+    if row is None:
+        return "skipped (no reference)"
+    content = json.loads(row[0])
+    if (content.get("summary") or "").strip():
+        return "skipped (has summary)"
+    summary = write_summary(models, slug=slug, title=title, patterns=content.get("patterns") or [],
+                            approach_names=[item.get("name", "") for item in content.get("approaches") or []])
+    content["summary"] = summary
+    with open_store(db_path) as db:
+        db.execute('UPDATE "references" SET content = ? WHERE problem_key = ?', (json.dumps(content), slug))
+    return "updated"
+
+
+def run_summary_batch(problems, *, db_path=None, report_path=SUMMARY_REPORT_PATH, limit=None, slug=None,
+                      models=None, write=backfill_one) -> SummaryReport:
+    """Backfill the 150 summaries, one short writer call each; an invalid summary is retried once, then reported."""
+    problems = list(problems)
+    if limit is not None and limit < 1:
+        raise ValueError("--limit must be positive")
+    if slug is not None and slug not in {problem["slug"] for problem in problems}:
+        raise ValueError(f"Unknown NeetCode 150 slug: {slug}")
+    report = SummaryReport()
+    attempted = 0
+    consecutive_failures = 0
+    total = len(problems)
+    index = 0
+    try:
+        for index, problem in enumerate(problems, 1):
+            key = problem["slug"]
+            if slug is not None and key != slug:
+                status = "skipped (not selected)"
+            elif limit is not None and attempted >= limit:
+                status = "skipped (limit)"
+            else:
+                attempted += 1
+                try:
+                    if models is None:
+                        models = ModelClient(db_path=db_path)
+                    status = write(key, problem["title"], models, db_path=db_path)
+                except ModelUnavailable as error:
+                    report.failed += 1
+                    report.failure_reasons[key] = f"{error.model}: summary writing paused"
+                    report.stopped = f"{error.model} ({error}); batch paused at {key}"
+                    status = "failed (model unavailable)"
+                except (TimeoutError, ConnectionError, APITimeoutError, APIConnectionError):
+                    report.failed += 1
+                    report.failure_reasons[key] = "provider timeout or connection error; it is retried on the next run"
+                    status = "failed (provider timeout or connection error)"
+                except ValueError as error:
+                    report.failed += 1
+                    consecutive_failures += 1
+                    report.failure_reasons[key] = str(error)[:300]
+                    status = "failed (invalid summary)"
+                    if consecutive_failures >= 5:
+                        report.stopped = "Five consecutive invalid writer replies; batch paused"
+                except Exception as error:
+                    detail = f": {error}" if type(error) is RuntimeError else ""
+                    report.failed += 1
+                    report.failure_reasons[key] = f"Unexpected {type(error).__name__}{detail}; batch paused"
+                    report.stopped = f"Unexpected {type(error).__name__}{detail} at {key}; batch paused"
+                    status = "failed (unexpected error)"
+                else:
+                    consecutive_failures = 0
+                    if status == "updated":
+                        report.updated += 1
+                    elif not status.startswith("skipped"):
+                        raise ValueError(f"Unexpected summary status: {status}")
+            if status.startswith("skipped"):
+                report.skipped += 1
+            print(f"{index} of {total} {key}: {status}", flush=True)
+            if report.stopped:
+                report.skipped += total - index
+                break
+    except KeyboardInterrupt:
+        report.stopped = "Interrupted by Ctrl-C; completed summaries remain stored"
+        if index:
+            print(f"{index} of {total} {key}: interrupted", flush=True)
+        report.skipped += total - index + (1 if index else 0)
+    finally:
+        rendered = _render_summary(report, total)
+        report_path = Path(report_path)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(rendered)
+        print(rendered, end="", flush=True)
+    return report
 
 
 def _render(report, total):
@@ -153,12 +294,16 @@ def main(argv=None):
     parser.add_argument("--limit", type=int, metavar="N", help="Attempt the first N unfinished problems")
     parser.add_argument("--slug", help="Attempt one NeetCode 150 problem")
     parser.add_argument("--retry-needs-review", action="store_true")
+    parser.add_argument("--summaries", action="store_true", help="Backfill missing reference summaries only")
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
     try:
-        report = run_batch(load_catalog().neetcode150(), limit=args.limit, slug=args.slug,
-                           retry_needs_review=args.retry_needs_review)
+        if args.summaries:
+            report = run_summary_batch(load_catalog().neetcode150(), limit=args.limit, slug=args.slug)
+        else:
+            report = run_batch(load_catalog().neetcode150(), limit=args.limit, slug=args.slug,
+                               retry_needs_review=args.retry_needs_review)
     except ValueError as error:
         parser.error(str(error))
     return 1 if report.stopped or report.failed else 0

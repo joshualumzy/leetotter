@@ -100,9 +100,11 @@ def test_a_finished_turn_is_logged_with_its_labels_and_sent_to_the_panel(tmp_pat
     logged, = of_type(path, "help_turn")
     assert logged[1] == {"turn_id": turn.turn_id, "slug": SLUG_A, "request": "help", "press_index": 1,
                          "gap": "other", "gap_note": "confuses index and value", "help_kind": "question",
-                         "reply_text": "What could you remember as you go?", "follow_up_question": None, "model": "x-test-1"}
+                         "reply_text": "What could you remember as you go?", "follow_up_question": None,
+                         "linked": [], "model": "x-test-1"}
     assert out == [{"type": "tutor_done", "ts": out[0]["ts"], "turn_id": turn.turn_id, "reply_text": "What could you remember as you go?",
-                    "gap": "other", "gap_note": "confuses index and value", "help_kind": "question", "follow_up_question": None}]
+                    "gap": "other", "gap_note": "confuses index and value", "help_kind": "question", "follow_up_question": None,
+                    "linked": []}]
 
 
 def test_each_further_press_is_the_next_one_and_asks_for_more_concrete_help(tmp_path):

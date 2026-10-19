@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from companion.catalog import load_catalog
 from companion.grading import write_missed
+from companion.past_links import build_past_links, asks_about_similar
 from companion.reference import load_reference
 from companion.store import open_store
 from companion.tutor import Turn, TutorRequest, answered_presses, build_messages, reply_schema
@@ -19,7 +20,7 @@ READER_TYPES = frozenset({"problem_opened", "problem_statement", "code_changed",
 # Tutor turn events. A turn's id is the id of its request event.
 #   chat_message {slug, text}           help_request {slug, press_index}       debrief_request {slug}
 #   help_turn {turn_id, slug, request: "help" | "chat" | "debrief", press_index (None for chat and debrief),
-#              gap, gap_note, help_kind, reply_text, follow_up_question, model}
+#              gap, gap_note, help_kind, reply_text, follow_up_question, linked, model}
 #   help_failed {turn_id, slug, reason, message}   reason: model_unavailable, rate_limited, timeout,
 #              invalid_output, error, context (the prompt couldn't be built), restart, shutdown
 TURN_REQUESTS = frozenset({"chat_message", "help_request", "debrief_request"})
@@ -529,9 +530,11 @@ class SessionCoordinator:
                 cap_seconds = self._cap_seconds()
                 seconds_left = max(0, cap_seconds - int(problem_seconds)) if cap_seconds is not None else 0
                 timeline = self._timeline(db) if self.debrief else None
-                messages = build_messages(self.problem, events, reference=load_reference(db, slug), prior_solve=prior_solve,
+                reference = load_reference(db, slug)
+                links = build_past_links(db, slug, reference=reference, current_session_id=self.session_id)
+                messages = build_messages(self.problem, events, reference=reference, prior_solve=prior_solve,
                                           problem_seconds=int(problem_seconds), seconds_left=seconds_left,
-                                          request=request, timeline=timeline)
+                                          request=request, timeline=timeline, past_links=links)
             except Exception as exc:
                 logger.exception("Cannot build the Tutor's context for %s", slug)
                 message = f"Couldn't prepare the Tutor's context: {exc}"
@@ -539,7 +542,9 @@ class SessionCoordinator:
                             {"turn_id": turn_id, "slug": slug, "reason": "context", "message": message})
                 return [self._tutor_error(now, turn_id, message)], None
         self.turn = turn_id
-        turn = Turn(turn_id, self.session_id, slug, request, messages, reply_schema(request))
+        asked = request.kind == "chat" and asks_about_similar(request.text)
+        schema = reply_schema(request, allowed=(link.slug for link in links), asked=asked)
+        turn = Turn(turn_id, self.session_id, slug, request, messages, schema)
         return [{"type": "tutor_start", "ts": now.isoformat(), "turn_id": turn_id, "request": kind,
                  "press_index": request.press_index}], turn
 
@@ -693,7 +698,8 @@ class SessionCoordinator:
                     turns.append({"turn_id": event_id, "kind": "chat", "text": payload["text"]})
                 elif kind == "help_turn":
                     turns.append({"turn_id": payload["turn_id"], "kind": "reply", "text": payload["reply_text"],
-                                  "gap": payload["gap"], "gap_note": payload["gap_note"], "help_kind": payload["help_kind"]})
+                                  "gap": payload["gap"], "gap_note": payload["gap_note"], "help_kind": payload["help_kind"],
+                                  "linked": payload.get("linked", [])})
                 elif kind == "help_failed":
                     turns.append({"turn_id": payload["turn_id"], "kind": "failed", "reason": payload["reason"],
                                   "message": payload["message"]})
@@ -702,7 +708,7 @@ class SessionCoordinator:
     def finish_turn(self, turn: Turn, reply, model: str) -> list[dict]:
         """Log a validated reply and send it; it is stored whatever the session's state is now."""
         now = self.clock()
-        labels = {"gap": reply.gap, "gap_note": reply.gap_note, "help_kind": reply.help_kind}
+        labels = {"gap": reply.gap, "gap_note": reply.gap_note, "help_kind": reply.help_kind, "linked": reply.linked}
         try:
             with open_store(self.db_path) as db:
                 help_event_id = self._event(db, turn.session_id, now.isoformat(), "help_turn", {

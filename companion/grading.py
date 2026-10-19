@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from companion.catalog import load_catalog
+from companion.model import help_floor
 from companion.store import open_store
 
 
@@ -226,7 +227,7 @@ def _grader_grade(client, model, slug, reference, attempt):
                 raise ValueError("Grader corrected a help turn outside this attempt")
             candidates = []
             for item in reply.accepts:
-                kinds = [corrections.get(payload["turn_id"], payload["help_kind"])
+                kinds = [help_floor(corrections.get(payload["turn_id"], payload["help_kind"]), payload.get("linked"))
                          for id_, _, _, kind, payload in attempt["events"] if kind == "help_turn" and id_ < item.submission_event_id]
                 candidates.append((solve_grade(kinds, meets_expected=item.meets_expected), item.meets_expected))
             return max(candidates, key=lambda pair: GRADES.index(pair[0]))

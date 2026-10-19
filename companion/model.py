@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from openai import APIConnectionError, APITimeoutError, OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -133,6 +133,12 @@ class RateLimiter:
 GAPS = ("misread_problem", "missing_tool", "pattern_not_recognised", "weak_intuition", "wrong_intuition",
         "stuck_optimising", "cant_write_code", "bugs_and_edge_cases", "other", "none")
 HELP_KINDS = ("question", "trace", "analogy", "teach_tool", "syntax", "snippet", "partial_logic", "full_solution", "none")
+LOWER_HELP = ("question", "trace", "teach_tool", "syntax", "none")
+
+
+def help_floor(kind, linked):
+    """A reply that cites an earlier problem is help, so it is never below an analogy (SPEC §6)."""
+    return "analogy" if linked and kind in LOWER_HELP else kind
 
 
 # One Tutor turn. The labels come first so the model diagnoses before it writes; `none` marks a reply
@@ -144,6 +150,10 @@ class TutorReply(BaseModel):
     help_kind: Literal[HELP_KINDS]
     reply_text: str = Field(min_length=1)
     follow_up_question: str | None
+    linked: list[str] = Field(default_factory=list)
+    _links_enforced: ClassVar[bool] = False
+    _allowed_links: ClassVar[frozenset[str]] = frozenset()
+    _asked_about_similar: ClassVar[bool] = False
 
     @model_validator(mode="after")
     def _consistent_labels(self):
@@ -153,6 +163,17 @@ class TutorReply(BaseModel):
             raise ValueError("gap_note must describe the gap when gap is other")
         if self.gap != "other" and self.gap_note is not None:
             raise ValueError("gap_note must be null unless gap is other")
+        if self.linked:
+            if self.gap == "none" or self.help_kind == "none":
+                raise ValueError("a reply that links a past problem gives help, so gap and help_kind cannot be none")
+            if len(set(self.linked)) != len(self.linked):
+                raise ValueError("linked names the same past problem twice")
+            self.help_kind = help_floor(self.help_kind, self.linked)
+        if self._links_enforced:
+            if any(slug not in self._allowed_links for slug in self.linked):
+                raise ValueError("linked names a past problem that is not in the list")
+            if len(self.linked) > 1 and not self._asked_about_similar:
+                raise ValueError("link at most one past problem unless the learner asked what is similar")
         return self
 
 

@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -20,7 +21,7 @@ FIELDS_OF = {"complexity": ("time", "space"), "interview_expected": ("interview_
 
 FORMAT = """Write a short reference for a coding-interview problem as JSON with these fields:
 slug, title, difficulty, neetcode_category (NeetCode's category name),
-summary: one plain sentence saying what the problem asks, without an approach or pattern name,
+summary: one plain sentence saying what the problem asks; it must be non-empty and must never name an approach or a pattern,
 patterns: reusable interview ideas the problem uses (sliding window, fast and slow pointers, monotonic stack...),
 analysis_concepts: finer tags for complexity analysis,
 approaches: a list of {id (unique), name, idea (one line), time, space,
@@ -45,6 +46,22 @@ class Approach(BaseModel):
     trick: bool
 
 
+def _plain_name(text):
+    return re.sub(r"[\s_-]+", " ", text.casefold()).strip()
+
+
+def validate_summary(summary: str, patterns, approach_names) -> None:
+    """Reject an empty summary or one that names a pattern or an approach (SPEC §10)."""
+    if not summary or not summary.strip():
+        raise ValueError("summary must not be empty")
+    text = f" {_plain_name(summary)} "
+    names = [*approach_names, *(pattern.replace("-", " ") for pattern in patterns)]
+    for name in names:
+        plain = _plain_name(name)
+        if plain and re.search(rf"(?<!\w){re.escape(plain)}(?!\w)", text):
+            raise ValueError(f"summary must not name an approach or pattern: {name}")
+
+
 class Reference(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     slug: str = Field(min_length=1)
@@ -64,7 +81,14 @@ class Reference(BaseModel):
             raise ValueError("at least one approach must be `usually`")
         if any(a.trick and a.interview_expected == "usually" for a in self.approaches):
             raise ValueError("a trick is never `usually`")
+        if self.summary is not None:
+            validate_summary(self.summary, self.patterns, [a.name for a in self.approaches])
         return self
+
+
+class WrittenReference(Reference):
+    """A reference as the writer returns it: unlike a stored legacy one, it must carry a summary."""
+    summary: str = Field(min_length=1)
 
 
 class Verdict(BaseModel):
@@ -154,18 +178,12 @@ def write_and_check(slug: str, title: str, models: ModelClient, *, db_path: str 
         {"role": "user", "content": f"Problem slug: {slug}\nTitle: {title}"
          + (f"\nDifficulty: {catalog_problem['difficulty']}\nNeetCode category: {catalog_problem['category']}"
             f"\nProblem statement: {statement}" if statement else "")},
-    ], Reference)
+    ], WrittenReference)
     if statement is not None:
         if (reference.slug != slug or reference.title != title or
                 reference.difficulty != catalog_problem["difficulty"] or
                 reference.neetcode_category != catalog_problem["category"]):
             raise ValueError("On-demand reference does not match catalog metadata")
-        summary = reference.summary
-        if not summary or not summary.strip():
-            raise ValueError("On-demand reference requires a summary")
-        forbidden = [a.name for a in reference.approaches] + [pattern.replace("-", " ") for pattern in reference.patterns]
-        if any(name and name.casefold() in summary.casefold() for name in forbidden):
-            raise ValueError("Reference summary names an approach or pattern")
     disagreements = _check(models, reference)
     if disagreements:
         revised = _regenerate(models, reference, disagreements)

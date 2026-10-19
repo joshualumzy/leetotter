@@ -29,13 +29,13 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 # Tutor messages. Client: help_request (a press of "I need help", no payload) and chat_message {text}.
 # Server, each with the turn's id: tutor_start {request, press_index}; tutor_chunk {attempt, text}, reply text
 # as it streams (append chunks of the same attempt; a higher attempt is a retry after an invalid reply and
-# replaces what was shown); tutor_done {reply_text, gap, gap_note, help_kind, follow_up_question}, the
+# replaces what was shown); tutor_done {reply_text, gap, gap_note, help_kind, follow_up_question, linked}, the
 # validated reply, which replaces the streamed text; tutor_error {message}, the turn failed and anything
 # streamed for it is withdrawn. A refused request gets tutor_error with turn_id null, to the sender only.
 # chat_get (no payload) answers the sender only with chat_state {turns, streaming}: the current problem's
 # conversation in this session, from the store, oldest first, empty outside an active or paused session on a problem; each turn is
 #   {turn_id, kind: "press", press_index} | {turn_id, kind: "chat", text}
-#   | {turn_id, kind: "reply", text, gap, gap_note, help_kind} | {turn_id, kind: "failed", reason, message}
+#   | {turn_id, kind: "reply", text, gap, gap_note, help_kind, linked} | {turn_id, kind: "failed", reason, message}
 # and streaming is the id of the turn whose reply is still coming, or null.
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
 PLANNER_TYPES = frozenset({"planner_go", "planner_swap", "planner_clear", "planner_chat"})

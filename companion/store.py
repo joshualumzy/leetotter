@@ -61,6 +61,9 @@ MIGRATIONS = (
         "ALTER TABLE sessions ADD COLUMN recap_seen INTEGER NOT NULL DEFAULT 0",
         "UPDATE sessions SET recap_seen = 1 WHERE recap_bullets IS NOT NULL",
     ),
+    (
+        "ALTER TABLE sessions ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0",
+    ),
 )
 
 

@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +16,6 @@ PROBLEMS = [
 
 
 def seed(path, slug, status, uncertain=()):
-    import json
     with open_store(path) as db:
         db.execute('INSERT INTO "references" (problem_key, content, status) VALUES (?, ?, ?)',
                    (slug, json.dumps({"uncertain": list(uncertain)}), status))
@@ -200,7 +200,7 @@ def test_ctrl_c_prints_and_writes_completed_count(tmp_path, capsys):
 
 
 def test_real_writer_with_fake_model_client_persists_and_resumes(tmp_path):
-    from companion.reference import CheckReply, Reference
+    from companion.reference import CheckReply, Reference, WrittenReference
 
     class FakeModels:
         calls = []
@@ -208,10 +208,11 @@ def test_real_writer_with_fake_model_client_persists_and_resumes(tmp_path):
         def call_role(self, role, messages, schema_class):
             self.calls.append((role, messages[-1]["content"]))
             if role == "reference_writer":
-                assert schema_class is Reference
-                return Reference.model_validate({
+                assert schema_class is WrittenReference
+                return WrittenReference.model_validate({
                     "slug": "one", "title": "One", "difficulty": "Easy",
                     "neetcode_category": "Arrays & Hashing", "patterns": ["hashing"],
+                    "summary": "Decide whether the input has a repeated value.",
                     "analysis_concepts": ["lookup"], "approaches": [{
                         "id": "hash", "name": "Hash map", "idea": "Look up complements",
                         "time": "O(n)", "space": "O(n)", "interview_expected": "usually", "trick": False,
@@ -232,3 +233,64 @@ def test_real_writer_with_fake_model_client_persists_and_resumes(tmp_path):
     assert models.calls[0][1] == "Problem slug: one\nTitle: One"
     with open_store(db) as connection:
         assert connection.execute('SELECT status FROM "references" WHERE problem_key = ?', ("one",)).fetchone() == ("checked",)
+
+
+# --- summary backfill -------------------------------------------------------------
+
+def seed_reference(path, slug, *, summary=None, patterns=("hash-map",)):
+    content = {"slug": slug, "title": slug.title(), "difficulty": "Easy", "neetcode_category": "Arrays & Hashing",
+               "patterns": list(patterns), "analysis_concepts": [],
+               "approaches": [{"id": "main", "name": "Hash map", "idea": "One line", "time": "O(n)",
+                               "space": "O(n)", "interview_expected": "usually", "trick": False}]}
+    if summary is not None:
+        content["summary"] = summary
+    with open_store(path) as db:
+        db.execute('INSERT INTO "references" (problem_key, content, status) VALUES (?, ?, ?)',
+                   (slug, json.dumps(content), "checked"))
+
+
+class SummaryModels:
+    def __init__(self, *summaries):
+        self.summaries = list(summaries)
+        self.calls = []
+
+    def call_role(self, role, messages, schema_class, **kwargs):
+        self.calls.append((role, messages[-1]["content"]))
+        return schema_class.model_validate({"summary": self.summaries.pop(0)})
+
+
+def test_summary_backfill_updates_only_references_without_one(tmp_path):
+    from companion.reference_batch import run_summary_batch
+    db = tmp_path / "db"
+    seed_reference(db, "one")
+    seed_reference(db, "two", summary="The existing plain sentence.")
+    models = SummaryModels("Find two values that add to the target.")
+    report = run_summary_batch(PROBLEMS[:2], db_path=db, report_path=tmp_path / "report.md", models=models)
+    assert report.updated == 1 and report.skipped == 1
+    assert len(models.calls) == 1 and models.calls[0][0] == "reference_writer"
+    assert "one" in models.calls[0][1] and "hash-map" in models.calls[0][1]
+    with open_store(db) as connection:
+        contents = {slug: json.loads(content)
+                    for slug, content in connection.execute('SELECT problem_key, content FROM "references"')}
+    assert contents["one"]["summary"] == "Find two values that add to the target."
+    assert contents["one"]["patterns"] == ["hash-map"] and contents["one"]["approaches"][0]["id"] == "main"
+    assert contents["two"]["summary"] == "The existing plain sentence."
+
+
+def test_summary_backfill_rejects_a_summary_that_names_a_pattern_twice_and_stores_nothing(tmp_path):
+    from companion.reference_batch import run_summary_batch
+    db = tmp_path / "db"
+    seed_reference(db, "one")
+    models = SummaryModels("Use a hash map.", "Use a hash map.")
+    report = run_summary_batch(PROBLEMS[:1], db_path=db, report_path=tmp_path / "report.md", models=models)
+    assert report.failed == 1 and len(models.calls) == 2
+    with open_store(db) as connection:
+        content = json.loads(connection.execute('SELECT content FROM "references"').fetchone()[0])
+    assert "summary" not in content
+
+
+def test_summary_backfill_skips_a_slug_without_a_reference(tmp_path):
+    from companion.reference_batch import run_summary_batch
+    report = run_summary_batch(PROBLEMS[:1], db_path=tmp_path / "db", report_path=tmp_path / "report.md",
+                               models=SummaryModels())
+    assert report.updated == 0 and report.skipped == 1

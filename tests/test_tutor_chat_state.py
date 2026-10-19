@@ -35,7 +35,7 @@ def test_the_conversation_lists_presses_messages_replies_and_failures_in_order(t
     assert turns(coord) == ([
         {"turn_id": press.turn_id, "kind": "press", "press_index": 1},
         {"turn_id": press.turn_id, "kind": "reply", "text": "What could you remember as you go?",
-         "gap": "stuck_optimising", "gap_note": None, "help_kind": "question"},
+         "gap": "stuck_optimising", "gap_note": None, "help_kind": "question", "linked": []},
         {"turn_id": chat.turn_id, "kind": "chat", "text": "why?"},
         {"turn_id": chat.turn_id, "kind": "failed", "reason": "timeout", "message": "The Tutor didn't answer in time. Ask again."},
         {"turn_id": streaming.turn_id, "kind": "chat", "text": "again?"},

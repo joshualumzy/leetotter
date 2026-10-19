@@ -15,6 +15,7 @@ def approach(id, *, expected="usually", trick=False, time="O(n)", space="O(n)"):
 
 def reference(*approaches):
     return {"slug": "two-sum", "title": "Two Sum", "difficulty": "easy", "neetcode_category": "Arrays & Hashing",
+            "summary": "Find two values in the list that add up to the target.",
             "patterns": ["hash-map"], "analysis_concepts": ["hash-lookup"],
             "approaches": list(approaches) or [approach("hash"), approach("brute", expected="rarely", time="O(n^2)", space="O(1)")]}
 

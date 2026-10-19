@@ -8,6 +8,7 @@ from openai import APITimeoutError
 from pydantic import ValidationError
 
 from companion.model import GAPS, HELP_KINDS, ModelUnavailable, ProviderRateLimitError, TutorReply
+from companion.past_links import PastLink, asks_about_similar
 from companion.reference import StoredReference
 
 _ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
@@ -164,7 +165,7 @@ Every time, in this order:
 - none: they aren't stuck and you give no help (a remark, thanks, a plan they're only sharing).
 Close calls: if they already use the tool correctly elsewhere, it's pattern_not_recognised, not missing_tool. If the code doesn't yet express a right idea, it's cant_write_code; if it does and fails on some inputs, bugs_and_edge_cases. No direction at all is weak_intuition; a direction that can't work is wrong_intuition.
 
-2. Choose the next move. The help ladder, least to most concrete: a question, a trace or illustrative example, an analogy, a code snippet, partial logic, the full solution. Questions are the default for a chat message and for the first hint: build their intuition with a question, and go direct only where questions can't help (a tool they've never seen, Python mechanics). A further press of "I need help" is the learner asking to climb: go one rung more concrete at once.
+2. Choose the next move. The help ladder, least to most concrete: a question, a trace or illustrative example, an analogy, a code snippet, partial logic, the full solution. Questions are the default for a chat message and for the first hint: start with a short reminder of what they already know and a question, then go further only when asked (a further press or a direct question); go direct only where questions can't help (a tool they've never seen, Python mechanics). A further press of "I need help" is the learner asking to climb: go one rung more concrete at once.
 
 3. Follow their approach, even when it isn't one the reference lists. Brute force is never a wrong path. Going straight for the optimal solution is fine; only when that has left them with nothing working, suggest getting a brute force working first.
 
@@ -187,12 +188,22 @@ Rules:
 - If the problem statement isn't available, don't invent details: work from the title, the test cases in the run results and the reference, and ask them when a detail matters and you're unsure.
 - Keep replies short for a narrow panel: usually one to four sentences, and any code only as long as it must be. You may use `inline code` and fenced code blocks (each line of code on its own line, indented as in Python) for code, short paragraphs separated by blank lines, and simple `- ` lists; no headings, tables, images or links.
 
+Past links (the prompt lists them only when there are some):
+- Use only the list. Never invent a past session or a fact about one.
+- Unprompted, link at most one, and only when it strongly fits, as "Title (short description)". Most replies have no link.
+- When the learner asks what is similar, give every close match in the list, each with its description and what they share.
+- A link is help: a reply with a link is never gap none, and its help kind is at least analogy (partial_logic when it spells out the earlier idea so it applies here).
+- The current problem's pattern is not named before the learner names it; a pattern from an earlier session may be named.
+- After the solve, you may name the technique and draw the comparison freely.
+- With no past problems listed, linked is [].
+
 Your reply is JSON with these fields:
 - gap: one of the gaps above.
 - gap_note: a few words naming the gap when gap is other; otherwise null.
 - help_kind: the most concrete help in this reply: question (a guiding question), trace (walking through an example or their code), analogy, teach_tool (explaining a data structure or algorithm they didn't know), syntax (Python mechanics such as how heapq is called), snippet (code that carries part of the idea), partial_logic (spelling out part of the algorithm's steps), full_solution (the whole approach or code), none (no help; only with gap none). Code that carries any of the algorithm's idea is snippet or partial_logic, never syntax. Label honestly: the label records how much help the attempt needed.
 - reply_text: what the learner reads. It is a JSON string, so write every line break as \\n: a blank line between paragraphs is \\n\\n, and each line of a code block ends with \\n and keeps its indentation spaces. Never put code on one line.
 - follow_up_question: null.
+- linked: the slugs from the past-links list you cite in this reply, or [] (at most one unless the learner asked what is similar).
 
 Examples of good replies (invented problems; never reuse their wording):
 - First press, 9 minutes into "Quietest Hour" (find the k-minute window with the least total noise), the learner re-adds every window from scratch and times out: gap stuck_optimising, help_kind question, reply_text "Each time you move to the next window, your inner loop adds up all k minutes again. Put two neighbouring windows side by side: which minutes actually differ?"
@@ -238,11 +249,19 @@ HelpReply = _schema("HelpReply", _PRESSED, tuple(k for k in HELP_KINDS if k != "
 FirstHelpReply = _schema("FirstHelpReply", _PRESSED, tuple(k for k in HELP_KINDS if k not in ("none", "full_solution")))
 
 
-def reply_schema(request: TutorRequest) -> type[TutorReply]:
-    """A press always gets help, and a first press never the full solution; the schema enforces both."""
-    if request.kind in ("chat", "debrief"):
-        return TutorReply
-    return FirstHelpReply if request.press_index == 1 else HelpReply
+def reply_schema(request: TutorRequest, *, allowed=(), asked: bool = False) -> type[TutorReply]:
+    """A press always gets help, and a first press never the full solution; the schema enforces both.
+
+    A reply may cite only slugs from `allowed`, and only one unless the learner asked what is similar. The
+    allowed slugs are empty when there is no past-links section, so any link is then invalid.
+    """
+    base = TutorReply if request.kind in ("chat", "debrief") else (
+        FirstHelpReply if request.press_index == 1 else HelpReply)
+    return type(base.__name__, (base,), {
+        "_links_enforced": True,
+        "_allowed_links": frozenset(allowed),
+        "_asked_about_similar": asked,
+    })
 
 
 def answered_presses(events) -> int:
@@ -259,6 +278,29 @@ def _clip(text, limit):
 
 def _minutes(seconds):
     return f"{max(0, round(seconds / 60))} min"
+
+
+def _past_links(links: list[PastLink]):
+    if not links:
+        return ""
+    lines = ["## Past problems you may link to (built by code from this learner's history)",
+             "Only these are real. Use only what each line says; never add a past session."]
+    for link in links:
+        description = link.summary if link.summary is not None else "no summary yet; use the title only"
+        shared = []
+        if link.shared_patterns:
+            shared.append("the pattern " + ", ".join(link.shared_patterns))
+        if link.shared_category:
+            shared.append("this problem's category")
+        facts = [f"- `{link.slug}`: {link.title} ({description}). What happened: {link.outcome}."]
+        if link.approach:
+            facts.append(f"Approach used: {link.approach}.")
+        if link.idea:
+            facts.append(f"Idea discussed: {link.idea}.")
+        if shared:
+            facts.append("Shares: " + " and ".join(shared) + ".")
+        lines.append(" ".join(facts))
+    return "\n".join(lines)
 
 
 def _reference(stored: StoredReference | None):
@@ -333,7 +375,7 @@ def _conversation(events):
     return "\n".join(["## Conversation on this problem (oldest first)", *head, *kept])
 
 
-def _request(request: TutorRequest, events):
+def _request(request: TutorRequest, events, *, has_links: bool = False):
     helped = [p for kind, p in events if kind == "help_turn" and p["help_kind"] != "none"]
     if any(p["help_kind"] == "full_solution" for p in helped):
         concrete = "A full solution has already been shown: add only the explanation they still need."
@@ -342,15 +384,23 @@ def _request(request: TutorRequest, events):
                     f"the last was {helped[-1]['help_kind']}.")
     else:
         concrete = "You haven't helped on this problem yet."
+    link_rule = ""
+    if has_links:
+        if request.kind == "chat" and asks_about_similar(request.text):
+            link_rule = (" They are asking what is similar: give every close match from the past-problems list, each with its "
+                         "description and what they share. ")
+        else:
+            link_rule = (" If a past problem strongly fits, link at most one, as \"Title (short description)\"; most replies have "
+                         "no link. ")
     if request.kind == "chat":
-        return (f'## Now\nThe learner wrote:\n"""\n{request.text}\n"""\n{concrete} Answer it the same way as a help request: '
+        return (f'## Now\nThe learner wrote:\n"""\n{request.text}\n"""\n{concrete}{link_rule} Answer it the same way as a help request: '
                 "diagnose, then help only as much as they need; if they're not asking for help, give none. If they ask for the "
                 "solution, give it only if lighter help has already been tried or they've clearly decided to stop; otherwise give the next rung.")
     if request.press_index == 1:
-        return ('## Now\nThe learner pressed "I need help" for the first time on this problem. ' + concrete +
+        return ('## Now\nThe learner pressed "I need help" for the first time on this problem. ' + concrete + link_rule +
                 " Give the smallest hint beyond what you've already given: just enough to get them unstuck, never the solution. "
                 "Label it with a real gap and a real help kind (never gap none, never help_kind none, never full_solution).")
-    return (f'## Now\nThe learner pressed "I need help" again: press {request.press_index} on this problem. {concrete} '
+    return (f'## Now\nThe learner pressed "I need help" again: press {request.press_index} on this problem. {concrete}{link_rule} '
             "Go exactly one rung more concrete than your last help, at once; give the full solution only when the ladder has "
             "genuinely reached it. Don't ask a diagnostic question before helping; you may end with one only if it moves them forward. "
             "A press always gets real help, so never label it gap none or help_kind none.")
@@ -377,7 +427,7 @@ def _debrief_request(request: TutorRequest, timeline: list[dict]):
 
 def build_messages(problem: dict, events: list, *, reference: StoredReference | None, prior_solve: bool,
                    problem_seconds: int, seconds_left: int, request: TutorRequest,
-                   timeline: list[dict] | None = None) -> list[dict]:
+                   timeline: list[dict] | None = None, past_links: list[PastLink] | None = None) -> list[dict]:
     """The Tutor's prompt, from the current problem and this session's events about it, oldest first.
 
     `events` are (type, payload) pairs; the code events are those since the problem was last opened. Only this
@@ -410,7 +460,8 @@ def build_messages(problem: dict, events: list, *, reference: StoredReference | 
         results = [(k, p) for k, p in events if k in ("run_result", "submit_result") and p["slug"] == problem["slug"]][-RECENT_RESULTS:]
         results_section = ("## Recent runs and submits (oldest first)\n" + "\n".join(_result(k, p) for k, p in results)
                            if results else "## Runs and submits\nThe learner hasn't run or submitted this problem yet.")
-        body = "\n\n".join([code_section, results_section, _conversation(events), _request(request, events)])
+        body = "\n\n".join([code_section, results_section, _conversation(events),
+                             _request(request, events, has_links=bool(past_links))])
     if seconds_left > 0:
         time_left = f"{_minutes(seconds_left)} left on the problem's cap"
     elif seconds_left == 0:
@@ -420,18 +471,22 @@ def build_messages(problem: dict, events: list, *, reference: StoredReference | 
     learner = [f"## The learner\nActive time on this problem: {_minutes(problem_seconds)}; {time_left}."]
     if prior_solve:
         learner.append("They solved this problem before on NeetCode, before using Leetotter; how much help they had then is unknown.")
-    user = "\n\n".join([
-        f"# Problem: {problem['title']} ({problem['slug']})", statement, _reference(reference), "\n".join(learner), body])
+    sections = [f"# Problem: {problem['title']} ({problem['slug']})", statement, _reference(reference)]
+    links_section = _past_links(past_links or [])
+    if links_section:
+        sections.append(links_section)
+    sections += ["\n".join(learner), body]
+    user = "\n\n".join(sections)
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
 def build_debrief_messages(problem: dict, timeline: list[dict], *, reference: StoredReference | None,
                            prior_solve: bool, problem_seconds: int, seconds_left: int,
-                           request: TutorRequest) -> list[dict]:
+                           request: TutorRequest, past_links: list[PastLink] | None = None) -> list[dict]:
     """The debrief prompt: the same problem context, with the code-built timeline as the Tutor's only input."""
     return build_messages(problem, [], reference=reference, prior_solve=prior_solve,
                           problem_seconds=problem_seconds, seconds_left=seconds_left,
-                          request=request, timeline=timeline)
+                          request=request, timeline=timeline, past_links=past_links)
 
 
 def ask_tutor(models, messages: list[dict], schema: type[TutorReply], on_text) -> TutorReply:
