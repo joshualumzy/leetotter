@@ -159,3 +159,18 @@ def test_resume_asks_again_only_when_no_card_and_no_request_is_out(tmp_path):
     assert planner.resume(coordinator.session_id) is None            # one is out
     planner.answer(request, ask_planner(RecordedPlanner(reply(CLIMBING)), request))
     assert planner.resume(coordinator.session_id) is None            # a card is shown
+
+
+def test_picker_reason_and_offered_slugs_are_kept_on_the_model_call(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from companion.planner import Pick, _record_pick
+    path = tmp_path / "planner.sqlite3"
+    with open_store(path) as db:
+        db.execute("INSERT INTO model_calls (role, model, latency_ms, validation_result, created_at) "
+                   "VALUES ('planner', 'm', 5, 'valid', 'now')")
+    messages = [{"role": "system", "content": ""}, {"role": "user", "content": json.dumps({"allowed": [{"slug": CLIMBING}, {"slug": COIN_CHANGE}]})}]
+    _record_pick(SimpleNamespace(db_path=path), messages, Pick(slug=CLIMBING, reason="first unsolved"))
+    with open_store(path) as db:
+        (kept,) = db.execute("SELECT prompt_text FROM model_calls WHERE role = 'planner'").fetchone()
+    assert json.loads(kept) == {"picked": CLIMBING, "reason": "first unsolved", "offered": [CLIMBING, COIN_CHANGE]}

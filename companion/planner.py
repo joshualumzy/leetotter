@@ -317,6 +317,20 @@ def _pick_messages(request, pool, steer):
     return [{"role": "system", "content": PICKER_PROMPT}, {"role": "user", "content": json.dumps(content)}]
 
 
+def _record_pick(client, messages, pick):
+    """Keep the Picker's reason and the slugs it was offered on its model_calls row, so an odd pick can be explained."""
+    db_path = getattr(client, "db_path", None)
+    if db_path is None:
+        return
+    offered = [c["slug"] for c in json.loads(messages[1]["content"])["allowed"]]
+    try:
+        with open_store(db_path) as db:
+            db.execute("UPDATE model_calls SET prompt_text = ? WHERE id = (SELECT MAX(id) FROM model_calls WHERE role = 'planner')",
+                       (json.dumps({"picked": pick.slug, "reason": pick.reason, "offered": offered}),))
+    except Exception:
+        logger.exception("Could not record the Picker's reason")
+
+
 def _pick(client, request, pool, steer, valid):
     """The Picker's slug, offered `pool` and accepted from `valid`; None when it can't produce one."""
     messages = _pick_messages(request, pool, steer)
@@ -324,6 +338,7 @@ def _pick(client, request, pool, steer, valid):
     for _ in range(2):
         pick = client.call_role("planner", messages, Pick)
         if pick.slug in slugs:
+            _record_pick(client, messages, pick)
             return pick.slug
         messages = [*messages, {"role": "assistant", "content": pick.model_dump_json()},
                     {"role": "user", "content": f"{pick.slug} is not in allowed. Choose one slug from allowed."}]
