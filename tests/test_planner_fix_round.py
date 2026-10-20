@@ -6,10 +6,9 @@ from companion.planner import Planner, active_steer, allowed_next, code_ranked, 
 from companion.store import open_store
 from tests.test_planner_rules import (NOW, CLIMBING, COIN_CHANGE, HOUSE_ROBBER, LONGEST_SUB, PERMUTATION,
                                       attempt, imported, new_session, reference, review)
-from tests.test_planner_flow import RecordedPlanner, reply
+from tests.test_planner_flow import answered, reply
 from tests.test_planner_flow import context
 from tests.test_planner_steer import Shown, focus, steering
-from companion.planner import ask_planner
 from tests.test_session import make, msg, start_msg
 
 
@@ -56,14 +55,13 @@ def test_start_card_steer_belongs_to_new_session_after_swap_and_chat(tmp_path):
     coordinator, clock, path = make(tmp_path)
     planner = Planner(path, clock)
     first = planner.panel_opened("idle")
-    planner.answer(first, ask_planner(RecordedPlanner(reply(CLIMBING)), first))
+    answered(planner, first, reply(CLIMBING))
     swapped = planner.swap(coordinator.session_id)
     assert swapped.session_id is None
-    planner.answer(swapped, ask_planner(RecordedPlanner(reply(HOUSE_ROBBER)), swapped))
+    answered(planner, swapped, reply(HOUSE_ROBBER))
     chatted = planner.chat(coordinator.session_id, "more DP")
     steer = steering("more DP", focus("1-D Dynamic Programming"))
-    planner.answer(chatted, ask_planner(RecordedPlanner(reply(COIN_CHANGE, "steer", steer=steer,
-                                                          understood="More DP this session.")), chatted))
+    answered(planner, chatted, reply(COIN_CHANGE, "steer", steer=steer, understood="More DP this session."))
     coordinator.handle(start_msg())
     planner.session_started(coordinator.session_id)
     with open_store(path) as db:
@@ -77,15 +75,14 @@ def test_start_card_after_ended_session_uses_new_session_scope(tmp_path):
     coordinator.handle(msg("session_end"))
     planner = Planner(path, clock)
     first = planner.panel_opened("ended")
-    planner.answer(first, ask_planner(RecordedPlanner(reply(CLIMBING)), first))
+    answered(planner, first, reply(CLIMBING))
     swapped = planner.swap(old_session_id)
     assert swapped.session_id is None
-    planner.answer(swapped, ask_planner(RecordedPlanner(reply(HOUSE_ROBBER)), swapped))
+    answered(planner, swapped, reply(HOUSE_ROBBER))
     chatted = planner.chat(old_session_id, "more DP")
     assert chatted.session_id is None
     steer = steering("more DP", focus("1-D Dynamic Programming"))
-    planner.answer(chatted, ask_planner(RecordedPlanner(reply(COIN_CHANGE, "steer", steer=steer,
-                                                          understood="More DP this session.")), chatted))
+    answered(planner, chatted, reply(COIN_CHANGE, "steer", steer=steer, understood="More DP this session."))
     coordinator.handle(start_msg())
     planner.session_started(coordinator.session_id)
     with open_store(path) as db:
@@ -122,8 +119,8 @@ def test_start_pressed_while_the_panel_start_request_is_out_replaces_it_with_one
     coordinator.handle(start_msg())
     new = planner.session_started(coordinator.session_id)
     assert new is not None and new.session_id == coordinator.session_id
-    assert planner.answer(old, ask_planner(RecordedPlanner(reply(CLIMBING)), old)) == []
-    shown = planner.answer(new, ask_planner(RecordedPlanner(reply(HOUSE_ROBBER)), new))
+    assert answered(planner, old, reply(CLIMBING)) == []
+    shown = answered(planner, new, reply(HOUSE_ROBBER))
     assert [card["type"] for card in shown] == ["suggestion"] and shown[0]["slug"] == HOUSE_ROBBER
 
 
@@ -146,7 +143,7 @@ def test_start_with_nothing_out_and_no_card_asks_the_planner(tmp_path):
     coordinator.handle(start_msg())
     request = planner.session_started(coordinator.session_id)
     assert request is not None and request.trigger == "start" and request.session_id == coordinator.session_id
-    shown = planner.answer(request, ask_planner(RecordedPlanner(reply(CLIMBING)), request))
+    shown = answered(planner, request, reply(CLIMBING))
     assert shown[0]["slug"] == CLIMBING
 
 
@@ -157,7 +154,7 @@ def test_resume_asks_again_only_when_no_card_and_no_request_is_out(tmp_path):
     request = planner.resume(coordinator.session_id)
     assert request is not None and request.trigger == "start" and request.session_id == coordinator.session_id
     assert planner.resume(coordinator.session_id) is None            # one is out
-    planner.answer(request, ask_planner(RecordedPlanner(reply(CLIMBING)), request))
+    answered(planner, request, reply(CLIMBING))
     assert planner.resume(coordinator.session_id) is None            # a card is shown
 
 

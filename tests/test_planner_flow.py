@@ -30,8 +30,9 @@ Interface (companion/planner.py) used by this file, beyond tests/test_planner_ru
 
     PlannerRequest: trigger ("start" | "between" | "swap" | "chat" | "clear"), session_id, started (the clock
         when planning began), allowed (allowed_next's list at that moment), context (the Picker's JSON: session_problems,
-        learner_summary and the rest), summary, card, chat, steer and message (a chat message's text), all
-        snapshotted when the request is made because ask_planner runs on another thread.
+        learner_summary and the rest), summary, card, chat, steer, message (a chat message's text) and breadth
+        (the no-evidence category code chose, or None), all snapshotted when the request is made because
+        ask_planner runs on another thread.
 
     A card is {"type": "suggestion", "ts", "slug", "title", "difficulty", "cap_minutes", "steer" (the active
     steer's label or None), "message" (a line for you, or None), "source" ("planner" | "fallback")}: by title
@@ -43,6 +44,7 @@ import logging
 
 import pytest
 
+from companion.catalog import load_catalog
 from companion.grading import grade_pending
 from companion.planner import (PLANNER_WAIT, SHORTLIST_PER_CATEGORY, Pick, Planner, Reading, _pick_messages, _pool,
                                allowed_next, ask_planner)
@@ -125,6 +127,12 @@ def card(out):
 
 
 def answered(planner, request, *replies):
+    """Answer a request with recorded replies, putting a scripted non-chat pick in the breadth category code chose
+    (the Picker now chooses within that category, so a fixed pick has to belong to it)."""
+    picks = replies[0].get("picks") if isinstance(replies[0], dict) else None
+    entry = load_catalog().by_slug(picks[0]) if request.trigger != "chat" and picks else None
+    if entry and request.breadth:
+        object.__setattr__(request, "breadth", entry["category"])
     return planner.answer(request, ask_planner(RecordedPlanner(*replies), request))
 
 

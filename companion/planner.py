@@ -3,6 +3,7 @@
 import difflib
 import json
 import logging
+import random
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 PLANNER_WAIT = 60
 SHORTLIST_PER_CATEGORY = 3
 
-PICKER_PROMPT = """You are Leetotter's Planner. Pick exactly one problem from `allowed`, by slug. Keep the reason short; it is internal and never shown. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, the card, the chat and message, and the active steer. A steer's note holds the learner's own words: honour it, and read a relative word such as harder or easier against the card or the problem they just had. When the learner's words ask for a kind of problem (for example depth-first search), prefer an allowed problem whose patterns fit. Sample categories while evidence is thin, starting with imported history; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Return JSON only: {"slug", "reason"}."""
+PICKER_PROMPT = """You are Leetotter's Planner. Pick exactly one problem from `allowed`, by slug. Keep the reason short; it is internal and never shown. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, the card, the chat and message, and the active steer. A steer's note holds the learner's own words: honour it, and read a relative word such as harder or easier against the card or the problem they just had. When the learner's words ask for a kind of problem (for example depth-first search), prefer an allowed problem whose patterns fit. Imported solves are seen but untested, never evidence of strength; when `allowed` holds one category, choose within it; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Return JSON only: {"slug", "reason"}."""
 
 READER_PROMPT = """You read one chat message from a learner practising coding problems with Leetotter, a friendly study-buddy otter. A problem card may be showing. Return JSON only. You never pick a problem and never say which one comes next.
 reading: ask = they want a kind of problem or the next one, once (a topic, a difficulty, a named problem, or just "another"); steer = they want future suggestions shaped, as a standing preference (more or less of something, a difficulty, a style); clear = back to normal, drop the steer; cannot = you cannot act on it by picking a problem, for a true reason: a word you cannot match to a category, difficulty or problem (never guess it, even when you have a good guess: offer the guess in the question), or a request that needs something you cannot see or do. You see only: this message, the chat since the card appeared, the card's title and difficulty, the active steer and the category names. You do not see past sessions or days, scores, history, or the problem list. unrelated = nothing to do with practice (greeting, small talk, a question about you).
@@ -106,6 +107,7 @@ class PlannerRequest:
     chat: tuple[str, ...]
     steer: dict | None
     message: str | None = None
+    breadth: str | None = None
 
 
 def _reviews(db):
@@ -296,6 +298,14 @@ def _pool(allowed, focuses):
     return (matched, True) if matched or not focuses else (allowed, False)
 
 
+def _breadth_pool(allowed, category, imported):
+    """The chosen no-evidence category's untried problems (imported ones first when it has any), plus every due retry."""
+    fresh = [c for c in allowed if not c["retry"] and c["category"] == category]
+    if any(c["slug"] in imported for c in fresh):
+        fresh = [c for c in fresh if c["slug"] in imported]
+    return fresh + [c for c in allowed if c["retry"]]
+
+
 def _spoken(title):
     return "".join(ch for ch in title.lower() if ch.isalnum())
 
@@ -353,9 +363,15 @@ def _read(client, request):
 
 
 def ask_planner(client, request):
+    imported = {row["slug"] for row in request.context.get("imported_history", [])}
     if request.trigger != "chat":
-        pool, _ = _pool(request.allowed, request.steer["focus"] if request.steer else [])
-        slug = _pick(client, request, pool, request.steer, request.allowed)
+        focuses = request.steer["focus"] if request.steer else []
+        if request.breadth and not focuses:
+            pool = valid = _breadth_pool(request.allowed, request.breadth, imported)
+        else:
+            pool, _ = _pool(request.allowed, focuses)
+            valid = request.allowed
+        slug = _pick(client, request, pool, request.steer, valid)
         if slug is None:
             raise ValueError("Planner picked a problem that is not eligible, twice")
         return PlannerReply("none", slug=slug)
@@ -379,7 +395,10 @@ def ask_planner(client, request):
         return PlannerReply("cannot", f"I couldn't find a problem called \"{reading.named_title.strip()}\".{guess}")
     elif not focuses and steer:
         focuses = steer["focus"]
-    pool, fits = _pool(request.allowed, focuses)
+    if reading.reading in ("ask", "clear") and request.breadth and not focuses and not reading.named_title.strip() and not steer:
+        pool, fits = _breadth_pool(request.allowed, request.breadth, imported), True
+    else:
+        pool, fits = _pool(request.allowed, focuses)
     if not fits:
         line += " Nothing eligible fits that right now, so this is the closest I have."
     try:
@@ -395,9 +414,10 @@ def ask_planner(client, request):
 
 
 class Planner:
-    def __init__(self, db_path, clock):
+    def __init__(self, db_path, clock, rng=None):
         self.db_path = db_path
         self.clock = clock
+        self.rng = rng or random.Random()
         self.card = None
         self._card_session_id = None
         self._waiting = None
@@ -432,8 +452,14 @@ class Planner:
                     for category, v in summary.items()}
         context = {"today": now.date().isoformat(), "learner_summary": rendered, "session_problems": session_problems,
                    "imported_history": imported, "hypotheses": hypotheses, "preferences": preferences, "unfinished": unfinished}
+        tried = {catalog.by_slug(a["slug"])["category"] for a in attempts if catalog.by_slug(a["slug"])}
+        no_evidence = sorted(category for category in CATEGORIES
+                             if summary[category]["solve"] is None
+                             and any(not c["retry"] and c["category"] == category for c in allowed))
+        remaining = [category for category in no_evidence if category not in tried]
+        breadth = self.rng.choice(remaining or no_evidence) if no_evidence else None
         request = PlannerRequest(trigger, session_id, now, allowed, context, summary, dict(self.card) if self.card else None,
-                                 tuple(self._chat), steer, text)
+                                 tuple(self._chat), steer, text, breadth)
         self._waiting = request
         return request
 
