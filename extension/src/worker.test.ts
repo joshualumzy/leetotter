@@ -620,7 +620,7 @@ describe("Planner, recap, cap and reference relay", () => {
     const progress = { type: "progress_state", ts: "now", health, header: { on_your_own: 1, coming_back: 0, to_do: 149, strong: 0, rusty: 0, total: 150 }, categories: [] };
     socket.onmessage?.({ data: JSON.stringify(progress) });
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "progress_state", state: progress });
-    const detail = { type: "progress_category_state", ts: "now", category: "Tries", level: "building", done: 0, total: 3, rusty: false, next: "To reach solid: 3 problems still to do on your own", problems: [], counts: { not_tried: 3, imported_only: 0 }, health };
+    const detail = { type: "progress_category_state", ts: "now", category: "Tries", level: "building", done: 0, total: 3, rusty: false, next: "To reach solid: 3 problems still to do on your own", complexity: null, problems: [], counts: { not_tried: 3, imported_only: 0 } };
     socket.onmessage?.({ data: JSON.stringify(detail) });
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "progress_category_state", state: detail });
     socket.onmessage?.({ data: JSON.stringify({ type: "reset_done", ts: "now" }) });

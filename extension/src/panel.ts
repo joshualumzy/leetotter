@@ -431,16 +431,12 @@ function progressBar(): HTMLElement {
   }
   return bar;
 }
-function disagreementMarker(parent: HTMLElement): void {
-  appendText(parent, "span", "graders disagreed", "problem-disagreement");
-}
-function gradeLine(parent: HTMLElement, entry: { review_id: number; word: string; reason: string; disagreement?: boolean }, title?: string): void {
+function gradeLine(parent: HTMLElement, entry: { review_id: number; word: string; reason: string }, title?: string): void {
   const row = element("div", "problem-grade");
   if (title) appendText(row, "span", title, "recap-grade-title");
   appendText(row, "span", entry.word, `grade-word ${entry.word}`);
   appendText(row, "span", entry.reason, "grade-reason");
-  if (entry.disagreement) disagreementMarker(row);
-  row.append(button(`correct-${entry.review_id}`, "correct", "link"));
+  row.append(button(`correct-${entry.review_id}`, "change", "link"));
   parent.append(row);
   if (correction === entry.review_id) {
     const choices = element("div", "correction");
@@ -462,7 +458,6 @@ function gradeRow(parent: HTMLElement, entry: ProgressCategoryState["problems"][
         const line = element("div", "problem-grade");
         appendText(line, "span", old.word, `grade-word ${old.word}`);
         appendText(line, "span", old.reason, "grade-reason");
-        if (old.disagreement) disagreementMarker(line);
         earlier.append(line);
       }
       parent.append(earlier);
@@ -484,11 +479,7 @@ function categoryProblems(parent: HTMLElement): void {
     appendText(head, "span", item.title, "problem-title");
     appendText(head, "span", item.status_text, "problem-status");
     node.append(head);
-    if (item.pending) {
-      const waiting = item.pending_reason === "reference" ? "grade pending (reference)" : "grade pending (graders)";
-      appendText(node, "span", waiting, "problem-pending");
-    }
-    if (item.disagreement) disagreementMarker(node);
+    if (item.pending) appendText(node, "span", "grading…", "problem-pending");
     if (item.latest) gradeRow(node, item.latest, item.problem);
     else if (!item.pending) appendText(node, "span", "not graded yet", "quiet");
     parent.append(node);
@@ -531,11 +522,13 @@ function renderCategoryDetail(name: string): HTMLElement {
     return card;
   }
   appendText(card, "p", categoryDetail.next, "category-next");
+  if (categoryDetail.complexity) {
+    gradeLine(card, categoryDetail.complexity, `Complexity · ${categoryDetail.complexity.title}`);
+  }
   categoryProblems(card);
   const untried = untriedLine(categoryDetail.counts);
   if (untried) appendText(card, "p", untried, "quiet");
   excludeControl(card);
-  appendText(card, "p", healthLine(categoryDetail.health), "quiet progress-health");
   return card;
 }
 function renderProgress(): void {

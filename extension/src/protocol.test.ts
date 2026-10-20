@@ -183,11 +183,12 @@ describe("Recaps, Progress and reset messages", () => {
     const detail = {
       type: "progress_category_state", ts: "now", category: "Tries", level: "solid", done: 3, total: 3, rusty: false,
       next: "To reach strong: a clean solve on a new Medium or Hard problem",
-      counts: { not_tried: 0, imported_only: 0 }, health,
+      complexity: { review_id: 7, title: "Implement Trie", word: "shaky", reason: "right after a hint" },
+      counts: { not_tried: 0, imported_only: 0 },
       problems: [{
         problem: "implement-trie-prefix-tree", title: "Implement Trie", status: "on_your_own", status_text: "on your own",
-        pending: false, pending_reason: null, disagreement: false,
-        latest: { review_id: 4, attempt: 9, grade: "good", word: "solid", reason: "solved on your own", at: "now", disagreement: false, failed_grader: null },
+        pending: false,
+        latest: { review_id: 4, attempt: 9, grade: "good", word: "solid", reason: "solved on your own", at: "now", failed_grader: null },
         earlier_count: 0, earlier: [],
       }],
     };
@@ -198,6 +199,7 @@ describe("Recaps, Progress and reset messages", () => {
       { ...state, header: { ...state.header, total: "150" } },
       { ...state, categories: [{ ...state.categories[0], level: "great" }] },
       { ...state, health: { ...health, disagreement_share: "6%" } },
+      { ...detail, complexity: { ...detail.complexity, word: "good" } },
       { ...detail, problems: [{ ...detail.problems[0], status: "done" }] },
       { ...detail, problems: [{ ...detail.problems[0], latest: { ...detail.problems[0].latest, grade: "solid" } }] },
     ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow();

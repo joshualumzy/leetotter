@@ -1413,14 +1413,10 @@ p {
   text-align:right
 }
 
-.problem-pending,.problem-disagreement {
+.problem-pending {
   display:block;
   font-size:11px;
   color:#a8551e
-}
-
-.problem-grade .problem-disagreement {
-  display:inline
 }
 
 .problem-grade {

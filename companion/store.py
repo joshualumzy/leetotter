@@ -72,6 +72,9 @@ MIGRATIONS = (
     (
         "CREATE TABLE recap_feedback_pending (session_id INTEGER PRIMARY KEY REFERENCES sessions(id), note_id INTEGER NOT NULL REFERENCES notes(id))",
     ),
+    (
+        "ALTER TABLE reviews ADD COLUMN corrected INTEGER NOT NULL DEFAULT 0",
+    ),
 )
 
 PERSONAL_TABLES = (

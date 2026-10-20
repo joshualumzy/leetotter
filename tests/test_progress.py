@@ -50,6 +50,17 @@ def add_category_review(db, category, skill, grade, when, *, difficulty="Medium"
         (f"category:{skill}", category, grade, int(first), difficulty, when.isoformat())).lastrowid
 
 
+def add_analysis_review(db, category, slug, grade, when, *, session=None, question="What's the time complexity?"):
+    """A category:analysis review keyed by its complexity question, as the Grader writes it."""
+    question_id = db.execute(
+        "INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'followup_asked', ?)",
+        (session, when.isoformat(), json.dumps({"slug": slug, "question": question, "complexity": True}))).lastrowid
+    return db.execute(
+        "INSERT INTO reviews (session_id, event_id, item_type, item_key, grade, first_attempt, difficulty, "
+        "reviewed_at) VALUES (?, ?, 'category:analysis', ?, ?, 1, 'Medium', ?)",
+        (session, question_id, category, grade, when.isoformat())).lastrowid
+
+
 def add_attempt(db, session, slug, *, accepted=False, help=(), debrief=False):
     """Events exactly as the coordinator writes one attempt, returning its problem_left event id."""
     ts = at(0).isoformat()
@@ -185,7 +196,7 @@ def test_earlier_grades_stay_in_the_history_with_the_latest_first(tmp_path):
     with open_store(path) as db:
         session = add_session(db)
         first = add_attempt(db, session, slug, accepted=True, help=("full_solution",))
-        add_review(db, slug, "again", at(-8), first=True, session=session, event_id=first, disagreement=True)
+        add_review(db, slug, "again", at(-8), first=True, session=session, event_id=first)
         second = add_attempt(db, session, slug, accepted=True)
         add_review(db, slug, "good", at(-1), first=False, session=session, event_id=second)
 
@@ -194,7 +205,6 @@ def test_earlier_grades_stay_in_the_history_with_the_latest_first(tmp_path):
     assert item["earlier_count"] == 1
     assert item["earlier"][0]["word"] == "missed"
     assert item["earlier"][0]["reason"] == "the full solution was shown"
-    assert item["disagreement"] is True
 
 
 def test_a_brute_force_solve_is_coming_back(tmp_path):
@@ -211,7 +221,7 @@ def test_a_brute_force_solve_is_coming_back(tmp_path):
     assert item["latest"]["reason"] == "solved brute force only"
 
 
-def test_pending_grades_are_marked_and_say_what_they_wait_for(tmp_path):
+def test_pending_grades_are_marked_without_saying_what_they_wait_for(tmp_path):
     path = tmp_path / "db"
     with open_store(path) as db:
         session = add_session(db)
@@ -225,9 +235,9 @@ def test_pending_grades_are_marked_and_say_what_they_wait_for(tmp_path):
     state = category_state(path, "Arrays & Hashing", now=NOW)
     first = problem_item(state, ARRAYS[0])
     second = problem_item(state, ARRAYS[1])
-    assert (first["pending"], first["pending_reason"]) == (True, "reference")
-    assert (second["pending"], second["pending_reason"]) == (True, "graders")
-    assert state["health"]["ungraded"] == 2
+    assert first["pending"] is True and "pending_reason" not in first
+    assert second["pending"] is True and "pending_reason" not in second
+    assert progress_state(path, now=NOW)["health"]["ungraded"] == 2
 
 
 def test_grading_health_reports_the_disagreement_share(tmp_path):
@@ -242,7 +252,7 @@ def test_grading_health_reports_the_disagreement_share(tmp_path):
     health = progress_state(path, now=NOW)["health"]
     assert health == {"graded": 3, "disagreements": 1, "disagreement_share": pytest.approx(1 / 3),
                       "ungraded": 1}
-    assert category_state(path, "Arrays & Hashing", now=NOW)["health"] == health
+    assert "health" not in category_state(path, "Arrays & Hashing", now=NOW)
 
 
 # --- what's next: one template per missing criterion, never a pattern ----------------
@@ -320,6 +330,124 @@ def test_whats_next_for_a_strong_category(tmp_path):
     state = category_state(path, "Tries", now=NOW)
     assert state["level"] == "strong"
     assert state["next"] == "strong; holds for about 3 weeks without practice"
+
+
+def test_the_complexity_line_is_the_latest_graded_analysis_grade_while_it_holds_back_strong(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+        add_analysis_review(db, "Tries", TRIES[0], "again", at(-8))
+        latest = add_analysis_review(db, "Tries", TRIES[1], "hard", at(-1))
+
+    state = category_state(path, "Tries", now=NOW)
+    assert state["complexity"] == {
+        "review_id": latest, "title": CATALOG.by_slug(TRIES[1])["title"],
+        "word": "shaky", "reason": "right after a hint",
+    }
+
+
+@pytest.mark.parametrize("grade, word, reason", [
+    ("good", "solid", "right, with reasoning"),
+    ("hard", "shaky", "right after a hint"),
+    ("again", "missed", "not right on its own"),
+])
+def test_the_complexity_line_says_the_grade_in_plain_words(tmp_path, grade, word, reason):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+        review = add_analysis_review(db, "Tries", TRIES[0], grade, at(-1))
+
+    state = category_state(path, "Tries", now=NOW)
+    assert state["complexity"]["review_id"] == review
+    assert (state["complexity"]["word"], state["complexity"]["reason"]) == (word, reason)
+
+
+def test_no_complexity_line_for_a_building_category(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        add_review(db, TRIES[0], "good", at(-1), first=True)
+        add_analysis_review(db, "Tries", TRIES[0], "hard", at(-1))
+
+    state = category_state(path, "Tries", now=NOW)
+    assert state["level"] == "building"
+    assert state["complexity"] is None
+
+
+def test_no_complexity_line_for_a_strong_category(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+        add_analysis_review(db, "Tries", TRIES[0], "good", at(-8))
+        add_analysis_review(db, "Tries", TRIES[1], "good", at(-1))
+
+    state = category_state(path, "Tries", now=NOW)
+    assert state["level"] == "strong"
+    assert state["complexity"] is None
+
+
+def test_no_complexity_line_before_a_complexity_answer(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+
+    state = category_state(path, "Tries", now=NOW)
+    assert "complexity not yet tested" in state["next"]
+    assert state["complexity"] is None
+
+
+def test_a_pending_analysis_review_is_never_shown_as_the_complexity_line(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+        graded = add_analysis_review(db, "Tries", TRIES[0], "hard", at(-8))
+        add_analysis_review(db, "Tries", TRIES[1], None, at(-1))
+
+    state = category_state(path, "Tries", now=NOW)
+    assert state["complexity"]["review_id"] == graded
+    assert state["complexity"]["word"] == "shaky"
+
+
+def test_an_analysis_grade_for_a_problem_missing_from_the_catalog_falls_back_to_its_slug(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+        review = add_analysis_review(db, "Tries", "not-in-the-catalog", "hard", at(-1))
+
+    state = category_state(path, "Tries", now=NOW)
+    assert state["complexity"] == {
+        "review_id": review, "title": "not-in-the-catalog", "word": "shaky", "reason": "right after a hint",
+    }
+
+
+def test_correcting_an_analysis_grade_changes_its_reason_and_the_fsrs_state(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+        review = add_analysis_review(db, "Tries", TRIES[0], "good", at(-1))
+
+    correct_grade(path, review_id=review, grade="again")
+
+    state = category_state(path, "Tries", now=NOW)
+    assert state["complexity"]["word"] == "missed"
+    assert state["complexity"]["reason"] == "you corrected this grade"
+    with open_store(path) as db:
+        assert item_memory(db, "category:analysis", "Tries", NOW).last_grade == "again"
+        assert [row[0] for row in db.execute(
+            "SELECT grade FROM reviews WHERE item_type = 'category:solve' ORDER BY reviewed_at")] == ["good", "good"]
+
+
+def test_an_excluded_sessions_analysis_grade_is_not_shown_or_correctable(tmp_path):
+    path = tmp_path / "db"
+    with open_store(path) as db:
+        session = add_session(db)
+        solid_tries(db, solve=[("good", at(-8), "Medium"), ("good", at(-1), "Medium")])
+        review = add_analysis_review(db, "Tries", TRIES[0], "hard", at(-1), session=session)
+
+    exclude_session(path, session)
+
+    assert category_state(path, "Tries", now=NOW)["complexity"] is None
+    with pytest.raises(ValueError, match="not found"):
+        correct_grade(path, review_id=review, grade="good")
 
 
 def test_no_whats_next_line_names_a_pattern(tmp_path):
@@ -409,7 +537,7 @@ def test_an_unknown_unwritten_or_category_grade_cannot_be_corrected(tmp_path):
         correct_grade(path, review_id=999, grade="good")
     with pytest.raises(ValueError, match="no grade yet"):
         correct_grade(path, review_id=pending_id, grade="good")
-    with pytest.raises(ValueError, match="review not found"):
+    with pytest.raises(ValueError, match="Review not found"):
         correct_grade(path, review_id=category_id, grade="good")
     with pytest.raises(ValueError, match="grade"):
         correct_grade(path, review_id=pending_id, grade="great")

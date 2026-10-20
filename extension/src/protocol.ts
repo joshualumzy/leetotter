@@ -16,10 +16,11 @@ export type ProgressHeader = { on_your_own: number; coming_back: number; to_do: 
 export type ProgressCategory = { name: string; level: ProgressLevel; done: number; total: number; rusty: boolean };
 export type ProgressState = { type: "progress_state"; ts: string; header: ProgressHeader; categories: ProgressCategory[]; health: ProgressHealth };
 export type GradeWord = "solid" | "shaky" | "missed";
-export type GradeEntry = { review_id: number; attempt: number; grade: "good" | "hard" | "again"; word: GradeWord; reason: string; at: string; disagreement: boolean; failed_grader: string | null };
+export type GradeEntry = { review_id: number; attempt: number; grade: "good" | "hard" | "again"; word: GradeWord; reason: string; at: string; failed_grader: string | null };
 export type ProblemStatus = "on_your_own" | "needed_help" | "brute_force_only" | "unfinished";
-export type CategoryProblem = { problem: string; title: string; status: ProblemStatus; status_text: string; pending: boolean; pending_reason: "graders" | "reference" | null; disagreement: boolean; latest: GradeEntry | null; earlier: GradeEntry[]; earlier_count: number };
-export type ProgressCategoryState = { type: "progress_category_state"; ts: string; category: string; level: ProgressLevel; done: number; total: number; rusty: boolean; next: string; problems: CategoryProblem[]; counts: { not_tried: number; imported_only: number }; health: ProgressHealth };
+export type CategoryProblem = { problem: string; title: string; status: ProblemStatus; status_text: string; pending: boolean; latest: GradeEntry | null; earlier: GradeEntry[]; earlier_count: number };
+export type ComplexityLine = { review_id: number; title: string; word: GradeWord; reason: string };
+export type ProgressCategoryState = { type: "progress_category_state"; ts: string; category: string; level: ProgressLevel; done: number; total: number; rusty: boolean; next: string; complexity: ComplexityLine | null; problems: CategoryProblem[]; counts: { not_tried: number; imported_only: number } };
 
 export type Message =
   | { type: "hello" | "ping"; ts: string; session_id?: string }
@@ -289,8 +290,13 @@ export function parseMessage(raw: string): Message {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const item = value as Record<string, unknown>;
     return positiveInteger(item.review_id) && positiveInteger(item.attempt) && ["good", "hard", "again"].includes(String(item.grade)) &&
-      gradeWord(item.word) && typeof item.reason === "string" && nonempty(item.at) && typeof item.disagreement === "boolean" &&
+      gradeWord(item.word) && typeof item.reason === "string" && nonempty(item.at) &&
       (item.failed_grader === null || (typeof item.failed_grader === "string" && item.failed_grader.length > 0));
+  };
+  const complexityLine = (value: unknown): boolean => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const item = value as Record<string, unknown>;
+    return positiveInteger(item.review_id) && nonempty(item.title) && gradeWord(item.word) && typeof item.reason === "string";
   };
   if (message.type === "progress_state") {
     const header = message.header as Record<string, unknown> | undefined;
@@ -305,7 +311,7 @@ export function parseMessage(raw: string): Message {
   if (message.type === "progress_category_state") {
     if (!nonempty(message.category) || !level(message.level) || !Number.isInteger(message.done) || (message.done as number) < 0 ||
       !Number.isInteger(message.total) || (message.total as number) < 0 || typeof message.rusty !== "boolean" ||
-      typeof message.next !== "string" || !health(message.health) ||
+      typeof message.next !== "string" || !(message.complexity === null || complexityLine(message.complexity)) ||
       !message.counts || typeof message.counts !== "object" || Array.isArray(message.counts) ||
       !Number.isInteger((message.counts as Record<string, unknown>).not_tried) || ((message.counts as Record<string, unknown>).not_tried as number) < 0 ||
       !Number.isInteger((message.counts as Record<string, unknown>).imported_only) || ((message.counts as Record<string, unknown>).imported_only as number) < 0 ||
@@ -315,8 +321,7 @@ export function parseMessage(raw: string): Message {
         return nonempty(item.problem) && nonempty(item.title) &&
           ["on_your_own", "needed_help", "brute_force_only", "unfinished"].includes(String(item.status)) &&
           typeof item.status_text === "string" && typeof item.pending === "boolean" &&
-          (item.pending_reason === null || ["graders", "reference"].includes(String(item.pending_reason))) &&
-          typeof item.disagreement === "boolean" && (item.latest === null || gradeEntry(item.latest)) &&
+          (item.latest === null || gradeEntry(item.latest)) &&
           Array.isArray(item.earlier) && item.earlier.every(gradeEntry) &&
           Number.isInteger(item.earlier_count) && (item.earlier_count as number) >= 0;
       })) throw new Error("Invalid progress_category_state payload");

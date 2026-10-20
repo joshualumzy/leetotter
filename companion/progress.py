@@ -15,6 +15,8 @@ from companion.store import open_store
 
 
 GRADE_WORDS = {"good": "solid", "hard": "shaky", "again": "missed"}
+COMPLEXITY_REASONS = {"good": "right, with reasoning", "hard": "right after a hint",
+                      "again": "not right on its own"}
 CORRECTION_WORDS = {"solid": "good", "shaky": "hard", "missed": "again"}
 STATUS_TEXT = {
     "on_your_own": "on your own",
@@ -148,14 +150,7 @@ def _skill_strong(db, category, skill, memory, threshold):
                 and _has_good_medium_or_hard(db, f"category:{skill}", category))
 
 
-def _next_line(db, category, level, done, total, solve_memory, analysis_memory, threshold):
-    if level in ("not started", "building"):
-        remaining = total - done
-        problem = "problem" if remaining == 1 else "problems"
-        return f"To reach solid: {remaining} {problem} still to do on your own"
-    if level == "strong":
-        weeks = max(1, round(threshold / 7))
-        return f"strong; holds for about {weeks} weeks without practice"
+def _missing_for_strong(db, category, solve_memory, analysis_memory, threshold):
     missing = []
     if not _has_good_medium_or_hard(db, "category:solve", category):
         missing.append(STRONG_SOLVE)
@@ -170,7 +165,19 @@ def _next_line(db, category, level, done, total, solve_memory, analysis_memory, 
             missing.append(STRONG_COMPLEXITY)
         if analysis_memory.stability < threshold or analysis_memory.last_grade == "again":
             missing.append(STRONG_COMPLEXITY_TIME)
-    return "To reach strong: " + "; ".join(missing)
+    return missing
+
+
+def _next_line(db, category, level, done, total, solve_memory, analysis_memory, threshold):
+    if level in ("not started", "building"):
+        remaining = total - done
+        problem = "problem" if remaining == 1 else "problems"
+        return f"To reach solid: {remaining} {problem} still to do on your own"
+    if level == "strong":
+        weeks = max(1, round(threshold / 7))
+        return f"strong; holds for about {weeks} weeks without practice"
+    return "To reach strong: " + "; ".join(
+        _missing_for_strong(db, category, solve_memory, analysis_memory, threshold))
 
 
 def _snapshot(db, now):
@@ -181,10 +188,11 @@ def _snapshot(db, now):
     excluded = _excluded_sessions(db)
     reviews = []
     for row in db.execute("SELECT id, session_id, event_id, item_type, item_key, grade, meets_expected, "
-                          "first_attempt, difficulty, grader_disagreement, failed_grader, reviewed_at "
+                          "first_attempt, difficulty, grader_disagreement, failed_grader, reviewed_at, corrected "
                           "FROM reviews ORDER BY reviewed_at, id"):
         review = dict(zip(("id", "session_id", "event_id", "item_type", "item_key", "grade", "meets_expected",
-                           "first_attempt", "difficulty", "grader_disagreement", "failed_grader", "reviewed_at"), row))
+                           "first_attempt", "difficulty", "grader_disagreement", "failed_grader", "reviewed_at",
+                           "corrected"), row))
         if review["session_id"] not in excluded:
             reviews.append(review)
     events = [event for event in _events(db) if event[1] not in excluded]
@@ -255,8 +263,7 @@ def _health(reviews):
 def _grade_entry(review, attempt):
     return {"review_id": review["id"], "attempt": review["event_id"], "grade": review["grade"],
             "word": GRADE_WORDS[review["grade"]], "reason": _reason(review, attempt),
-            "at": review["reviewed_at"], "disagreement": bool(review["grader_disagreement"]),
-            "failed_grader": review["failed_grader"]}
+            "at": review["reviewed_at"], "failed_grader": review["failed_grader"]}
 
 
 def _session_grade_lines(snapshot, session_id):
@@ -301,16 +308,31 @@ def _problem_state(snapshot, slug, entries_by_slug):
         status = "brute_force_only"
     pending_rows = [row for row in rows if row["grade"] is None]
     return {"problem": slug, "title": entries_by_slug[slug]["title"], "status": status,
-            "status_text": STATUS_TEXT[status], "pending": bool(pending_rows), "pending_reason": None,
-            "disagreement": any(row["grader_disagreement"] for row in graded),
+            "status_text": STATUS_TEXT[status], "pending": bool(pending_rows),
             "latest": _grade_entry(latest, snapshot["attempts_by_event"].get(latest["event_id"])) if latest else None,
             "earlier": [_grade_entry(row, snapshot["attempts_by_event"].get(row["event_id"])) for row in graded[:-1]],
             "earlier_count": max(0, len(graded) - 1)}
 
 
-def _pending_reason(db, slug):
-    reference = db.execute('SELECT status FROM "references" WHERE problem_key = ?', (slug,)).fetchone()
-    return "graders" if reference is not None and reference[0] in ("checked", "resolved_by_you") else "reference"
+def _complexity(snapshot, db, category):
+    """The latest graded analysis review, when its problem can still be named."""
+    reviews = [review for review in snapshot["reviews_all"]
+               if review["item_type"] == "category:analysis" and review["item_key"] == category
+               and review["grade"] is not None]
+    if not reviews:
+        return None
+    latest = reviews[-1]
+    if latest["event_id"] is None:
+        return None
+    event = db.execute("SELECT payload FROM events WHERE id = ?", (latest["event_id"],)).fetchone()
+    slug = json.loads(event[0]).get("slug") if event is not None else None
+    if not slug:
+        return None
+    title = next((entry["title"] for entry in snapshot["entries"] if entry["slug"] == slug), slug)
+    reason = ("you corrected this grade" if latest["corrected"]
+              else COMPLEXITY_REASONS[latest["grade"]])
+    return {"review_id": latest["id"], "title": title, "word": GRADE_WORDS[latest["grade"]],
+            "reason": reason}
 
 
 def progress_state(db_path=None, *, now=None):
@@ -347,21 +369,22 @@ def category_state(db_path, category, *, now=None):
             slug = entry["slug"]
             if slug not in snapshot["attempted"]:
                 continue
-            item = _problem_state(snapshot, slug, entries_by_slug)
-            if item["pending"]:
-                item["pending_reason"] = _pending_reason(db, slug)
-            problems.append(item)
+            problems.append(_problem_state(snapshot, slug, entries_by_slug))
         not_tried = sum(1 for entry in members if entry["slug"] not in snapshot["attempted"]
                         and entry["slug"] not in snapshot["imported"])
         imported_only = sum(1 for entry in members if entry["slug"] not in snapshot["attempted"]
                             and entry["slug"] in snapshot["imported"])
+        missing = (_missing_for_strong(db, category, row["solve_memory"], row["analysis_memory"],
+                                       snapshot["threshold"]) if row["level"] == "solid" else [])
+        complexity = (_complexity(snapshot, db, category)
+                      if {STRONG_COMPLEXITY, STRONG_COMPLEXITY_TIME} & set(missing) else None)
         return {
             "type": "progress_category_state", "ts": now.isoformat(), "category": category,
             "level": row["level"], "done": row["done"], "total": row["total"], "rusty": row["rusty"],
             "next": _next_line(db, category, row["level"], row["done"], row["total"],
                                row["solve_memory"], row["analysis_memory"], snapshot["threshold"]),
+            "complexity": complexity,
             "problems": problems, "counts": {"not_tried": not_tried, "imported_only": imported_only},
-            "health": _health(snapshot["reviews_all"]),
         }
 
 
@@ -411,15 +434,19 @@ def correct_grade(db_path, *, grade, review_id=None, problem=None, attempt=None)
         else:
             row = db.execute(f"SELECT {columns} FROM reviews WHERE item_type = 'problem' AND item_key = ? AND event_id = ?",
                              (problem, attempt)).fetchone()
-        if row is None or (review_id is not None and row[3] != "problem"):
-            raise ValueError("Problem review not found")
-        review_id, session_id, event_id, _, slug, old_grade, _, difficulty = row
+        if row is None or (review_id is not None and row[3] not in ("problem", "category:analysis")):
+            raise ValueError("Review not found")
+        review_id, session_id, event_id, item_type, item_key, old_grade, _, difficulty = row
         if old_grade is None:
             raise ValueError("This attempt has no grade yet")
+        if item_type == "category:analysis":
+            db.execute("UPDATE reviews SET grade = ?, corrected = 1 WHERE id = ?", (grade, review_id))
+            return review_id
+        slug = item_key
         # Hard keeps the grader's own verdict: a worse approach is Hard with meets_expected false.
         meets = None if grade == "hard" else int(grade == "good")
-        db.execute("UPDATE reviews SET grade = ?, meets_expected = COALESCE(?, meets_expected) WHERE id = ?",
-                   (grade, meets, review_id))
+        db.execute("UPDATE reviews SET grade = ?, meets_expected = COALESCE(?, meets_expected), corrected = 1 "
+                   "WHERE id = ?", (grade, meets, review_id))
         category = db.execute("SELECT id, difficulty FROM reviews WHERE event_id = ? AND item_type = 'category:solve'",
                               (event_id,)).fetchone()
         if category is not None:

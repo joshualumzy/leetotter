@@ -59,6 +59,6 @@ def test_version_one_reviews_survive_the_nullable_grade_migration(tmp_path):
         db.execute("INSERT INTO reviews (item_type, item_key, grade, first_attempt, reviewed_at) VALUES ('problem', 'two-sum', 'good', 1, '2026-10-01T00:00:00+00:00')")
 
     with open_store(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert db.execute("SELECT item_key, grade FROM reviews").fetchall() == [("two-sum", "good")]
         db.execute("INSERT INTO reviews (item_type, item_key, grade, first_attempt, reviewed_at) VALUES ('problem', 'other', NULL, 0, '2026-10-02T00:00:00+00:00')")

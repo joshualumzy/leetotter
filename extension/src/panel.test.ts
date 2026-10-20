@@ -932,12 +932,13 @@ describe("panel actions", () => {
     const detail = {
       type: "progress_category_state" as const, ts: "now", category: "Tries", level: "solid" as const, done: 3, total: 3, rusty: false,
       next: "To reach strong: a clean solve on a new Medium or Hard problem; complexity not yet tested",
-      counts: { not_tried: 4, imported_only: 2 }, health,
+      complexity: null,
+      counts: { not_tried: 4, imported_only: 2 },
       problems: [
-        { problem: "implement-trie-prefix-tree", title: "Implement Trie", status: "on_your_own" as const, status_text: "on your own", pending: false, pending_reason: null, disagreement: false,
-          latest: { review_id: 4, attempt: 9, grade: "good" as const, word: "solid" as const, reason: "solved on your own", at: "now", disagreement: false, failed_grader: null },
-          earlier_count: 1, earlier: [{ review_id: 2, attempt: 3, grade: "again" as const, word: "missed" as const, reason: "needed a snippet", at: "then", disagreement: false, failed_grader: null }] },
-        { problem: "design-add-and-search-words", title: "Design Add and Search Words", status: "unfinished" as const, status_text: "started, unfinished", pending: true, pending_reason: "graders" as const, disagreement: false,
+        { problem: "implement-trie-prefix-tree", title: "Implement Trie", status: "on_your_own" as const, status_text: "on your own", pending: false,
+          latest: { review_id: 4, attempt: 9, grade: "good" as const, word: "solid" as const, reason: "solved on your own", at: "now", failed_grader: null },
+          earlier_count: 1, earlier: [{ review_id: 2, attempt: 3, grade: "again" as const, word: "missed" as const, reason: "needed a snippet", at: "then", failed_grader: null }] },
+        { problem: "design-add-and-search-words", title: "Design Add and Search Words", status: "unfinished" as const, status_text: "started, unfinished", pending: true,
           latest: null, earlier_count: 0, earlier: [] },
       ],
     };
@@ -1013,6 +1014,7 @@ describe("panel actions", () => {
       expect(gradeList.textContent).toContain("Two Sum");
       expect(gradeList.textContent).toContain("solid");
       expect(gradeList.textContent).toContain("solved on your own");
+      expect(gradeList.textContent).toContain("change");
       expect(gradeList.textContent).toContain("grading…");
       expect(document.getElementById("correct-5")).toBeNull();
       expect(gradeList.compareDocumentPosition(bullets) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1109,27 +1111,19 @@ describe("panel actions", () => {
       expect(document.querySelectorAll(".progress-bar i")).toHaveLength(3);
     });
 
-    it("marks the problem and each review where the graders disagreed", () => {
+    it("keeps grader disagreement out of the grades but in the health line at the bottom", () => {
       showStart();
       openProgress();
       notify({ kind: "progress_state", state: progress });
       (document.querySelector('[data-category="Tries"]') as HTMLElement).click();
-      notify({ kind: "progress_category_state", state: {
-        ...detail,
-        problems: [
-          { ...detail.problems[0], disagreement: true,
-            latest: { ...detail.problems[0].latest!, disagreement: true },
-            earlier: [{ ...detail.problems[0].earlier[0], disagreement: true }] },
-          detail.problems[1],
-        ],
-      } });
+      notify({ kind: "progress_category_state", state: detail });
       const card = document.querySelector<HTMLElement>(".category-detail")!;
-      expect(card.textContent).toContain("Grading health: graders agree on 94%");
-      expect(card.querySelector(".problem > .problem-disagreement")?.textContent).toBe("graders disagreed");
-      expect(card.querySelector(".problem-grade > .problem-disagreement")?.textContent).toBe("graders disagreed");
-      expect(card.querySelectorAll(".problem")[1].querySelector(".problem-disagreement")).toBeNull();
+      expect(card.textContent).not.toContain("graders disagreed");
+      expect(card.querySelector(".problem-disagreement")).toBeNull();
+      expect(card.querySelector(".progress-health")).toBeNull();
       click("earlier-implement-trie-prefix-tree");
-      expect(document.querySelector(".category-detail .earlier .problem-disagreement")?.textContent).toBe("graders disagreed");
+      expect(document.querySelector(".category-detail .earlier .problem-disagreement")).toBeNull();
+      expect(document.querySelector(".progress-view > .progress-health")?.textContent).toContain("Grading health: graders agree on 94%");
     });
 
     it("badges the Progress tab with the reference-review count and lists them with a copy button", async () => {
@@ -1174,9 +1168,12 @@ describe("panel actions", () => {
       expect(card.textContent).toContain("on your own");
       expect(card.textContent).toContain("solid");
       expect(card.textContent).toContain("solved on your own");
-      expect(card.textContent).toContain("grade pending");
+      expect(card.textContent).toContain("grading…");
+      expect(card.textContent).not.toContain("grade pending");
       expect(card.textContent).toContain("4 not tried · 2 solved before Leetotter, not yet tested");
-      expect(card.textContent).toContain("Grading health: graders agree on 94%");
+      expect(card.textContent).not.toContain("Grading health");
+      expect(card.textContent).not.toContain("Complexity ·");
+      expect(card.querySelector(".problem-grade")?.textContent).toContain("change");
       expect(card.textContent).toContain("1 earlier");
       expect(card.textContent).not.toContain("needed a snippet");
       click("earlier-implement-trie-prefix-tree");
@@ -1189,6 +1186,31 @@ describe("panel actions", () => {
       sendMessage.mockClear();
       notify({ kind: "progress_state", state: progress });
       expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_category", category: "Tries" });
+    });
+
+    it("shows the latest complexity grade under next and changes it like a problem's", () => {
+      showStart();
+      openProgress();
+      notify({ kind: "progress_state", state: progress });
+      (document.querySelector('[data-category="Tries"]') as HTMLElement).click();
+      notify({ kind: "progress_category_state", state: {
+        ...detail,
+        complexity: { review_id: 7, title: "Implement Trie", word: "shaky" as const, reason: "right after a hint" },
+      } });
+      const card = document.querySelector<HTMLElement>(".category-detail")!;
+      expect(card.textContent).toContain("Complexity · Implement Trie");
+      expect(card.textContent).toContain("shaky");
+      expect(card.textContent).toContain("right after a hint");
+      expect(card.querySelector(".problem-grade")?.textContent).toContain("change");
+      click("correct-4");
+      expect(document.getElementById("grade-4-solid")).toBeTruthy();
+      click("correct-7");
+      expect(document.querySelectorAll(".category-detail .correction")).toHaveLength(1);
+      expect(document.getElementById("grade-4-solid")).toBeNull();
+      expect(document.getElementById("grade-7-solid")).toBeTruthy();
+      sendMessage.mockClear();
+      click("grade-7-solid");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "grade_correct", review_id: 7, grade: "solid" });
     });
 
     it("drops a stale category answer and excludes a session only after a confirm step", () => {
