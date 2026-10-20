@@ -30,9 +30,10 @@ Interface (companion/planner.py) used by this file, beyond tests/test_planner_ru
 
     PlannerRequest: trigger ("start" | "between" | "swap" | "chat" | "clear"), session_id, started (the clock
         when planning began), allowed (allowed_next's list at that moment), context (the Picker's JSON: session_problems,
-        learner_summary and the rest), summary, card, chat, steer, message (a chat message's text) and breadth
-        (the no-evidence category code chose, or None), all snapshotted when the request is made because
-        ask_planner runs on another thread.
+        learner_summary and the rest), summary, card, chat, steer, message (a chat message's text), breadth
+        (the category code chose, or None), breadth_unseen (True on the second breadth pass) and
+        recent_problems (the Reader's snapshot of this session and the two before it), all snapshotted when
+        the request is made because ask_planner runs on another thread.
 
     A card is {"type": "suggestion", "ts", "slug", "title", "difficulty", "cap_minutes", "steer" (the active
     steer's label or None), "message" (a line for you, or None), "source" ("planner" | "fallback")}: by title
@@ -320,7 +321,7 @@ def test_the_reader_never_sees_the_problems_so_its_line_cannot_name_the_pick(tmp
     client = RecordedPlanner(reply(PERMUTATION, "ask", understood="Sure, another one coming up."))
     ask_planner(client, talk)
     reader = json.loads(client.calls[0][1][-1]["content"])
-    assert set(reader) == {"today", "message", "earlier_chat", "card", "steer", "categories"}
+    assert set(reader) == {"today", "message", "earlier_chat", "card", "steer", "categories", "recent_problems"}
     assert set(reader["card"]) == {"title", "difficulty"}
 
 

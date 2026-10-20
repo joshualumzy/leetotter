@@ -6,11 +6,12 @@ from dataclasses import replace
 from datetime import timedelta
 
 from companion.catalog import CATEGORIES
-from companion.planner import Planner, ask_planner
+from companion.planner import Planner, _read, ask_planner
 from companion.store import open_store
 from tests.test_planner_flow import RecordedPlanner, reply
-from tests.test_planner_rules import (CLIMBING, COIN_CHANGE, HOUSE_ROBBER, INVERT, NOW, attempt, category_review,
-                                      imported, review)
+from tests.test_planner_rules import (CATALOG, CLIMBING, CLONE_GRAPH, COIN_CHANGE, GOOD_NODES, HOUSE_ROBBER, INVERT, ISLANDS,
+                                      LEVEL_ORDER, NOW, RIGHT_VIEW, SAME_TREE, TRIES, attempt, category_review, entry,
+                                      imported, new_session, review)
 from tests.test_planner_steer import focus, steering
 from tests.test_session import make, start_msg
 
@@ -92,9 +93,153 @@ def test_with_evidence_everywhere_breadth_is_none_and_the_old_shortlist_holds(tm
     clock.now = NOW
     with open_store(path) as db:
         for category in CATEGORIES:
+            review(db, next(e["slug"] for e in CATALOG.entries if e["category"] == category and not e["locked"]),
+                   "good", NOW - timedelta(days=1))
             category_review(db, category, "good", NOW - timedelta(days=1))
     request = Planner(path, clock).panel_opened("idle")
     assert request.breadth is None
     client = RecordedPlanner(reply(HOUSE_ROBBER))
     assert ask_planner(client, request).slug == HOUSE_ROBBER
     assert len({c["category"] for c in offered(client)}) > 1
+
+
+def touch(db, category):
+    """Give a category a problem review and solve evidence, so neither breadth pass chooses it."""
+    review(db, next(e["slug"] for e in CATALOG.entries if e["category"] == category and not e["locked"]),
+           "good", NOW - timedelta(days=1))
+    category_review(db, category, "good", NOW - timedelta(days=1))
+
+
+def test_a_category_with_imports_is_chosen_in_pass_one_then_only_unseen_problems_in_pass_two(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category != "Trees":
+                touch(db, category)
+        imported(db, INVERT)
+        imported(db, SAME_TREE)
+    first = Planner(path, clock).panel_opened("idle")
+    assert (first.breadth, first.breadth_unseen) == ("Trees", False)
+    client = RecordedPlanner(reply(INVERT))
+    assert ask_planner(client, first).slug == INVERT
+    assert {c["slug"] for c in offered(client)} == {INVERT, SAME_TREE}
+    with open_store(path) as db:
+        review(db, INVERT, "good", NOW)
+    second = Planner(path, clock).panel_opened("idle")
+    assert (second.breadth, second.breadth_unseen) == ("Trees", True)
+    client = RecordedPlanner(reply(LEVEL_ORDER))
+    assert ask_planner(client, second).slug == LEVEL_ORDER
+    slugs = {c["slug"] for c in offered(client)}
+    assert LEVEL_ORDER in slugs and SAME_TREE not in slugs and INVERT not in slugs
+
+
+def test_pass_two_skips_a_category_with_no_unseen_problem(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category not in ("Graphs", "Tries"):
+                touch(db, category)
+        for slug in TRIES:
+            imported(db, slug)
+        review(db, TRIES[0], "good", NOW - timedelta(days=1))
+        review(db, ISLANDS, "good", NOW - timedelta(days=1))
+    request = Planner(path, clock).panel_opened("idle")
+    assert (request.breadth, request.breadth_unseen) == ("Graphs", True)
+
+
+def test_pass_one_beats_pass_two(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category not in ("Graphs", "Trees"):
+                touch(db, category)
+        review(db, ISLANDS, "good", NOW - timedelta(days=1))
+    request = Planner(path, clock).panel_opened("idle")
+    assert (request.breadth, request.breadth_unseen) == ("Trees", False)
+
+
+def test_pass_two_avoids_a_category_tried_this_session_while_another_is_left(tmp_path):
+    coordinator, clock, path = make(tmp_path)
+    clock.now = NOW
+    coordinator.handle(start_msg())
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category not in ("Graphs", "Trees"):
+                touch(db, category)
+        review(db, ISLANDS, "good", NOW - timedelta(days=1))
+        review(db, SAME_TREE, "good", NOW - timedelta(days=1))
+        attempt(db, coordinator.session_id, CLONE_GRAPH, accepted=True)
+    request = Planner(path, clock).resume(coordinator.session_id)
+    assert (request.breadth, request.breadth_unseen) == ("Trees", True)
+
+
+def test_recent_problems_cover_the_current_and_two_previous_sessions_with_outcomes(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW + timedelta(hours=1)
+    with open_store(path) as db:
+        old = new_session(db, NOW - timedelta(days=6))
+        left = attempt(db, old, LEVEL_ORDER, NOW - timedelta(days=6), accepted=True)
+        review(db, LEVEL_ORDER, "good", NOW - timedelta(days=6), event_id=left)
+        previous_two = new_session(db, NOW - timedelta(days=5))
+        for slug, grade, meets in ((INVERT, "good", True), (HOUSE_ROBBER, "hard", False), (COIN_CHANGE, "again", False)):
+            left = attempt(db, previous_two, slug, NOW - timedelta(days=5), accepted=True)
+            review(db, slug, grade, NOW - timedelta(days=5), meets=meets, event_id=left)
+        previous_one = new_session(db, NOW - timedelta(days=4))
+        left = attempt(db, previous_one, SAME_TREE, NOW - timedelta(days=4), accepted=True)
+        review(db, SAME_TREE, None, NOW - timedelta(days=4), event_id=left)
+        attempt(db, previous_one, RIGHT_VIEW, NOW - timedelta(days=4), accepted=True)
+        attempt(db, previous_one, GOOD_NODES, NOW - timedelta(days=4), accepted=False)
+        current = new_session(db, NOW)
+        attempt(db, current, CLIMBING, NOW, accepted=True)
+    request = Planner(path, clock).resume(current)
+    expected = [
+        (entry(INVERT)["title"], (NOW - timedelta(days=5)).date().isoformat(), "solid"),
+        (entry(HOUSE_ROBBER)["title"], (NOW - timedelta(days=5)).date().isoformat(), "shaky"),
+        (entry(COIN_CHANGE)["title"], (NOW - timedelta(days=5)).date().isoformat(), "missed"),
+        (entry(SAME_TREE)["title"], (NOW - timedelta(days=4)).date().isoformat(), "grade pending"),
+        (entry(RIGHT_VIEW)["title"], (NOW - timedelta(days=4)).date().isoformat(), "grade pending"),
+        (entry(GOOD_NODES)["title"], (NOW - timedelta(days=4)).date().isoformat(), "unfinished"),
+        (entry(CLIMBING)["title"], NOW.date().isoformat(), "grade pending"),
+    ]
+    assert [(p["title"], p["date"], p["outcome"]) for p in request.recent_problems] == expected
+    client = RecordedPlanner(reply(CLIMBING, "cannot", understood="I didn't catch that."))
+    _read(client, request)
+    sent = json.loads(client.calls[0][1][-1]["content"])
+    assert sent["recent_problems"] == request.recent_problems
+
+
+def test_recent_problems_skip_sessions_with_no_attempts_before_a_session_starts(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        first = new_session(db, NOW - timedelta(days=3))
+        attempt(db, first, INVERT, NOW - timedelta(days=3), accepted=True)
+        review(db, INVERT, "good", NOW - timedelta(days=3))
+        new_session(db, NOW - timedelta(days=2))
+        latest = new_session(db, NOW - timedelta(days=1))
+        attempt(db, latest, HOUSE_ROBBER, NOW - timedelta(days=1), accepted=True)
+        review(db, HOUSE_ROBBER, "hard", NOW - timedelta(days=1), meets=False)
+    request = Planner(path, clock).panel_opened("idle")
+    assert [p["title"] for p in request.recent_problems] == [entry(INVERT)["title"], entry(HOUSE_ROBBER)["title"]]
+    assert request.session_id is None
+
+
+def test_a_recent_problem_named_in_chat_resolves_by_its_title(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        earlier = new_session(db, NOW - timedelta(days=1))
+        left = attempt(db, earlier, HOUSE_ROBBER, NOW - timedelta(days=1), accepted=True)
+        review(db, HOUSE_ROBBER, "again", NOW - timedelta(days=1), meets=False, event_id=left)
+    base = Planner(path, clock).panel_opened("idle")
+    request = replace(base, trigger="chat", message="the one I missed yesterday",
+                      card={"title": "Anything", "difficulty": "Easy"})
+    client = RecordedPlanner(reply(HOUSE_ROBBER, "ask", named_title=entry(HOUSE_ROBBER)["title"],
+                                   understood="That one again."))
+    assert ask_planner(client, request).slug == HOUSE_ROBBER
+    assert len(client.calls) == 1
+    sent = json.loads(client.calls[0][1][-1]["content"])
+    assert {"title": entry(HOUSE_ROBBER)["title"], "outcome": "missed"}.items() <= sent["recent_problems"][0].items()

@@ -4,7 +4,7 @@ import difflib
 import json
 import logging
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -22,7 +22,7 @@ SHORTLIST_PER_CATEGORY = 3
 PICKER_PROMPT = """You are Leetotter's Planner. Pick exactly one problem from `allowed`, by slug. Keep the reason short; it is internal and never shown. Use the learner summary, imported history, unfinished problems, open hypotheses, preferences, today's date, this session's problems and load, the card, the chat and message, and the active steer. A steer's note holds the learner's own words: honour it, and read a relative word such as harder or easier against the card or the problem they just had. When the learner's words ask for a kind of problem (for example depth-first search), prefer an allowed problem whose patterns fit. Imported solves are seen but untested, never evidence of strength; when `allowed` holds one category, choose within it; balance weaknesses, mix categories after initial practice, check transfer on unseen problems, and occasionally use free problems beyond the 150. Avoid stacking demanding problems. Return JSON only: {"slug", "reason"}."""
 
 READER_PROMPT = """You read one chat message from a learner practising coding problems with Leetotter, a friendly study-buddy otter. A problem card may be showing. Return JSON only. You never pick a problem and never say which one comes next.
-reading: ask = they want a kind of problem or the next one, once (a topic, a difficulty, a named problem, or just "another"); steer = they want future suggestions shaped, as a standing preference (more or less of something, a difficulty, a style); clear = back to normal, drop the steer; cannot = you cannot act on it by picking a problem, for a true reason: a word you cannot match to a category, difficulty or problem (never guess it, even when you have a good guess: offer the guess in the question), or a request that needs something you cannot see or do. You see only: this message, the chat since the card appeared, the card's title and difficulty, the active steer and the category names. You do not see past sessions or days, scores, history, or the problem list. unrelated = nothing to do with practice (greeting, small talk, a question about you).
+reading: ask = they want a kind of problem or the next one, once (a topic, a difficulty, a named problem, or just "another"); steer = they want future suggestions shaped, as a standing preference (more or less of something, a difficulty, a style); clear = back to normal, drop the steer; cannot = you cannot act on it by picking a problem, for a true reason: a word you cannot match to a category, difficulty or problem (never guess it, even when you have a good guess: offer the guess in the question), or a request that needs something you cannot see or do. You see only: this message, the chat since the card appeared, the card's title and difficulty, the active steer, the category names, and the problems they worked on this session and in the two sessions before it (title, difficulty, date, outcome). You do not see older sessions, scores, or the problem list. A request that names one of those recent problems ("the one I missed yesterday") is an ask with that problem's exact title in named_title. unrelated = nothing to do with practice (greeting, small talk, a question about you).
 reply: always, in English: one or two short, warm sentences in the otter's voice, to "you", varied every time. For ask, steer and clear, name their topic in their own words so they see you understood, and say you'll find something; for cannot, say the real reason plainly and never blame the wrong cause (a request about something you have no record of is missing information, not a word you failed to understand; an unknown word is quoted and asked about), then offer what you can do instead; for unrelated, answer them like a friendly buddy in a line or two; if they ask to be taught something, say the Tutor helps with that while they work on a problem. Never mention a pattern or approach they did not name, give no lessons, and never repeat their message word for word.
 more_categories, fewer_categories: only the catalog categories they named or clearly meant ("DFS" is Graphs and Trees; "dynamic programming" is both dynamic programming categories). A request combining both ("more trees, fewer arrays") fills both groups. more_difficulties, fewer_difficulties: levels they named: "only mediums" is more Medium; "no hards" or "no more hards" is fewer Hard; "more easies" is more Easy. A difficulty request alone leaves the categories empty. A relative word (easier, harder, a bit tougher) for an ask becomes a concrete level using the card's difficulty; for a steer it gets no level and stays in the note.
 note: for a steer, the learner's own words for anything the fields cannot express (length, style, taste, a relative word); otherwise "". A wish about length, style or taste ("something short", "a quick one") is a steer saved with that note, never cannot. label: for a steer, a short plain name such as "Tries"; otherwise "". horizon: for a steer, "session" unless they say it should last (always, until I say, from now on); take "session" when unsure; otherwise "session". named_title: for an ask that names one specific problem, its title as they said it; otherwise "". An ask with no category, difficulty or title is only for plain "next one" or "another" requests; if it holds a word you cannot map, it is cannot."""
@@ -108,6 +108,8 @@ class PlannerRequest:
     steer: dict | None
     message: str | None = None
     breadth: str | None = None
+    breadth_unseen: bool = False
+    recent_problems: list[dict] = field(default_factory=list)
 
 
 def _reviews(db):
@@ -152,10 +154,10 @@ def learner_summary(db, *, now):
 def _session_attempts(db, session_id):
     if session_id is None:
         return []
-    rows = db.execute("SELECT ts, type, payload FROM events WHERE session_id = ? ORDER BY id", (session_id,))
+    rows = db.execute("SELECT id, ts, type, payload FROM events WHERE session_id = ? ORDER BY id", (session_id,))
     attempts = []
     current = {}
-    for ts, kind, raw in rows:
+    for event_id, ts, kind, raw in rows:
         p = json.loads(raw)
         if kind == "problem_opened":
             current[p["slug"]] = {"slug": p["slug"], "opened": ts, "accepted": False, "help": []}
@@ -166,9 +168,52 @@ def _session_attempts(db, session_id):
         elif kind == "problem_left" and p["slug"] in current:
             left = current.pop(p["slug"])
             left["left"] = ts
+            left["left_id"] = event_id
             left["accepted"] = p["accepted"]
             attempts.append(left)
     return attempts
+
+
+def _recent_problems(db, session_id, current_attempts):
+    """Problems from this session and the two earlier sessions with attempts, oldest first; excluded sessions skipped."""
+    catalog = load_catalog()
+    if session_id is None:
+        rows = db.execute("SELECT id FROM sessions WHERE excluded = 0 ORDER BY id DESC")
+    else:
+        rows = db.execute("SELECT id FROM sessions WHERE excluded = 0 AND id < ? ORDER BY id DESC", (session_id,))
+    earlier = []
+    for (earlier_id,) in rows:
+        attempts = _session_attempts(db, earlier_id)
+        if attempts:
+            earlier.append(attempts)
+            if len(earlier) == 2:
+                break
+    earlier = [problem for attempts in reversed(earlier) for problem in _problem_entries(db, attempts, catalog)]
+    return earlier + _problem_entries(db, current_attempts, catalog)
+
+
+def _problem_entries(db, attempts, catalog):
+    entries = []
+    for attempt in attempts:
+        entry = catalog.by_slug(attempt["slug"])
+        if entry is None:
+            continue
+        row = db.execute("SELECT grade FROM reviews WHERE item_type = 'problem' AND event_id = ?",
+                         (attempt["left_id"],)).fetchone()
+        grade = row[0] if row else None
+        if grade == "good":
+            outcome = "solid"
+        elif grade == "hard":
+            outcome = "shaky"
+        elif grade == "again":
+            outcome = "missed"
+        elif row is not None or attempt["accepted"]:
+            outcome = "grade pending"
+        else:
+            outcome = "unfinished"
+        entries.append({"title": entry["title"], "difficulty": entry["difficulty"],
+                        "date": datetime.fromisoformat(attempt["left"]).date().isoformat(), "outcome": outcome})
+    return entries
 
 
 def _unfinished(db):
@@ -298,10 +343,13 @@ def _pool(allowed, focuses):
     return (matched, True) if matched or not focuses else (allowed, False)
 
 
-def _breadth_pool(allowed, category, imported):
-    """The chosen no-evidence category's untried problems (imported ones first when it has any), plus every due retry."""
+def _breadth_pool(allowed, category, imported, unseen=False):
+    """The chosen category's untried problems, plus every due retry: imported ones first when it has any,
+    or only unseen ones on the second pass."""
     fresh = [c for c in allowed if not c["retry"] and c["category"] == category]
-    if any(c["slug"] in imported for c in fresh):
+    if unseen:
+        fresh = [c for c in fresh if c["slug"] not in imported]
+    elif any(c["slug"] in imported for c in fresh):
         fresh = [c for c in fresh if c["slug"] in imported]
     return fresh + [c for c in allowed if c["retry"]]
 
@@ -357,7 +405,7 @@ def _pick(client, request, pool, steer, valid):
 def _read(client, request):
     content = {"today": request.started.date().isoformat(), "message": request.message, "earlier_chat": list(request.chat[:-1]),
                "card": {"title": request.card["title"], "difficulty": request.card["difficulty"]} if request.card else None,
-               "steer": request.steer, "categories": list(CATEGORIES)}
+               "steer": request.steer, "categories": list(CATEGORIES), "recent_problems": request.recent_problems}
     return client.call_role("planner", [{"role": "system", "content": READER_PROMPT},
                                         {"role": "user", "content": json.dumps(content)}], Reading)
 
@@ -367,7 +415,7 @@ def ask_planner(client, request):
     if request.trigger != "chat":
         focuses = request.steer["focus"] if request.steer else []
         if request.breadth and not focuses:
-            pool = valid = _breadth_pool(request.allowed, request.breadth, imported)
+            pool = valid = _breadth_pool(request.allowed, request.breadth, imported, request.breadth_unseen)
         else:
             pool, _ = _pool(request.allowed, focuses)
             valid = request.allowed
@@ -396,7 +444,7 @@ def ask_planner(client, request):
     elif not focuses and steer:
         focuses = steer["focus"]
     if reading.reading in ("ask", "clear") and request.breadth and not focuses and not reading.named_title.strip() and not steer:
-        pool, fits = _breadth_pool(request.allowed, request.breadth, imported), True
+        pool, fits = _breadth_pool(request.allowed, request.breadth, imported, request.breadth_unseen), True
     else:
         pool, fits = _pool(request.allowed, focuses)
     if not fits:
@@ -425,6 +473,7 @@ class Planner:
 
     def _request(self, trigger, session_id, text=None):
         now = self.clock()
+        catalog = load_catalog()
         with open_store(self.db_path) as db:
             allowed = allowed_next(db, session_id=session_id, now=now)
             summary = learner_summary(db, now=now)
@@ -437,7 +486,24 @@ class Planner:
             preferences = [t for (t,) in db.execute("SELECT text FROM notes WHERE kind = 'preference' ORDER BY id DESC LIMIT 20")]
             attempts = _session_attempts(db, session_id)
             unfinished = _unfinished(db)
-        catalog = load_catalog()
+            tried = {catalog.by_slug(a["slug"])["category"] for a in attempts if catalog.by_slug(a["slug"])}
+            imported_slugs = {row["slug"] for row in imported}
+            fresh = [c for c in allowed if not c["retry"]]
+            reviewed = {catalog.by_slug(slug)["category"] for (slug,) in
+                        db.execute("SELECT DISTINCT item_key FROM reviews WHERE item_type = 'problem'") if catalog.by_slug(slug)}
+            untouched = sorted(category for category in CATEGORIES
+                               if category not in reviewed
+                               and any(c["category"] == category for c in fresh))
+            no_transfer = sorted(category for category in CATEGORIES
+                                 if summary[category]["solve"] is None
+                                 and any(c["category"] == category and c["slug"] not in imported_slugs for c in fresh))
+            breadth = breadth_unseen = None
+            for categories, unseen in ((untouched, False), (no_transfer, True)):
+                if categories:
+                    remaining = [category for category in categories if category not in tried]
+                    breadth, breadth_unseen = self.rng.choice(remaining or categories), unseen
+                    break
+            recent = _recent_problems(db, session_id, attempts)
         session_problems = []
         for a in attempts:
             entry = catalog.by_slug(a["slug"])
@@ -452,14 +518,8 @@ class Planner:
                     for category, v in summary.items()}
         context = {"today": now.date().isoformat(), "learner_summary": rendered, "session_problems": session_problems,
                    "imported_history": imported, "hypotheses": hypotheses, "preferences": preferences, "unfinished": unfinished}
-        tried = {catalog.by_slug(a["slug"])["category"] for a in attempts if catalog.by_slug(a["slug"])}
-        no_evidence = sorted(category for category in CATEGORIES
-                             if summary[category]["solve"] is None
-                             and any(not c["retry"] and c["category"] == category for c in allowed))
-        remaining = [category for category in no_evidence if category not in tried]
-        breadth = self.rng.choice(remaining or no_evidence) if no_evidence else None
         request = PlannerRequest(trigger, session_id, now, allowed, context, summary, dict(self.card) if self.card else None,
-                                 tuple(self._chat), steer, text, breadth)
+                                 tuple(self._chat), steer, text, breadth, bool(breadth_unseen), recent)
         self._waiting = request
         return request
 

@@ -83,11 +83,11 @@ def entry(slug):
     return found
 
 
-def review(db, slug, grade, at, *, meets=True, first=False):
-    """A problem review (grade None is a pending one)."""
-    db.execute("INSERT INTO reviews (item_type, item_key, grade, meets_expected, first_attempt, difficulty, reviewed_at) "
-               "VALUES ('problem', ?, ?, ?, ?, ?, ?)",
-               (slug, grade, None if grade is None else int(meets), int(first), entry(slug)["difficulty"], at.isoformat()))
+def review(db, slug, grade, at, *, meets=True, first=False, event_id=None):
+    """A problem review (grade None is a pending one), optionally tied to its attempt's problem_left event."""
+    db.execute("INSERT INTO reviews (event_id, item_type, item_key, grade, meets_expected, first_attempt, difficulty, reviewed_at) "
+               "VALUES (?, 'problem', ?, ?, ?, ?, ?, ?)",
+               (event_id, slug, grade, None if grade is None else int(meets), int(first), entry(slug)["difficulty"], at.isoformat()))
 
 
 def category_review(db, category, grade, at, *, skill="solve", difficulty="Medium"):
