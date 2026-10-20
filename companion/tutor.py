@@ -184,7 +184,7 @@ Rules:
 - No grades and no judgement of the learner ("this one is easy", "you should know this"). Be warm and plain.
 - The reference is for judging their approach, not for quoting. Never name a pattern, an approach or its complexity unless the learner has already named or used it themselves.
 - Never state the time or space complexity of their approach or any other, unless they ask after solving it: their own complexity analysis is measured.
-- Refer to their code concretely (a line, a variable name) so they can see you followed it. It may be mid-edit. You can't run it; the run results show what NeetCode returned. If it's only NeetCode's starter code (the empty function signature), they haven't started writing yet.
+- Refer to their code concretely (a line number from the numbered listing, a variable name) so they can see you followed it. The numbers are not part of their code: never copy them into code you write. It may be mid-edit. You can't run it; the run results show what NeetCode returned. If it's only NeetCode's starter code (the empty function signature), they haven't started writing yet.
 - If the problem statement isn't available, don't invent details: work from the title, the test cases in the run results and the reference, and ask them when a detail matters and you're unsure.
 - Keep replies short for a narrow panel: usually one to four sentences, and any code only as long as it must be. You may use `inline code` and fenced code blocks (each line of code on its own line, indented as in Python) for code, short paragraphs separated by blank lines, and simple `- ` lists; no headings, tables, images or links.
 
@@ -281,6 +281,12 @@ def reply_schema(request: TutorRequest, *, allowed=(), asked: bool = False, answ
 def answered_presses(events) -> int:
     """Presses of "I need help" on this problem that got a reply; a failed press doesn't count."""
     return sum(1 for kind, payload in events if kind == "help_turn" and payload["request"] == "help")
+
+
+def _code_block(code):
+    """Numbered so the Tutor can cite lines as the editor shows them; models miscount unnumbered lines."""
+    numbered = "\n".join(f"{i:>3} | {line}" for i, line in enumerate(code.split("\n"), 1))
+    return f"```python\n{_clip(numbered, CODE_LIMIT)}\n```"
 
 
 def _clip(text, limit):
@@ -434,7 +440,7 @@ def _solve_request(events, *, solve: dict, reference: StoredReference | None, ac
              "The learner's submission was accepted. Discuss it the way an interviewer would after a solve; "
              "help now never changes the solve grade."]
     if accepted_code and accepted_code.strip():
-        lines += ["## Accepted code", f"```python\n{_clip(accepted_code, CODE_LIMIT)}\n```"]
+        lines += ["## Accepted code", _code_block(accepted_code)]
     else:
         lines += ["## Accepted code", "No code was captured at the accept."]
     lines.append(f"Load so far: {_minutes(problem_seconds)} on the problem, Tutor help turns: {help_turns}, "
@@ -520,7 +526,7 @@ def build_messages(problem: dict, events: list, *, reference: StoredReference | 
         if code is None or not code.strip():
             code_section = "## Their code\nThe learner hasn't written any code yet (none seen). Help from the problem and what they say."
         else:
-            code_section = f"## Their code\n```python\n{_clip(code, CODE_LIMIT)}\n```"
+            code_section = f"## Their code\n{_code_block(code)}"
             if behind:
                 code_section += "\n(The code may be slightly behind their latest edits.)"
         edits = [p["diff"] for kind, p in events if kind == "code_changed"][-RECENT_EDITS:]

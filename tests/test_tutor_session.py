@@ -242,7 +242,7 @@ def test_code_statement_presses_and_problem_time_are_rebuilt_after_a_restart(tmp
     out, turn = begin(fresh)
     text = context(turn)
     assert out[0]["press_index"] == 2
-    assert "a\nc\nd" in text and STATEMENT in text and "on this problem: 6 min" in text
+    assert "  1 | a\n  2 | c\n  3 | d" in text and STATEMENT in text and "on this problem: 6 min" in text
 
 
 def test_a_turn_open_when_the_companion_died_is_logged_failed_on_restore(tmp_path):
