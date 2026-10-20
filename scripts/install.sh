@@ -46,6 +46,7 @@ agent_dir="$target_home/Library/LaunchAgents"
 plist="$agent_dir/com.leetotter.companion.plist"
 log_dir="$target_home/Library/Logs/Leetotter"
 log="$log_dir/companion.log"
+launch_log="$log_dir/launch.log"
 
 if "$provided_url"; then
     if [[ -z "$base_url" || "$base_url" == *$'\n'* || "$base_url" == *$'\r'* ]]; then
@@ -94,22 +95,22 @@ if ! "$dry_run"; then
     (cd "$app_dir" && "$uv_path" sync --frozen)
 fi
 
-python3 - "$plist" "$app_dir" "$launch" "$log" "$launch_path" <<'PY'
+python3 - "$plist" "$app_dir" "$launch" "$launch_log" "$log" "$launch_path" <<'PY'
 import plistlib
 import sys
 
-plist, app, launch, log, path = sys.argv[1:]
+plist, app, launch, launch_log, log, path = sys.argv[1:]
 with open(plist, "wb") as out:
     plistlib.dump({
         "Label": "com.leetotter.companion",
         "ProgramArguments": [launch],
         "WorkingDirectory": app,
-        "EnvironmentVariables": {"PATH": path},
+        "EnvironmentVariables": {"PATH": path, "LEETOTTER_LOG_PATH": log},
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 10,
-        "StandardOutPath": log,
-        "StandardErrorPath": log,
+        "StandardOutPath": launch_log,
+        "StandardErrorPath": launch_log,
     }, out)
 PY
 

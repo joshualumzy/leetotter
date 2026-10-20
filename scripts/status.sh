@@ -19,6 +19,7 @@ label=com.leetotter.companion
 plist="$target_home/Library/LaunchAgents/$label.plist"
 app_dir="$target_home/Library/Application Support/Leetotter/app"
 log="$target_home/Library/Logs/Leetotter/companion.log"
+launch_log="$target_home/Library/Logs/Leetotter/launch.log"
 port=${LEETOTTER_PORT:-8765}
 
 echo "Leetotter companion service (starts at login)"
@@ -59,4 +60,8 @@ echo "  Log: $log"
 if [[ -f "$log" ]]; then
     echo "  Last log lines:"
     tail -5 "$log" | sed 's/^/    /'
+fi
+if [[ -s "$launch_log" ]]; then
+    echo "  Launch log:"
+    tail -5 "$launch_log" | sed 's/^/    /'
 fi

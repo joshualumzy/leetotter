@@ -46,9 +46,11 @@ def test_install_creates_launch_agent_without_secret(tmp_path):
     assert plist["ProgramArguments"] == [str(app / "scripts/leetotter-companion")]
     assert str(ROOT) not in plist_path.read_text()
     assert {str(path.relative_to(app)) for path in app.rglob("*") if path.is_file()} == APP_FILES
-    log = str(tmp_path / "Library/Logs/Leetotter/companion.log")
-    assert plist["StandardOutPath"] == log
-    assert plist["StandardErrorPath"] == log
+    companion_log = str(tmp_path / "Library/Logs/Leetotter/companion.log")
+    launch_log = str(tmp_path / "Library/Logs/Leetotter/launch.log")
+    assert plist["StandardOutPath"] == launch_log
+    assert plist["StandardErrorPath"] == launch_log
+    assert plist["EnvironmentVariables"]["LEETOTTER_LOG_PATH"] == companion_log
     assert "NUS_SOCLAAS_API_KEY" not in plist_path.read_text()
     assert "provider.invalid" not in plist_path.read_text()
 
@@ -138,6 +140,31 @@ def test_launch_continues_without_key_using_fake_commands(tmp_path):
     assert "provider.invalid" not in result.stderr
 
 
+def test_launch_script_trims_oversized_launch_log_in_place(tmp_path):
+    assert run_script("install.sh", tmp_path, "--base-url", "https://provider.invalid/v1").returncode == 0
+    app = tmp_path / "Library/Application Support/Leetotter/app"
+    log = tmp_path / "Library/Logs/Leetotter/launch.log"
+    log.write_bytes(b"x" * (1024 * 1024 + 1))
+    inode = log.stat().st_ino
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "security").write_text("#!/bin/sh\nexit 44\n")
+    (bin_dir / "uv").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("security", "uv"):
+        (bin_dir / name).chmod(0o755)
+    env = os.environ.copy()
+    env.update(HOME=str(tmp_path), USER="test-user", PATH=f"{bin_dir}:{env['PATH']}")
+    result = subprocess.run(
+        ["bash", str(app / "scripts/leetotter-companion")],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert log.stat().st_ino == inode
+    assert log.read_bytes() == b"x" * (256 * 1024)
+
+
 def test_status_says_in_plain_words_whether_the_service_is_installed(tmp_path):
     before = run_script("status.sh", tmp_path)
     assert before.returncode == 0, before.stderr
@@ -151,3 +178,10 @@ def test_status_says_in_plain_words_whether_the_service_is_installed(tmp_path):
     assert str(tmp_path / "Library/LaunchAgents/com.leetotter.companion.plist") in after.stdout
     assert str(tmp_path / "Library/Logs/Leetotter/companion.log") in after.stdout
     assert "provider.invalid" not in after.stdout
+
+    launch_log = tmp_path / "Library/Logs/Leetotter/launch.log"
+    launch_log.write_text("crash before logging\n")
+    with_launch = run_script("status.sh", tmp_path)
+    assert with_launch.returncode == 0, with_launch.stderr
+    assert "Launch log:" in with_launch.stdout
+    assert "crash before logging" in with_launch.stdout

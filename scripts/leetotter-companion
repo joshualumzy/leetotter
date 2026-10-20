@@ -19,5 +19,14 @@ else
     printf 'Leetotter: API key is not in the Keychain; model calls will fail until it is added.\n' >&2
 fi
 
+# launchd holds launch.log open with append, so trim it in place instead of renaming.
+launch_log="$HOME/Library/Logs/Leetotter/launch.log"
+if [[ -f "$launch_log" ]] && (($(wc -c <"$launch_log") > 1048576)); then
+    tmp=$(mktemp)
+    tail -c 262144 "$launch_log" >"$tmp"
+    cat "$tmp" >"$launch_log"
+    rm -f "$tmp"
+fi
+
 cd "$app"
 exec uv run python -m companion
