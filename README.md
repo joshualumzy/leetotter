@@ -29,10 +29,9 @@ A chatbot in the sidebar helps with one problem, then forgets you. Leetotter sit
 ## Features
 
 - **Plans your practice.** Steer it in plain words: "something harder", "more graphs".
-- **Practises like an interview.** Each problem has a time cap. Hints come only when you ask, and only as much as you need, often pointing back to a problem where you made the same mistake. After a solve it may ask about complexity or trade-offs.
+- **Practises like an interview.** Each problem has a time cap, and hints come only when you ask, often pointing back to a past mistake.
 - **Recaps every session.** A few bullets on what it noticed about how you think. Tell it if something's off and it corrects its picture of you.
 - **Grades honestly.** Two graders judge each solve independently, so "done" means you really solved it on your own.
-- **Starts from where you are.** One click imports your existing NeetCode progress.
 - **Private by default.** It watches only during a session, never runs your code, and keeps your history in one file on your Mac.
 
 ## Get started
@@ -46,7 +45,7 @@ security add-generic-password -a "$USER" -s NUS_SOCLAAS_API_KEY -w   # paste you
 cd extension && npm install && npm run build
 ```
 
-In Chrome, open `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick `extension/dist`. Then open Leetotter from Chrome's side panel on any NeetCode page.
+In Chrome, open `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick `extension/dist`. Then open Leetotter from Chrome's side panel on any NeetCode page, and press **Import history** to bring in the problems you've already solved.
 
 The full setup, testing and uninstall notes are in [docs/development.md](docs/development.md).
 
