@@ -237,8 +237,11 @@ async function setMode(next: Mode): Promise<void> {
     }
   }));
 }
+// Reader events are handled one at a time, in the order the page sent them: problem_opened awaits a tab lookup,
+// and the code_snapshot sent right behind it must not overtake it, or the companion files the code before the problem.
+let readerQueue: Promise<unknown> = Promise.resolve();
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  void (async () => {
+  const handle = async () => {
     await ready;
     if (message?.kind === "get_status") return state;
     if (message?.kind === "get_mode") return sender.tab?.id === undefined || (sender.tab.id === sessionTabId && problemUrl(sender.tab.url)) ? mode : "idle";
@@ -439,7 +442,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       panel({ kind: "reader_error", message: readerError });
       await save(); return { accepted: false, mode };
     }
-  })().then(respond, error => { readerError = String(error); panel({ kind: "reader_error", message: readerError }); respond({ accepted: false, mode }); });
+  };
+  const result = message?.kind === "reader_event" ? (readerQueue = readerQueue.then(handle, handle)) : handle();
+  result.then(respond, error => { readerError = String(error); panel({ kind: "reader_error", message: readerError }); respond({ accepted: false, mode }); });
   return true;
 });
 chrome.tabs.onActivated.addListener(info => {

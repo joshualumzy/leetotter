@@ -165,6 +165,16 @@ describe("worker reader delivery", () => {
         (value.kind === "reader_reaction" || value.kind === "reader_error");
     })).toBe(false);
   });
+  it("keeps the page's order when problem_opened waits on a slow tab lookup", async () => {
+    await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" }); await settleFocus();
+    const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
+    const get = vi.mocked(chrome.tabs.get).getMockImplementation()!;
+    vi.mocked(chrome.tabs.get).mockImplementationOnce(async id => { await new Promise(r => setTimeout(r, 20)); return get(id); });
+    const opened = dispatch({ kind: "reader_event", event: { type: "problem_opened", payload: { site: "neetcode", slug: "duplicate-integer", title: "Contains Duplicate" } } }, tab);
+    const snapshot = dispatch({ kind: "reader_event", event: { type: "code_snapshot", payload: { code: "class Solution: pass" } } }, tab);
+    await Promise.all([opened, snapshot]);
+    expect(socket.sent.map(event => event.type).filter(type => type !== "focus_changed")).toEqual(["problem_opened", "code_snapshot"]);
+  });
   it("shows rate-limit notices without forwarding or pausing, then clears them on a result and new session", async () => {
     await start(); socket.readyState = 1; pushSession("watching"); await dispatch({ kind: "get_mode" }); await settleFocus();
     const tab = { id: 7, windowId: 3, active: true, url: "https://neetcode.io/problems/duplicate-integer/" };
