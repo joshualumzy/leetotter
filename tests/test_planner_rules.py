@@ -8,8 +8,8 @@ Interface (companion/planner.py) used by this file:
           "solve", "analysis": the category's ItemMemory (companion.memory.item_memory) or None
           "recent": {"Easy": [...], "Medium": [...], "Hard": [...]}: the grades ("good" / "hard" / "again") of
                     graded problem reviews in the category, by the review's difficulty; pending ones are left out
-          "done": how many of the category's problems are done on your own (latest graded attempt good or
-                  hard with meets_expected, SPEC §9)
+          "done": how many of the category's problems are done on your own (latest graded attempt good with
+                  meets_expected, SPEC §9)
           "imported": how many of its problems you imported as solved (prior_solve events)
 
     allowed_next(db, *, session_id, now) -> list[dict]
@@ -28,7 +28,6 @@ Readings chosen where SPEC leaves room (listed in the report):
   - a retry is due when its own recall now is below 0.9; a not-done problem that isn't due isn't offered
   - a skipped problem is one left in this session unaccepted and ungraded
   - "no two retries in a row" looks at the problem left last in this session
-  - a rusty category's refresh with a done problem is offered once per session
   - after an Again, one attempt at a same-pattern problem since the Again lets the retry back; patterns are
     known only from stored references
 """
@@ -184,18 +183,31 @@ def test_candidates_carry_their_reference_patterns(db):
 
 # --- the retry rule ---------------------------------------------------------------------------------
 
-def test_a_done_problem_is_not_retried_because_its_recall_dropped(db):
+def test_a_done_problem_is_not_a_candidate_until_all_150_have_a_graded_review(db):
     review(db, INVERT, "good", NOW - timedelta(days=30), first=True)  # its own recall is now about 0.67
     steady(db, "Trees")
     assert INVERT not in allowed(db)
 
 
-@pytest.mark.parametrize("grade, meets", [("again", False), ("hard", False)])  # real help, or brute force only
+def test_a_done_problem_is_a_candidate_once_all_150_have_a_graded_review(db):
+    every_150_tried(db, except_=(INVERT,))
+    review(db, INVERT, "good", NOW - timedelta(days=30), first=True)  # due, and now every one is tried
+    candidate = next(c for c in allowed_next(db, session_id=None, now=NOW) if c["slug"] == INVERT)
+    assert candidate["retry"] is True and candidate["done"] is True
+
+
+def test_a_done_problem_with_recall_at_or_above_0_9_is_never_a_candidate(db):
+    every_150_tried(db, except_=(INVERT,))
+    review(db, INVERT, "good", NOW - timedelta(days=1), first=True)  # not due, even though all are tried
+    assert INVERT not in allowed(db)
+
+
+@pytest.mark.parametrize("grade, meets", [("again", False), ("hard", False), ("hard", True)])
 def test_a_problem_not_done_on_your_own_comes_back_once_due(db, grade, meets):
     review(db, RIGHT_VIEW, grade, NOW - timedelta(days=10), meets=meets, first=True)
     steady(db, "Trees")
     candidate = next(c for c in allowed_next(db, session_id=None, now=NOW) if c["slug"] == RIGHT_VIEW)
-    assert candidate["retry"] is True
+    assert candidate["retry"] is True and candidate["done"] is False
 
 
 def test_a_problem_not_done_on_your_own_waits_until_it_is_due(db):
@@ -203,22 +215,10 @@ def test_a_problem_not_done_on_your_own_waits_until_it_is_due(db):
     assert RIGHT_VIEW not in allowed(db)
 
 
-def test_a_rusty_category_gets_a_refresh_with_a_done_problem(db):
+def test_a_done_problem_in_a_rusty_category_is_not_a_candidate_before_all_150_are_tried(db):
     review(db, INVERT, "good", NOW - timedelta(days=30), first=True)
     rusty(db, "Trees")
-    candidate = next(c for c in allowed_next(db, session_id=None, now=NOW) if c["slug"] == INVERT)
-    assert candidate["retry"] is True
-
-
-def test_a_rusty_category_gets_one_refresh_per_session(db):
-    review(db, INVERT, "good", NOW - timedelta(days=30), first=True)
-    review(db, SAME_TREE, "good", NOW - timedelta(days=30), first=True)
-    rusty(db, "Trees")
-    session = new_session(db)
-    assert {INVERT, SAME_TREE} <= allowed(db, session)
-    attempt(db, session, INVERT, accepted=True)
-    attempt(db, session, CLIMBING, NOW + timedelta(minutes=30), accepted=True)  # a new problem in between
-    assert SAME_TREE not in allowed(db, session, NOW + timedelta(hours=1))
+    assert INVERT not in allowed(db)
 
 
 # --- coverage rules ----------------------------------------------------------------------------------
@@ -284,6 +284,34 @@ def test_the_problem_just_left_is_out_of_the_list_while_its_grade_is_pending(db)
 def test_a_problem_with_a_pending_review_is_not_offered(db):
     review(db, LEVEL_ORDER, None, day(3))
     assert LEVEL_ORDER not in allowed(db)
+
+
+def test_a_pending_review_does_not_count_as_one_of_the_150_tried(db):
+    every_150_tried(db, except_=(INVERT, CLIMBING))
+    review(db, CLIMBING, None, day(2))
+    review(db, INVERT, "good", NOW - timedelta(days=30), first=True)
+    assert INVERT not in allowed(db)
+
+
+def test_a_locked_150_entry_does_not_block_a_done_problem_coming_back(db, monkeypatch):
+    from companion.catalog import Catalog
+
+    entries = [dict(entry) for entry in CATALOG.entries]
+    locked_slug = next(entry["slug"] for entry in entries
+                       if entry["neetcode150"] and entry["slug"] != INVERT)
+    next(entry for entry in entries if entry["slug"] == locked_slug)["locked"] = True
+    monkeypatch.setattr("companion.planner.load_catalog", lambda: Catalog(entries))
+    every_150_tried(db, except_=(INVERT, locked_slug))
+    review(db, INVERT, "good", NOW - timedelta(days=30), first=True)
+    assert INVERT in allowed(db)
+
+
+def test_an_empty_catalog_offers_nothing_and_counts_nothing_done(db, monkeypatch):
+    from companion.catalog import Catalog
+
+    monkeypatch.setattr("companion.planner.load_catalog", lambda: Catalog([]))
+    assert allowed_next(db, session_id=None, now=NOW) == []
+    assert all(summary["done"] == 0 for summary in learner_summary(db, now=NOW).values())
 
 
 def test_a_skipped_problem_is_not_suggested_again_in_the_same_session_but_is_in_the_next(db):

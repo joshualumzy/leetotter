@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from companion.catalog import load_catalog
+from companion.grading import done_on_your_own
 from companion.store import open_store
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ def _reached_150(db, session_id):
                 prior[slug] = result
 
     def count(rows):
-        return sum(bool(meets and grade in ("good", "hard") and event_id is not None
+        return sum(bool(done_on_your_own(grade, meets) and event_id is not None
                         and payload and json.loads(payload).get("accepted"))
                    for _, grade, meets, event_id, payload in rows.values())
 

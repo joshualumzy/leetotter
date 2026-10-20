@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from companion.attempts import attempts as grouped_attempts
 from companion.catalog import CATEGORIES, load_catalog
-from companion.grading import GRADES, category_grade, solve_grade
+from companion.grading import GRADES, category_grade, done_on_your_own, solve_grade
 from companion.memory import item_memory
 from companion.store import open_store
 
@@ -97,7 +97,7 @@ def _reason(review, attempt):
     if grade != derived and ((derived is not None and not (grade == "again" and _debriefed(attempt)))
                              or (derived is None and attempt is not None and _debriefed(attempt) and grade != "again")):
         return "you corrected this grade"
-    if grade == "good":
+    if done_on_your_own(grade, meets):
         return "solved on your own"
     if grade == "hard":
         matching = [candidate for candidate in candidates if candidate[1] == grade] or candidates
@@ -105,8 +105,8 @@ def _reason(review, attempt):
         helped = [HELP_WORDS[kind] for kind in dict.fromkeys(kinds) if kind in HELP_WORDS]
         if meets:
             if helped:
-                return "solved on your own, with " + _join(helped)
-            return "solved on your own"
+                return "needed help, with " + _join(helped)
+            return "needed help"
         if helped:
             return "needed help, with a simpler approach than expected"
         return "solved brute force only"
@@ -204,7 +204,7 @@ def _snapshot(db, now):
     done = set()
     for slug, rows in problem_reviews.items():
         graded = [row for row in rows if row["grade"] is not None]
-        if graded and graded[-1]["grade"] in ("good", "hard") and graded[-1]["meets_expected"]:
+        if graded and done_on_your_own(graded[-1]["grade"], graded[-1]["meets_expected"]):
             done.add(slug)
     nc150 = {entry["slug"] for entry in entries}
     attempted &= nc150
@@ -265,9 +265,9 @@ def _problem_state(snapshot, slug, entries_by_slug):
     latest = graded[-1] if graded else None
     if latest is None:
         status = "unfinished"
-    elif latest["grade"] in ("good", "hard") and latest["meets_expected"]:
+    elif done_on_your_own(latest["grade"], latest["meets_expected"]):
         status = "on_your_own"
-    elif latest["grade"] == "again":
+    elif latest["grade"] == "again" or latest["meets_expected"]:
         status = "needed_help"
     else:
         status = "brute_force_only"

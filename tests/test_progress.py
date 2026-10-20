@@ -116,22 +116,36 @@ def test_header_counts_sum_to_the_150_and_categories_keep_neetcode_order(tmp_pat
     assert rows["Sliding Window"]["level"] == "not started"
 
 
-def test_done_on_your_own_is_the_latest_graded_attempt_meeting_expectation(tmp_path):
+def test_done_on_your_own_is_the_latest_graded_good_attempt(tmp_path):
     path = tmp_path / "db"
     with open_store(path) as db:
         session = add_session(db)
         add_review(db, ARRAYS[0], "good", at(-3), session=session)
         add_review(db, ARRAYS[0], "again", at(-1), session=session)          # latest is a miss
-        add_review(db, ARRAYS[1], "hard", at(-1), meets=True, session=session)   # help is fine
+        add_review(db, ARRAYS[1], "hard", at(-1), meets=True, session=session)   # help is not on your own
         add_review(db, ARRAYS[2], "hard", at(-1), meets=False, session=session)  # brute force only
         add_review(db, ARRAYS[3], "good", at(-2), session=session)
         add_review(db, ARRAYS[3], None, at(-1), session=session, event_id=None)  # pending repeat
         add_imported(db, ARRAYS[4])
 
     state = progress_state(path, now=NOW)
-    assert state["header"]["on_your_own"] == 2
-    assert state["header"]["coming_back"] == 2
+    assert state["header"]["on_your_own"] == 1
+    assert state["header"]["coming_back"] == 3
     assert state["header"]["to_do"] == 146
+
+
+def test_a_hard_latest_grade_is_not_done_on_your_own(tmp_path):
+    path = tmp_path / "db"
+    slug = ARRAYS[0]
+    with open_store(path) as db:
+        session = add_session(db)
+        left = add_attempt(db, session, slug, accepted=True, help=("question",))
+        add_review(db, slug, "hard", at(-1), meets=True, session=session, event_id=left)
+
+    assert progress_state(path, now=NOW)["header"]["on_your_own"] == 0
+    item = problem_item(category_state(path, "Arrays & Hashing", now=NOW), slug)
+    assert item["status"] == "needed_help"
+    assert item["latest"]["reason"] == "needed help, with a question"
 
 
 def test_category_detail_lists_only_attempted_problems_with_plain_status_and_reasons(tmp_path):
@@ -150,10 +164,10 @@ def test_category_detail_lists_only_attempted_problems_with_plain_status_and_rea
     assert [item["problem"] for item in state["problems"]] == [slugs[0], slugs[1], slugs[2]]
     assert state["counts"] == {"not_tried": len(ARRAYS) - 4, "imported_only": 1}
 
-    own = problem_item(state, slugs[0])
-    assert (own["status"], own["status_text"]) == ("on_your_own", "on your own")
-    assert own["latest"]["word"] == "shaky"
-    assert own["latest"]["reason"] == "solved on your own, with a question"
+    asked = problem_item(state, slugs[0])
+    assert (asked["status"], asked["status_text"]) == ("needed_help", "needed help, coming back")
+    assert asked["latest"]["word"] == "shaky"
+    assert asked["latest"]["reason"] == "needed help, with a question"
 
     helped_item = problem_item(state, slugs[1])
     assert (helped_item["status"], helped_item["status_text"]) == ("needed_help", "needed help, coming back")

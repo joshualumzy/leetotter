@@ -157,11 +157,9 @@ def test_failed_reflection_retries_at_next_start_without_waiting_for_it(tmp_path
     asyncio.run(scenario())
 
 
-def test_the_150th_done_gets_one_quiet_line(tmp_path):
+def finish_150(path, session_id, last_grade):
     from companion.catalog import load_catalog
-    from companion.reflector import QUIET_LINE
 
-    path, session_id, _ = ended(tmp_path)
     slugs = [item["slug"] for item in load_catalog().neetcode150()]
     assert len(slugs) == 150
     with open_store(path) as db:
@@ -175,10 +173,26 @@ def test_the_150th_done_gets_one_quiet_line(tmp_path):
         last_event = db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'problem_left', ?)",
                                 (session_id, "2026-01-02T00:00:00+00:00", json.dumps({"slug": slugs[-1], "accepted": True}))).lastrowid
         db.execute("INSERT INTO reviews (session_id, event_id, item_type, item_key, grade, meets_expected, first_attempt, reviewed_at) "
-                   "VALUES (?, ?, 'problem', ?, 'hard', 1, 1, '2026-01-02T00:00:00+00:00')",
-                   (session_id, last_event, slugs[-1]))
+                   "VALUES (?, ?, 'problem', ?, ?, 1, 1, '2026-01-02T00:00:00+00:00')",
+                   (session_id, last_event, slugs[-1], last_grade))
+
+
+def test_the_150th_done_gets_one_quiet_line(tmp_path):
+    from companion.reflector import QUIET_LINE
+
+    path, session_id, _ = ended(tmp_path)
+    finish_150(path, session_id, "good")
     state = reflect_session(RecordedReflector(answer()), path, session_id)
     assert state["bullets"] == [QUIET_LINE]
+
+
+def test_a_hard_latest_grade_is_not_the_150th_done(tmp_path):
+    from companion.reflector import QUIET_LINE
+
+    path, session_id, _ = ended(tmp_path)
+    finish_150(path, session_id, "hard")
+    state = reflect_session(RecordedReflector(answer()), path, session_id)
+    assert QUIET_LINE not in state["bullets"]
 
 
 def test_restart_retries_in_background_while_new_session_starts(tmp_path, monkeypatch):

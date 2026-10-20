@@ -92,7 +92,7 @@ def test_progress_uses_an_attempt_left_after_the_next_problem_was_opened(tmp_pat
         add_review(db, slug, "hard", at(0), meets=True, session=session, event_id=left)
 
     item = problem_item(category_state(path, "Arrays & Hashing", now=datetime(2026, 10, 20, tzinfo=timezone.utc)), slug)
-    assert item["latest"]["reason"] == "solved on your own, with a question"
+    assert item["latest"]["reason"] == "needed help, with a question"
 
 
 def test_past_links_use_an_attempt_left_after_the_next_problem_was_opened(tmp_path):

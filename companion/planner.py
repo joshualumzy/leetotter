@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from companion.catalog import CATEGORIES, load_catalog
+from companion.grading import done_on_your_own
 from companion.memory import item_memory
 from companion.session import TIME_CAP_MINUTES
 from companion.store import open_store
@@ -140,7 +141,7 @@ def learner_summary(db, *, now):
             graded = [r for r in reviews.get(entry["slug"], []) if r["grade"] is not None]
             if graded:
                 latest = graded[-1]
-                done += latest["grade"] in ("good", "hard") and bool(latest["meets"])
+                done += done_on_your_own(latest["grade"], latest["meets"])
                 for row in graded[-5:]:
                     difficulty = row["difficulty"] or entry["difficulty"]
                     recent[difficulty].append(row["grade"])
@@ -238,6 +239,8 @@ def allowed_next(db, *, session_id, now):
     pending_session = {a["slug"] for a in attempts if a["accepted"] and not any(r["grade"] and r["at"] >= a["left"] for r in reviews.get(a["slug"], []))}
     eligible_untried_150 = any(e["neetcode150"] and not e["locked"] and e["slug"] not in skipped | pending_session and
                                not reviews.get(e["slug"]) for e in catalog.entries)
+    all_150_tried = all(any(r["grade"] for r in reviews.get(e["slug"], []))
+                        for e in catalog.entries if e["neetcode150"] and not e["locked"])
     last_retry = bool(attempts and any(r["grade"] and r["at"] < attempts[-1]["opened"]
                                        for r in reviews.get(attempts[-1]["slug"], [])))
     candidates = []
@@ -248,19 +251,14 @@ def allowed_next(db, *, session_id, now):
             continue
         graded = [r for r in history if r["grade"]]
         retry = bool(graded)
-        done = bool(graded and graded[-1]["grade"] in ("good", "hard") and graded[-1]["meets"])
+        done = bool(graded and done_on_your_own(graded[-1]["grade"], graded[-1]["meets"]))
         if retry:
             if last_retry and eligible_untried_150:
                 continue
             memory = item_memory(db, "problem", slug, now)
-            if done:
-                category_memory = item_memory(db, "category:solve", entry["category"], now)
-                if not category_memory or category_memory.recall >= .9 or category_memory.stability >= 7:
-                    continue
-                if any(catalog.by_slug(a["slug"])["category"] == entry["category"] and
-                       any(r["grade"] and r["meets"] for r in reviews.get(a["slug"], [])) for a in attempts):
-                    continue
-            elif memory and memory.recall >= .9:
+            if memory and memory.recall >= .9:
+                continue
+            if done and not all_150_tried:
                 continue
             if graded[-1]["grade"] == "again" and patterns.get(slug):
                 siblings = {e["slug"] for e in catalog.entries if not e["locked"] and e["slug"] != slug and

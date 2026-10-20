@@ -40,6 +40,10 @@ def solve_grade(kinds, *, meets_expected):
     return "good"
 
 
+def done_on_your_own(grade, meets):
+    return grade == "good" and bool(meets)
+
+
 def analysis_grade(verdict):
     mapping = {"right": "good", "right_after_followup": "hard", "wrong": "again",
                "wrong_reasoning": "again", "no_reasoning": None}
