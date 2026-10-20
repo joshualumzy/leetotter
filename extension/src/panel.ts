@@ -1015,9 +1015,9 @@ function render(): void {
   }
   if (session?.followup && ["active", "paused", "time_up", "debrief"].includes(view.body)) body!.append(followupCard(session.followup));
   if (view.body === "paused") body!.append(block("doze", view.pauseTitle || "Paused", view.pauseText || ""));
-  if (view.body === "active" && session?.problem && !session.accepted) {
+  if (view.body === "active" && session?.problem) {
     const actions = element("div", "problem-actions");
-    actions.append(button("skip-problem", "Skip this problem", "link"));
+    actions.append(session.accepted ? button("next-problem", "Next problem", "btn primary") : button("skip-problem", "Skip this problem", "link"));
     body!.append(actions);
   }
   if (view.body === "time_up") body!.append(timeUpCard());
@@ -1145,7 +1145,7 @@ body.addEventListener("click", event => {
       openCategory = null; categoryDetail = undefined;
     } else {
       openCategory = name; categoryDetail = undefined;
-      void send({ kind: "progress_category", payload: { category: name } });
+      void send({ kind: "progress_category", category: name });
     }
     render();
     return;
@@ -1215,7 +1215,7 @@ body.addEventListener("click", event => {
   if (id === "time-up-debrief") void send({ kind: "session_command", command: "time_up_debrief" });
   if (id === "time-up-skip" || id === "debrief-skip" || id === "skip-problem") void send({ kind: "session_command", command: "skip" });
   if (id === "followup-skip" && session?.followup) void send({ kind: "followup_skip", question_id: session.followup.question_id });
-  if (id === "debrief-done") void send({ kind: "session_command", command: "done" });
+  if (id === "debrief-done" || id === "next-problem") void send({ kind: "session_command", command: "done" });
   if (id?.startsWith("copy-reference-")) {
     const item = referenceState?.references.find(reference => reference.slug === id.slice("copy-reference-".length));
     if (item?.prompt) {
@@ -1366,7 +1366,7 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "progress_state") {
     progress = message.state as ProgressState;
-    if (openCategory) void send({ kind: "progress_category", payload: { category: openCategory } });
+    if (openCategory) void send({ kind: "progress_category", category: openCategory });
     render();
   }
   if (message?.kind === "progress_category_state") {

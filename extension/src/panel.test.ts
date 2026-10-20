@@ -580,6 +580,9 @@ describe("panel actions", () => {
     expect(document.getElementById("status-dot")?.classList.contains("good")).toBe(true);
     expect(document.getElementById("remark")?.textContent).toMatch(/Accepted|Cracked|Shell/);
     expect(document.querySelector(".active-otter figcaption")?.textContent).toContain("Accepted! Keep polishing, or move on.");
+    expect(document.getElementById("skip-problem")).toBeNull();
+    click("next-problem");
+    expect(sendMessage).toHaveBeenCalledWith({ kind: "session_command", command: "done" });
     notify({ kind: "session_state", state: { ...active, time_up: { can_extend: true } } });
     expect(document.querySelector(".time-up-card")?.textContent).toContain("Time's up");
     expect(document.querySelector(".active-otter")).toBeNull();
@@ -1089,7 +1092,7 @@ describe("panel actions", () => {
       notify({ kind: "progress_state", state: progress });
       sendMessage.mockClear();
       (document.querySelector('[data-category="Tries"]') as HTMLElement).click();
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_category", payload: { category: "Tries" } });
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_category", category: "Tries" });
       notify({ kind: "progress_category_state", state: detail });
       const card = document.querySelector(".category-detail")!;
       expect(card.textContent).toContain("To reach strong: a clean solve");
@@ -1111,7 +1114,7 @@ describe("panel actions", () => {
       expect(sendMessage).toHaveBeenCalledWith({ kind: "grade_correct", review_id: 4, grade: "shaky" });
       sendMessage.mockClear();
       notify({ kind: "progress_state", state: progress });
-      expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_category", payload: { category: "Tries" } });
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "progress_category", category: "Tries" });
     });
 
     it("drops a stale category answer and excludes a session only after a confirm step", () => {
