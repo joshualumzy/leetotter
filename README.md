@@ -24,12 +24,15 @@ A chatbot in the sidebar helps with one problem, then forgets you. Leetotter sit
 | Brings problems back before you forget them | ✗ | ✓, spaced repetition (FSRS) |
 | Waits for you to ask before hinting | rarely | always |
 | Shows what you can solve on your own | ✗ | ✓, per category |
+| Sums up each session | ✗ | ✓, and takes your corrections |
 
 ## Features
 
 - **Plans your practice.** Steer it in plain words: "something harder", "more graphs".
-- **Hints like an interviewer.** Only when you ask, and only as much as you need. After a solve it may ask about complexity.
-- **Learns how you think.** It spots patterns in your mistakes and uses them to plan and teach.
+- **Practises like an interview.** Each problem has a time cap. Hints come only when you ask, and only as much as you need, often pointing back to a problem where you made the same mistake. After a solve it may ask about complexity or trade-offs.
+- **Recaps every session.** A few bullets on what it noticed about how you think. Tell it if something's off and it corrects its picture of you.
+- **Grades honestly.** Two graders judge each solve independently, so "done" means you really solved it on your own.
+- **Starts from where you are.** One click imports your existing NeetCode progress.
 - **Private by default.** It watches only during a session, never runs your code, and keeps your history in one file on your Mac.
 
 ## Get started
