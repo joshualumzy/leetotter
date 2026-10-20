@@ -511,6 +511,18 @@ describe("panel actions", () => {
     expect(document.getElementById("remark")?.textContent).not.toBe(normal);
     expect(document.querySelector("#header-otter .otter")?.classList.contains("react-oof")).toBe(false);
   });
+  it("keeps a run outcome's words up for 5 s after the hop ends", () => {
+    vi.useFakeTimers();
+    notify({ kind: "session_state", state: { ...session, state: "active", mode: "watching", running: true } });
+    const normal = document.getElementById("remark")?.textContent;
+    notify({ kind: "reader_reaction", reaction: "run_pass" });
+    vi.advanceTimersByTime(2000);
+    expect(document.querySelector("#header-otter .otter")?.classList.contains("react-yay")).toBe(false);
+    expect(document.getElementById("remark")?.textContent).toMatch(/all green|Look at that/);
+    vi.advanceTimersByTime(3000);
+    expect(document.getElementById("remark")?.textContent).toBe(normal);
+    vi.useRealTimers();
+  });
   it("asks for the first name and supports Enter, Skip and settings", () => {
     expect(document.getElementById("first-run")?.textContent).toContain("What should I call you?");
     const input = document.getElementById("first-name") as HTMLInputElement;

@@ -78,6 +78,7 @@ let reactionCaption: string | null = null;
 let reactionClass = "";
 let reactionTimeout: number | undefined;
 let perkTimeout: number | undefined;
+let captionTimeout: number | undefined;
 let lastTypingReaction = 0;
 let pointer: { x: number; y: number } | null = null;
 let chat = emptyChat();
@@ -125,6 +126,7 @@ function decorateOtters(): void {
 function clearReaction(): void {
   window.clearTimeout(reactionTimeout);
   window.clearTimeout(perkTimeout);
+  window.clearTimeout(captionTimeout);
   reactionCaption = null;
   reactionClass = "";
 }
@@ -168,6 +170,7 @@ function playReaction(reaction: ReaderReaction): void {
   if (reaction === "typing") lastTypingReaction = now;
   window.clearTimeout(reactionTimeout);
   window.clearTimeout(perkTimeout);
+  window.clearTimeout(captionTimeout);
   const captions = reactionCaptions[reaction];
   reactionCaption = captions[Math.floor(Math.random() * captions.length)];
   const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -181,7 +184,10 @@ function playReaction(reaction: ReaderReaction): void {
       render();
     }, 350);
   }
-  reactionTimeout = window.setTimeout(() => { clearReaction(); render(); }, duration + (reaction.startsWith("run_") && !still ? 350 : 0));
+  const animation = duration + (reaction.startsWith("run_") && !still ? 350 : 0);
+  reactionTimeout = window.setTimeout(() => { reactionClass = ""; render(); }, animation);
+  // The hop is brief, but a run or submit outcome's words stay long enough to read.
+  captionTimeout = window.setTimeout(() => { reactionCaption = null; render(); }, reaction === "typing" ? animation : 5000);
 }
 
 function element(tag: string, className = "", text = ""): HTMLElement {
