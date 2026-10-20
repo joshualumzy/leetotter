@@ -30,6 +30,8 @@ This is the build spec. `design.html` (published at https://claude.ai/artifact/N
 
 **Reset** (a button in the same settings, "Reset all my progress"): erases everything personal and returns the panel to the first-run flow (your name, then the history import). It takes two steps: a warning that this can't be undone, then typing RESET. It erases `events`, `sessions`, `reviews`, `hypotheses`, `teaching`, `notes`, `model_calls` and `settings` (which includes the name and the history-import flag) in one transaction, so it either finishes or changes nothing. It keeps what isn't personal: `references`, `fsrs`, the catalog, and the API key in the Keychain.
 
+**Bug reports** (a button in the same settings, "Report a bug", which shows how many reports are saved, e.g. "Report a bug (3 saved)"): you type a line about what went wrong and send it. The companion saves a bundle, one folder per report, in `bugs/` beside the store (`~/Library/Application Support/Leetotter/bugs/<YYYYMMDD-HHMMSS>/`), so a coding agent can fix several bugs together later. A bundle holds your line and the time; the panel's last 50 messages to and from the companion; the current session state; the current session's last 50 events (or the last session's, between sessions); the last 5 `model_calls` rows in full; and the last 300 lines of the companion log. Each part is gathered on its own, so a part that can't be read is recorded as the error instead and the rest is still saved. The panel confirms the save and updates the count; if the companion isn't running or the save fails, the panel says so and keeps your line in the box. Bundles never expire and Reset leaves them: one is deleted only when its bug is fixed (`docs/agents/bug-reports.md`), so a report can't be lost unfixed. They never leave the Mac.
+
 **Judgment, in the agents' prompts** (no numbers): how much help to give and of what kind, which follow-up question to ask after a solve (if any), and problem order and mix.
 
 ## 3. Components
@@ -401,7 +403,7 @@ References are written once (the 150 in a batch, other problems on demand), so q
 
 ## 14. Privacy
 
-Everything is stored locally, in one SQLite file (§11). On your Mac, Leetotter runs only the Chrome extension and the companion; the models run on the provider's servers. Sent to the model API: problem text, your code, your messages, and summaries of your learner data. Never sent: anything from outside a session, or your name (§2). The API key lives in the Keychain, not in the store.
+Everything is stored locally, in one SQLite file (§11), plus any bug reports you save (§2). On your Mac, Leetotter runs only the Chrome extension and the companion; the models run on the provider's servers. Sent to the model API: problem text, your code, your messages, and summaries of your learner data. Never sent: anything from outside a session, or your name (§2). The API key lives in the Keychain, not in the store.
 
 ## 15. Build order
 
