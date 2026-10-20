@@ -82,11 +82,14 @@ def store_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get("LEETOTTER_DB_PATH") or DEFAULT_DB_PATH).expanduser()
 
 
-SNAPSHOTS_KEPT = 10
+SNAPSHOT_DAYS = 14
 
 
 def snapshot_store(path: str | Path | None, reason: str) -> Path | None:
-    """Copy the store into a snapshots folder beside it, keeping the newest SNAPSHOTS_KEPT; None if there is no store yet."""
+    """Copy the store into a snapshots folder beside it; None if there is no store yet.
+
+    Kept: the newest copy, plus the first copy of each reason on each of the last SNAPSHOT_DAYS days with copies,
+    so a bug noticed days later can still be rolled back, and a reset's copy survives the restarts after it."""
     path = store_path(path)
     if not path.exists():
         return None
@@ -104,8 +107,17 @@ def snapshot_store(path: str | Path | None, reason: str) -> Path | None:
     finally:
         copy.close()
         source.close()
-    for old in sorted(folder.glob("*.sqlite3"))[:-SNAPSHOTS_KEPT]:
-        old.unlink()
+    snapshots = sorted(folder.glob("*.sqlite3"))
+    days = set(sorted({snapshot.name[:8] for snapshot in snapshots})[-SNAPSHOT_DAYS:])
+    keep, firsts = {target}, set()
+    for snapshot in snapshots:
+        day, kind = snapshot.name[:8], snapshot.stem.split("-", 1)[1]
+        if day in days and (day, kind) not in firsts:
+            firsts.add((day, kind))
+            keep.add(snapshot)
+    for old in snapshots:
+        if old not in keep:
+            old.unlink()
     return target
 
 

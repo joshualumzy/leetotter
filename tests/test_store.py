@@ -77,18 +77,26 @@ def test_retired_overrun_events_are_removed_from_an_existing_store(tmp_path):
     assert kinds == ["session_started", "focus_changed"]
 
 
-def test_snapshot_keeps_the_newest_ten_and_none_without_a_store(tmp_path):
+def test_snapshot_keeps_each_days_first_per_reason_for_fourteen_days_and_none_without_a_store(tmp_path):
     from companion.store import snapshot_store
 
     path = tmp_path / "companion.sqlite3"
     assert snapshot_store(path, "start") is None
     with open_store(path) as db:
         db.execute("INSERT INTO notes (ts, kind, text) VALUES ('2026-01-01', 'preference', 'quiet')")
-    for _ in range(12):
+    folder = tmp_path / "companion-snapshots"
+    folder.mkdir()
+    for day in range(1, 21):
+        for name in ("T080000000000Z-start", "T090000000000Z-before-reset", "T100000000000Z-start"):
+            (folder / f"202601{day:02}{name}.sqlite3").touch()
+    for _ in range(3):
         last = snapshot_store(path, "start")
 
-    kept = sorted((tmp_path / "companion-snapshots").glob("*.sqlite3"))
-    assert len(kept) == 10 and kept[-1] == last
+    kept = {snapshot.name for snapshot in folder.glob("*.sqlite3")}
+    old_days = {f"202601{day:02}{name}.sqlite3" for day in range(8, 21)
+                for name in ("T080000000000Z-start", "T090000000000Z-before-reset")}
+    today = sorted(name for name in kept if name not in old_days)
+    assert old_days < kept and len(today) == 2 and last.name == today[-1]
     with open_store(last) as db:
         assert db.execute("SELECT text FROM notes").fetchone()[0] == "quiet"
 
