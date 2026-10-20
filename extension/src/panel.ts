@@ -68,6 +68,12 @@ let excludeSessionId: number | null = null;
 let excludeStep: "idle" | "confirm" = "idle";
 let resetStep: "idle" | "warning" | "confirm" = "idle";
 let resetText = "";
+let bugStep: "idle" | "compose" = "idle";
+let bugText = "";
+let bugSending = false;
+let bugError = "";
+let bugNotice = "";
+let bugNoticeTimer: number | undefined;
 let referenceState: ReferenceState | undefined;
 let referenceNotice = "";
 let flagTurn: number | null = null;
@@ -635,7 +641,7 @@ function settingsCard(): HTMLElement {
     const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option);
   }
   select.value = settings?.theme || "match"; themeLabel.append(select); card.append(themeLabel);
-  appendText(card, "h4", "Reset", "reset-title");
+  appendText(card, "h4", "Reset", "section-title");
   if (resetStep === "idle") {
     card.append(button("reset-progress", "Reset all my progress", "btn"));
   } else if (resetStep === "warning") {
@@ -658,6 +664,29 @@ function settingsCard(): HTMLElement {
     sendReset.disabled = resetText !== "RESET";
     row.append(sendReset, button("reset-cancel", "Cancel", "link"));
     card.append(row);
+  }
+  appendText(card, "h4", "Bug reports", "section-title");
+  if (bugStep === "idle") {
+    const count = settings?.bug_reports ?? 0;
+    card.append(button("report-bug", count > 0 ? `Report a bug (${count} saved)` : "Report a bug", "btn"));
+  } else {
+    const note = element("textarea", "field bug-note") as HTMLTextAreaElement;
+    note.id = "bug-note"; note.placeholder = "What went wrong?"; note.rows = 3;
+    note.value = bugText; note.maxLength = 4000;
+    card.append(note);
+    const row = element("div", "row");
+    const sendReport = button("bug-send", "Send", "btn");
+    sendReport.disabled = !bugText.trim() || bugSending;
+    row.append(sendReport, button("bug-cancel", "Cancel", "link"));
+    card.append(row);
+  }
+  if (bugError) {
+    const error = appendText(card, "p", bugError, "alert bug-error");
+    error.id = "bug-error"; error.setAttribute("role", "alert");
+  }
+  if (bugNotice) {
+    const notice = appendText(card, "p", bugNotice, "fine bug-notice");
+    notice.id = "bug-notice"; notice.setAttribute("role", "status");
   }
   if (referenceNotice) {
     const note = appendText(card, "p", referenceNotice, "reference-notice");
@@ -1052,6 +1081,16 @@ async function send(message: object): Promise<boolean> {
     return true;
   } catch (error) { actionError = error instanceof Error ? error.message : String(error); render(); return false; }
 }
+function sendBugReport(): void {
+  const note = bugText.trim();
+  if (!note || bugSending) return;
+  bugSending = true; bugError = ""; render();
+  void chrome.runtime.sendMessage({ kind: "bug_report", note }).then(result => {
+    if (result?.error) { bugSending = false; bugError = String(result.error); render(); }
+  }, error => {
+    bugSending = false; bugError = error instanceof Error ? error.message : String(error); render();
+  });
+}
 function requestChatState(): void {
   void chrome.runtime.sendMessage({ kind: "chat_get" }).then(result => {
     if (result?.error && transport.kind === "connected") {
@@ -1188,6 +1227,13 @@ body.addEventListener("click", event => {
     render();
     return;
   }
+  if (id === "report-bug") {
+    bugStep = "compose"; bugText = ""; bugError = ""; bugNotice = "";
+    window.clearTimeout(bugNoticeTimer);
+    render(); return;
+  }
+  if (id === "bug-cancel") { bugStep = "idle"; bugText = ""; bugError = ""; render(); return; }
+  if (id === "bug-send") { sendBugReport(); return; }
   if (id === "reset-progress") { resetStep = "warning"; resetText = ""; render(); return; }
   if (id === "reset-continue") { resetStep = "confirm"; resetText = ""; render(); return; }
   if (id === "reset-cancel") { resetStep = "idle"; resetText = ""; render(); return; }
@@ -1286,6 +1332,12 @@ body.addEventListener("input", event => {
     (document.getElementById("reset-send") as HTMLButtonElement | null)!.disabled = resetText !== "RESET";
     return;
   }
+  if (target.id === "bug-note") {
+    bugText = target.value;
+    const sendReport = document.getElementById("bug-send") as HTMLButtonElement | null;
+    if (sendReport) sendReport.disabled = !bugText.trim() || bugSending;
+    return;
+  }
   if (target.id.startsWith("verdict-")) referenceDrafts.set(target.id.slice("verdict-".length), target.value);
 });
 root.addEventListener("pointermove", event => {
@@ -1379,6 +1431,18 @@ chrome.runtime.onMessage.addListener(message => {
     const state = message.state as ProgressCategoryState;
     if (state.category === openCategory) { categoryDetail = state; render(); }
   }
+  if (message?.kind === "bug_saved") {
+    bugStep = "idle"; bugText = ""; bugSending = false; bugError = "";
+    bugNotice = "Saved. Thanks!";
+    window.clearTimeout(bugNoticeTimer);
+    bugNoticeTimer = window.setTimeout(() => { bugNotice = ""; render(); }, 4000);
+    render();
+  }
+  if (message?.kind === "bug_failed") {
+    bugSending = false;
+    bugError = message.message?.payload?.error || "The bug report could not be saved.";
+    render();
+  }
   if (message?.kind === "reset_done") {
     settingsOpen = false;
     activeTab = "session";
@@ -1387,6 +1451,8 @@ chrome.runtime.onMessage.addListener(message => {
     progress = undefined; categoryDetail = undefined; openCategory = null; correction = null;
     earlierOpen.clear(); excludeSessionId = null; excludeStep = "idle";
     resetStep = "idle"; resetText = "";
+    bugStep = "idle"; bugText = ""; bugSending = false; bugError = ""; bugNotice = "";
+    window.clearTimeout(bugNoticeTimer);
     pendingName = null; nameAcknowledgement = "";
     imported = false; importResult = "";
     suggestion = undefined; plannerLog = [];

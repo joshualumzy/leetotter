@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { capLine, clock, panelView, timerText } from "./panel-view";
 import type { SessionState, SettingsState } from "./protocol";
 
-const settings: SettingsState = { type: "settings_state", ts: "now", name: "Ada", theme: "match" };
+const settings: SettingsState = { type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 0 };
 const base: SessionState = { type: "session_state", ts: "now", state: "idle", mode: "idle", paused_reason: null, check_message: null, cap_minutes: null, cap_seconds_left: null, time_up: null, active_seconds: 0, running: false, problem: null, accepted: false };
 const view = (session: SessionState = base, readerError = "") => panelView({ transport: { kind: "connected" }, session_state: session, settings, readerError, sessionTabId: 7, panelTabId: 7, boundTabExists: true });
 

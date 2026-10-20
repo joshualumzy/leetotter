@@ -215,7 +215,7 @@ describe("worker reader delivery", () => {
     await start(); socket.readyState = 1;
     socket.onmessage?.({ data: JSON.stringify({ type: "status", ts: "now", state: "connected" }) });
     expect(socket.sent.map(item => item.type)).toContain("settings_get");
-    const settings = { type: "settings_state", ts: "now", name: null, theme: "match" };
+    const settings = { type: "settings_state", ts: "now", name: null, theme: "match", bug_reports: 0 };
     socket.onmessage?.({ data: JSON.stringify(settings) });
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "settings_state", settings });
     expect(await dispatch({ kind: "get_settings_state" })).toEqual(settings);
@@ -224,13 +224,13 @@ describe("worker reader delivery", () => {
   });
   it("rejects blank name updates while allowing first-run Skip", async () => {
     await start(); socket.readyState = 1;
-    socket.onmessage?.({ data: JSON.stringify({ type: "settings_state", ts: "now", name: null, theme: "match" }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: "settings_state", ts: "now", name: null, theme: "match", bug_reports: 0 }) });
     const before = socket.sent.length;
     expect(await dispatch({ kind: "settings_set", key: "name", value: "   " })).toEqual({ error: "Invalid setting." });
     expect(socket.sent).toHaveLength(before);
     expect(await dispatch({ kind: "skip_name" })).toEqual({ sent: true });
     expect(socket.sent.at(-1)).toMatchObject({ type: "settings_set", payload: { key: "name", value: "" } });
-    socket.onmessage?.({ data: JSON.stringify({ type: "settings_state", ts: "now", name: "Ada", theme: "match" }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 0 }) });
     const after = socket.sent.length;
     expect(await dispatch({ kind: "skip_name" })).toEqual({ error: "Invalid setting." });
     expect(socket.sent).toHaveLength(after);
@@ -677,5 +677,49 @@ describe("worker startup and storage failures", () => {
     expect(socket).toBeUndefined();
     resolveGet({ readerState: saved.readerState });
     await vi.waitFor(() => expect(socket).toBeDefined());
+  });
+});
+
+describe("Bug reports", () => {
+  it("sends the last 50 messages as the trace, without the report itself", async () => {
+    await start(); socket.readyState = 1;
+    for (let index = 0; index < 55; index++) expect(await dispatch({ kind: "chat_message", text: `m${index}` })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "bug_report", note: "It froze" })).toEqual({ sent: true });
+    const report = socket.sent.at(-1);
+    expect(report).toMatchObject({ type: "bug_report", payload: { note: "It froze" } });
+    const trace = report.payload.trace;
+    expect(trace).toHaveLength(50);
+    expect(trace.map((entry: any) => entry.message.payload.text)).toEqual(Array.from({ length: 50 }, (_, index) => `m${index + 5}`));
+    expect(trace.every((entry: any) => entry.direction === "out" && typeof entry.time === "string")).toBe(true);
+    expect(trace.some((entry: any) => entry.message.type === "bug_report")).toBe(false);
+  });
+  it("truncates a large message in the trace so the report stays small", async () => {
+    await start(); socket.readyState = 1;
+    expect(await dispatch({ kind: "chat_message", text: "x".repeat(3999) })).toEqual({ sent: true });
+    for (let index = 0; index < 49; index++) socket.onmessage?.({ data: JSON.stringify({ type: "chat_state", ts: "now", turns: [], streaming: null, padding: "y".repeat(50_000) }) });
+    expect(await dispatch({ kind: "bug_report", note: "It froze" })).toEqual({ sent: true });
+    const trace = socket.sent.at(-1).payload.trace;
+    expect(trace[0].message.payload.text).toHaveLength(3999);
+    expect(trace[1].message).toMatchObject({ type: "chat_state", length: expect.any(Number) });
+    expect(trace[1].message.truncated).toHaveLength(10_000);
+    expect(JSON.stringify(socket.sent.at(-1)).length).toBeLessThan(1_000_000);
+  });
+  it("keeps incoming messages in the trace and refuses to report when disconnected", async () => {
+    await start();
+    expect(await dispatch({ kind: "bug_report", note: "It froze" })).toEqual({ error: "Tutor service isn't connected." });
+    socket.readyState = 1;
+    pushSession("idle"); await dispatch({ kind: "get_mode" });
+    expect(await dispatch({ kind: "chat_message", text: "Why?" })).toEqual({ sent: true });
+    expect(await dispatch({ kind: "bug_report", note: "It froze" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1).payload.trace.map((entry: any) => entry.direction)).toEqual(["in", "out"]);
+  });
+  it("relays a saved report and a failed one to the panel", async () => {
+    await start(); socket.readyState = 1;
+    const saved = { type: "bug_saved", ts: "now" };
+    socket.onmessage?.({ data: JSON.stringify(saved) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "bug_saved" });
+    const failed = { type: "bug_failed", ts: "now", payload: { error: "disk full" } };
+    socket.onmessage?.({ data: JSON.stringify(failed) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "bug_failed", message: failed });
   });
 });

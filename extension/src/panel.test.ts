@@ -1196,6 +1196,52 @@ describe("panel actions", () => {
       expect(document.getElementById("reset-send")).toBeTruthy();
     });
 
+    it("reports a bug from settings, showing the saved count and keeping a failed line", async () => {
+      showStart();
+      click("header-otter");
+      expect(document.getElementById("report-bug")?.textContent).toBe("Report a bug");
+      notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 3 } });
+      expect(document.getElementById("report-bug")?.textContent).toBe("Report a bug (3 saved)");
+
+      click("report-bug");
+      const note = document.getElementById("bug-note") as HTMLTextAreaElement;
+      const sendButton = document.getElementById("bug-send") as HTMLButtonElement;
+      expect(note.placeholder).toBe("What went wrong?");
+      expect(sendButton.disabled).toBe(true);
+      note.value = "The otter ate my homework";
+      note.dispatchEvent(new window.Event("input", { bubbles: true }));
+      expect(sendButton.disabled).toBe(false);
+      sendMessage.mockClear();
+      click("bug-send");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "bug_report", note: "The otter ate my homework" });
+      expect((document.getElementById("bug-send") as HTMLButtonElement).disabled).toBe(true);
+
+      notify({ kind: "bug_saved" });
+      expect(document.getElementById("bug-note")).toBeNull();
+      expect(document.getElementById("settings-card")?.textContent).toContain("Saved. Thanks!");
+      click("report-bug");
+      expect((document.getElementById("bug-note") as HTMLTextAreaElement).value).toBe("");
+    });
+
+    it("keeps a bug report box open with its text when sending fails", async () => {
+      showStart();
+      click("header-otter");
+      sendMessage.mockImplementation(async (message: any) => message.kind === "bug_report"
+        ? { error: "Tutor service isn't connected." }
+        : { sent: true });
+      click("report-bug");
+      const note = document.getElementById("bug-note") as HTMLTextAreaElement;
+      note.value = "It froze";
+      note.dispatchEvent(new window.Event("input", { bubbles: true }));
+      click("bug-send");
+      await vi.waitFor(() => expect(document.getElementById("bug-error")?.textContent).toContain("Tutor service isn't connected."));
+      expect((document.getElementById("bug-note") as HTMLTextAreaElement).value).toBe("It froze");
+
+      notify({ kind: "bug_failed", message: { type: "bug_failed", ts: "now", payload: { error: "disk full" } } });
+      expect(document.getElementById("bug-error")?.textContent).toContain("disk full");
+      expect((document.getElementById("bug-note") as HTMLTextAreaElement).value).toBe("It froze");
+    });
+
     it("keeps linked reply slugs in the conversation without rendering extra lines", () => {
       const active = { ...session, state: "active" as const, mode: "watching" as const, running: true, problem: { slug: "two-sum", title: "Two Sum" } };
       notify({ kind: "session_state", state: active });

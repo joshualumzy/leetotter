@@ -31,6 +31,23 @@ let focusedWindow: number = chrome.windows.WINDOW_ID_NONE;
 let boundFocus: BoundFocus | undefined;
 const failedModeTabs = new Set<number>();
 function panel(message: unknown): void { chrome.runtime.sendMessage(message).catch(() => {}); }
+type TraceEntry = { direction: "in" | "out"; time: string; message: unknown };
+const trace: TraceEntry[] = [];
+// Each entry is capped so 50 of them stay well under the companion's 1 MB message limit.
+const TRACE_ENTRY_LIMIT = 10_000;
+function recordTrace(direction: "in" | "out", message: unknown): void {
+  const type = typeof message === "object" && message !== null ? (message as { type?: unknown }).type : undefined;
+  if (direction === "out" && type === "bug_report") return;
+  const text = JSON.stringify(message) ?? "";
+  const kept = text.length > TRACE_ENTRY_LIMIT ? { type, truncated: text.slice(0, TRACE_ENTRY_LIMIT), length: text.length } : message;
+  trace.push({ direction, time: new Date().toISOString(), message: kept });
+  if (trace.length > 50) trace.splice(0, trace.length - 50);
+}
+function companionSend(message: object): boolean {
+  const delivered = connection.send(message);
+  if (delivered) recordTrace("out", message);
+  return delivered;
+}
 function showReaderAlert(): void { panel({ kind: "reader_error", message: readerError || notice }); }
 let savedInOrder: Promise<void> = Promise.resolve();
 function save(): Promise<void> {
@@ -103,22 +120,23 @@ const connection = new CompanionConnection(
   next => {
     state = next; panel({ kind: "transport", state: next });
     if (next.kind === "connected") {
-      connection.send({ type: "get_import_status", ts: new Date().toISOString() });
-      connection.send({ type: "session_get_state", ts: new Date().toISOString() });
-      connection.send({ type: "settings_get", ts: new Date().toISOString() });
-      connection.send({ type: "chat_get", ts: new Date().toISOString() });
-      connection.send({ type: "planner_get", ts: new Date().toISOString() });
-      connection.send({ type: "recaps_get", ts: new Date().toISOString() });
-      connection.send({ type: "reference_get", ts: new Date().toISOString() });
+      companionSend({ type: "get_import_status", ts: new Date().toISOString() });
+      companionSend({ type: "session_get_state", ts: new Date().toISOString() });
+      companionSend({ type: "settings_get", ts: new Date().toISOString() });
+      companionSend({ type: "chat_get", ts: new Date().toISOString() });
+      companionSend({ type: "planner_get", ts: new Date().toISOString() });
+      companionSend({ type: "recaps_get", ts: new Date().toISOString() });
+      companionSend({ type: "reference_get", ts: new Date().toISOString() });
       resyncFocus();
     }
     if (next.kind === "error" && importPending) { importPending = false; panel({ kind: "import_error", message: next.message }); }
   },
   message => {
+    recordTrace("in", message);
     if (message.type === "chat_state") { panel({ kind: "chat_state", message }); return; }
     if (message.type.startsWith("tutor_")) {
       panel({ kind: "tutor", message });
-      if (message.type === "tutor_start") connection.send({ type: "chat_get", ts: new Date().toISOString() });
+      if (message.type === "tutor_start") companionSend({ type: "chat_get", ts: new Date().toISOString() });
       return;
     }
     if (message.type === "settings_state") { settingsState = message; panel({ kind: "settings_state", settings: message }); return; }
@@ -134,6 +152,8 @@ const connection = new CompanionConnection(
     if (message.type === "recaps_state") { recapsState = message; panel({ kind: "recaps_state", state: message }); return; }
     if (message.type === "progress_state") { progressState = message; panel({ kind: "progress_state", state: message }); return; }
     if (message.type === "progress_category_state") { progressCategoryState = message; panel({ kind: "progress_category_state", state: message }); return; }
+    if (message.type === "bug_saved") { panel({ kind: "bug_saved" }); return; }
+    if (message.type === "bug_failed") { panel({ kind: "bug_failed", message }); return; }
     if (message.type === "reset_done") {
       recapState = undefined; recapsState = undefined; progressState = undefined; progressCategoryState = undefined;
       sessionState = undefined; suggestion = undefined;
@@ -146,8 +166,8 @@ const connection = new CompanionConnection(
       return;
     }
     if (message.type === "reference_state") { referenceState = message; panel({ kind: "reference_state", state: message }); return; }
-    if (message.type === "reference_flagged") { panel({ kind: "reference_flagged", message }); connection.send({ type: "reference_get", ts: new Date().toISOString() }); return; }
-    if (message.type === "reference_verdict") { panel({ kind: "reference_verdict", message }); connection.send({ type: "reference_get", ts: new Date().toISOString() }); return; }
+    if (message.type === "reference_flagged") { panel({ kind: "reference_flagged", message }); companionSend({ type: "reference_get", ts: new Date().toISOString() }); return; }
+    if (message.type === "reference_verdict") { panel({ kind: "reference_verdict", message }); companionSend({ type: "reference_get", ts: new Date().toISOString() }); return; }
     if (message.type === "session_state") {
       if (notice && message.mode === "watching" && (sessionState?.state === "idle" || sessionState?.state === "ended")) { notice = ""; showReaderAlert(); }
       if (message.state === "active" && message.problem && suggestion) {
@@ -163,10 +183,10 @@ const connection = new CompanionConnection(
         const boundExists = await tabExists(sessionTabId);
         if (sessionState !== message) return;
         if (message.state === "active" && !boundExists && !orphanReported) {
-          orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
+          orphanReported = companionSend({ type: "tab_closed", ts: new Date().toISOString() });
         }
         if (message.state === "paused" && message.paused_reason === "disconnect" && boundExists && !disconnectResumeSent) {
-          disconnectResumeSent = connection.send({ type: "session_resume", ts: new Date().toISOString() });
+          disconnectResumeSent = companionSend({ type: "session_resume", ts: new Date().toISOString() });
         }
         await setMode(message.mode === "debrief" ? "watching" : message.mode);
       })();
@@ -195,7 +215,7 @@ async function openPlannerProblem(slug: string, title: string): Promise<void> {
   }
 }
 function send(type: ReaderMessageType, payload: Record<string, unknown>): boolean {
-  const delivered = connection.send({ type, ts: new Date().toISOString(), payload });
+  const delivered = companionSend({ type, ts: new Date().toISOString(), payload });
   if (delivered) {
     readerActivity = "Last reader event: " + type;
     panel({ kind: "reader_activity", message: readerActivity });
@@ -258,85 +278,91 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (["help_request", "chat_message", "chat_get"].includes(message?.kind)) {
       if (message.kind === "chat_message" && (typeof message.text !== "string" || !message.text.trim() || [...message.text.trim()].length > 4000)) return { error: "Message must be 1 to 4000 characters." };
       const outgoing = { type: message.kind, ts: new Date().toISOString(), ...(message.kind === "chat_message" ? { payload: { text: message.text.trim() } } : {}) };
-      return connection.send(outgoing) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend(outgoing) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "planner_get" || message?.kind === "planner_swap" || message?.kind === "planner_clear") {
-      return connection.send({ type: message.kind, ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: message.kind, ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "planner_go") {
       plannerTabId = Number.isInteger(message.tabId) ? message.tabId as number : plannerTabId;
-      return connection.send({ type: "planner_go", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "planner_go", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "planner_chat") {
       if (typeof message.text !== "string" || !message.text.trim() || [...message.text.trim()].length > 4000) return { error: "Message must be 1 to 4000 characters." };
-      return connection.send({ type: "planner_chat", ts: new Date().toISOString(), payload: { text: message.text.trim() } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "planner_chat", ts: new Date().toISOString(), payload: { text: message.text.trim() } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "recap_get") {
       if (!Number.isInteger(message.session_id) || message.session_id <= 0) return { error: "Invalid recap request." };
-      return connection.send({ type: "recap_get", ts: new Date().toISOString(), payload: { session_id: message.session_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "recap_get", ts: new Date().toISOString(), payload: { session_id: message.session_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "recap_feedback") {
       if (!Number.isInteger(message.session_id) || message.session_id <= 0 || typeof message.text !== "string" || !message.text.trim()) return { error: "Feedback text is required." };
-      return connection.send({ type: "recap_feedback", ts: new Date().toISOString(), payload: { session_id: message.session_id, text: message.text.trim() } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "recap_feedback", ts: new Date().toISOString(), payload: { session_id: message.session_id, text: message.text.trim() } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "recap_seen") {
       if (!Number.isInteger(message.session_id) || message.session_id <= 0) return { error: "Invalid recap request." };
-      const sent = connection.send({ type: "recap_seen", ts: new Date().toISOString(), payload: { session_id: message.session_id } });
+      const sent = companionSend({ type: "recap_seen", ts: new Date().toISOString(), payload: { session_id: message.session_id } });
       if (sent && recapState?.session_id === message.session_id) recapState = undefined;
       return sent ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "recaps_get") {
-      return connection.send({ type: "recaps_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "recaps_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "progress_get") {
-      return connection.send({ type: "progress_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "progress_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "progress_category") {
       if (typeof message.category !== "string" || !message.category) return { error: "Invalid category." };
-      return connection.send({ type: "progress_category", ts: new Date().toISOString(), payload: { category: message.category } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "progress_category", ts: new Date().toISOString(), payload: { category: message.category } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "grade_correct") {
       const byReview = Number.isInteger(message.review_id) && message.review_id > 0 && message.problem === undefined && message.attempt === undefined;
       const byAttempt = typeof message.problem === "string" && message.problem.length > 0 && Number.isInteger(message.attempt) && message.attempt > 0 && message.review_id === undefined;
       if (!(byReview || byAttempt) || !["good", "hard", "again", "solid", "shaky", "missed"].includes(message.grade)) return { error: "Invalid grade correction." };
       const payload = byReview ? { review_id: message.review_id, grade: message.grade } : { problem: message.problem, attempt: message.attempt, grade: message.grade };
-      return connection.send({ type: "grade_correct", ts: new Date().toISOString(), payload }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "grade_correct", ts: new Date().toISOString(), payload }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "session_exclude") {
       if (!Number.isInteger(message.session_id) || message.session_id <= 0) return { error: "Invalid session." };
-      return connection.send({ type: "session_exclude", ts: new Date().toISOString(), payload: { session_id: message.session_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "session_exclude", ts: new Date().toISOString(), payload: { session_id: message.session_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "reset_progress") {
       if (message.confirm !== "RESET") return { error: "Type RESET to confirm." };
-      return connection.send({ type: "reset_progress", ts: new Date().toISOString(), payload: { confirm: "RESET" } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "reset_progress", ts: new Date().toISOString(), payload: { confirm: "RESET" } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "bug_report") {
+      const note = typeof message.note === "string" ? message.note.trim() : "";
+      if (!note || [...note].length > 4000) return { error: "Message must be 1 to 4000 characters." };
+      return companionSend({ type: "bug_report", ts: new Date().toISOString(), payload: { note, trace: [...trace] } })
+        ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "reference_get") {
-      return connection.send({ type: "reference_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "reference_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "reference_flag") {
       const line = typeof message.line === "string" ? message.line : "";
       if (!Number.isInteger(message.message_id) || message.message_id <= 0 || line.includes("\n") || line.length > 500) return { error: "Invalid flag." };
-      return connection.send({ type: "reference_flag", ts: new Date().toISOString(), payload: { message_id: message.message_id, line } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "reference_flag", ts: new Date().toISOString(), payload: { message_id: message.message_id, line } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "reference_apply") {
       if (typeof message.slug !== "string" || !message.slug || typeof message.reply !== "string" || !message.reply.trim()) return { error: "Paste the verdict first." };
-      return connection.send({ type: "reference_apply", ts: new Date().toISOString(), payload: { slug: message.slug, reply: message.reply } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "reference_apply", ts: new Date().toISOString(), payload: { slug: message.slug, reply: message.reply } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
-    if (message?.kind === "settings_get") return connection.send({ type: "settings_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+    if (message?.kind === "settings_get") return companionSend({ type: "settings_get", ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
     if (message?.kind === "skip_name") {
       if (settingsState?.name !== null) return { error: "Invalid setting." };
-      return connection.send({ type: "settings_set", ts: new Date().toISOString(), payload: { key: "name", value: "" } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "settings_set", ts: new Date().toISOString(), payload: { key: "name", value: "" } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "settings_set") {
       const { key, value } = message;
       if (typeof value !== "string" || (key !== "name" && key !== "theme") ||
           (key === "name" && (!value.trim() || value.trim().length > 40)) ||
           (key === "theme" && !["match", "light", "dark"].includes(value))) return { error: "Invalid setting." };
-      return connection.send({ type: "settings_set", ts: new Date().toISOString(), payload: { key, value } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "settings_set", ts: new Date().toISOString(), payload: { key, value } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "followup_skip") {
       if (!Number.isInteger(message.question_id) || message.question_id <= 0) return { error: "Invalid follow-up question." };
-      return connection.send({ type: "followup_skip", ts: new Date().toISOString(), payload: { question_id: message.question_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
+      return companionSend({ type: "followup_skip", ts: new Date().toISOString(), payload: { question_id: message.question_id } }) ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "session_command") {
       const command = message.command;
@@ -359,13 +385,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           return { error: `Could not open the saved problem: ${error instanceof Error ? error.message : String(error)}` };
         }
         orphanReported = false; disconnectResumeSent = false;
-        return connection.send({ type, ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
+        return companionSend({ type, ts: new Date().toISOString() }) ? { sent: true } : { error: "Tutor service isn't connected." };
       }
-      if (!connection.send({ type, ts: new Date().toISOString(), ...(payload ? { payload } : {}) })) return { error: "Tutor service isn't connected." };
+      if (!companionSend({ type, ts: new Date().toISOString(), ...(payload ? { payload } : {}) })) return { error: "Tutor service isn't connected." };
       if (command === "start" || command === "resume") {
         orphanReported = false; disconnectResumeSent = false; await bindTab(message.tabId);
         plannerTabId = message.tabId;
-        if (command === "start") connection.send({ type: "planner_get", ts: new Date().toISOString() });
+        if (command === "start") companionSend({ type: "planner_get", ts: new Date().toISOString() });
       }
       if (command === "end") { suggestion = undefined; panel({ kind: "suggestion", message: null }); await bindTab(null); }
       return { sent: true };
@@ -381,7 +407,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         const reply = await chrome.tabs.sendMessage(tab.id, { kind: "read_history" });
         if (reply?.error) return { error: String(reply.error) };
         const urls = validateImportUrls(reply?.urls);
-        if (!connection.send({ type: "import_history", ts: new Date().toISOString(), payload: { urls } })) return { error: "Tutor service isn't connected." };
+        if (!companionSend({ type: "import_history", ts: new Date().toISOString(), payload: { urls } })) return { error: "Tutor service isn't connected." };
         importPending = true;
         return { pending: true };
       } catch (error) {
@@ -463,7 +489,7 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
     failedModeTabs.delete(id);
     if (id === sessionTabId && !change.url!.startsWith("https://neetcode.io/")) {
       // The session's tab left NeetCode: nothing is watching any more, so it pauses like a closed tab.
-      if (!orphanReported) orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
+      if (!orphanReported) orphanReported = companionSend({ type: "tab_closed", ts: new Date().toISOString() });
       await bindTab(null);
     } else {
       if (id === sessionTabId) {
@@ -480,7 +506,7 @@ chrome.tabs.onCreated.addListener(tab => { void ready.then(() => setPanelForTab(
 chrome.tabs.onRemoved.addListener(id => { void ready.then(async () => {
   failedModeTabs.delete(id);
   if (id === sessionTabId) {
-    if (!orphanReported) orphanReported = connection.send({ type: "tab_closed", ts: new Date().toISOString() });
+    if (!orphanReported) orphanReported = companionSend({ type: "tab_closed", ts: new Date().toISOString() });
     await bindTab(null);
   } else await save();
 }); });

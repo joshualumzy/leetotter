@@ -46,6 +46,7 @@ export type Message =
   | { type: "grade_correct"; ts: string; payload: { grade: "good" | "hard" | "again" | GradeWord; review_id?: number; problem?: string; attempt?: number } }
   | { type: "session_exclude"; ts: string; payload: { session_id: number } }
   | { type: "reset_progress"; ts: string; payload: { confirm: "RESET" } }
+  | { type: "bug_report"; ts: string; payload: { note: string; trace: unknown[] } }
   | { type: "reference_get"; ts: string }
   | { type: "reference_flag"; ts: string; payload: { message_id: number; line?: string } }
   | { type: "reference_apply"; ts: string; payload: { slug: string; reply: string } }
@@ -61,6 +62,8 @@ export type Message =
   | ProgressState
   | ProgressCategoryState
   | { type: "reset_done"; ts: string }
+  | { type: "bug_saved"; ts: string }
+  | { type: "bug_failed"; ts: string; payload: { error: string } }
   | ReferenceState
   | ReferenceFlagged
   | ReferenceVerdict
@@ -70,7 +73,7 @@ export type Message =
 
 export type Followup = { question_id: number; question: string; complexity: boolean };
 export type SessionState = { type: "session_state"; ts: string; session_id?: number | null; state: "idle" | "active" | "paused" | "ended"; paused_reason: "button" | "focus" | "check" | "disconnect" | "closed" | "restart" | null; check_message: string | null; cap_minutes: number | null; cap_seconds_left: number | null; time_up: { can_extend: boolean } | null; active_seconds: number; running: boolean; problem: { slug: string; title: string } | null; accepted: boolean; mode: "idle" | "watching" | "paused" | "debrief"; reference_status?: "checked" | "resolved_by_you" | "not_checked_yet"; reference_message?: string; followup?: Followup | null };
-export type SettingsState = { type: "settings_state"; ts: string; name: string | null; theme: "match" | "light" | "dark" };
+export type SettingsState = { type: "settings_state"; ts: string; name: string | null; theme: "match" | "light" | "dark"; bug_reports: number };
 export type TutorMessage =
   | { type: "tutor_start"; ts: string; turn_id: number; request: "help" | "chat"; press_index: number | null; slug?: string; session_id?: number }
   | { type: "tutor_chunk"; ts: string; turn_id: number; attempt: number; text: string; slug?: string; session_id?: number }
@@ -86,7 +89,7 @@ export type ReaderMessageType = "problem_opened" | "problem_statement" | "code_c
 export const MISSING_READER_MESSAGE = "Leetotter can't see this NeetCode page. Reload the tab.";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
-const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "followup_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "recaps_get", "recaps_state", "progress_get", "progress_state", "progress_category", "progress_category_state", "grade_correct", "session_exclude", "reset_progress", "reset_done", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
+const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "followup_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "recaps_get", "recaps_state", "progress_get", "progress_state", "progress_category", "progress_category_state", "grade_correct", "session_exclude", "reset_progress", "reset_done", "bug_report", "bug_saved", "bug_failed", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
 
 export function validateImportUrls(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every(url => typeof url === "string" && /^https:\/\/(?:www\.)?leetcode\.com\/problems\/[^/?#]+\/?(?:[?#].*)?$/.test(url))) {
@@ -220,7 +223,8 @@ export function parseMessage(raw: string): Message {
   }
   if (message.type === "settings_state" &&
       (!(message.name === null || (typeof message.name === "string" && message.name.length <= 40)) ||
-       !["match", "light", "dark"].includes(String(message.theme)))) throw new Error("Invalid settings_state payload");
+       !["match", "light", "dark"].includes(String(message.theme)) ||
+       !Number.isInteger(message.bug_reports) || (message.bug_reports as number) < 0)) throw new Error("Invalid settings_state payload");
   if (message.type === "session_state") {
     if (!(message.session_id === undefined || message.session_id === null || positiveInteger(message.session_id)) ||
       !["idle", "active", "paused", "ended"].includes(String(message.state)) || !["idle", "watching", "paused", "debrief"].includes(String(message.mode)) ||
@@ -320,6 +324,16 @@ export function parseMessage(raw: string): Message {
   if (message.type === "reset_progress" && (!message.payload || typeof message.payload !== "object" || Array.isArray(message.payload) ||
     (message.payload as Record<string, unknown>).confirm !== "RESET")) throw new Error("Invalid reset_progress payload");
   if (message.type === "reset_done" && "payload" in message) throw new Error("Invalid reset_done payload");
+  if (message.type === "bug_report") {
+    const payload = message.payload as Record<string, unknown> | undefined;
+    if (!payload || typeof payload.note !== "string" || !payload.note.trim() || [...payload.note.trim()].length > 4000 ||
+      !Array.isArray(payload.trace)) throw new Error("Invalid bug_report payload");
+  }
+  if (message.type === "bug_saved" && "payload" in message) throw new Error("Invalid bug_saved payload");
+  if (message.type === "bug_failed") {
+    const payload = message.payload as Record<string, unknown> | undefined;
+    if (!payload || !nonempty(payload.error)) throw new Error("Invalid bug_failed payload");
+  }
   if (message.type === "reference_state") validateReferenceState(message);
   if (message.type === "reference_flag") {
     const payload = message.payload as Record<string, unknown> | undefined;

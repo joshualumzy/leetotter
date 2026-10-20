@@ -18,7 +18,7 @@ def test_settings_are_local_persistent_and_broadcast(tmp_path, monkeypatch):
                     return json.loads(await asyncio.wait_for(ws.recv(), 2))
 
                 first = await send(a, "settings_get")
-                assert first == {"type": "settings_state", "ts": first["ts"], "name": None, "theme": "match"}
+                assert first == {"type": "settings_state", "ts": first["ts"], "name": None, "theme": "match", "bug_reports": 0}
                 await b.send(json.dumps({"type": "settings_set", "ts": "now", "payload": {"key": "name", "value": "  Ada  "}}))
                 assert json.loads(await asyncio.wait_for(a.recv(), 2))["name"] == "Ada"
                 updated = json.loads(await asyncio.wait_for(b.recv(), 2))
