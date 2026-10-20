@@ -319,12 +319,11 @@ def _pick_messages(request, pool, steer):
 
 def _record_pick(client, messages, pick):
     """Keep the Picker's reason and the slugs it was offered on its model_calls row, so an odd pick can be explained."""
-    db_path = getattr(client, "db_path", None)
-    if db_path is None:
+    if not hasattr(client, "db_path"):  # test doubles have no store; ModelClient's None means the default store
         return
     offered = [c["slug"] for c in json.loads(messages[1]["content"])["allowed"]]
     try:
-        with open_store(db_path) as db:
+        with open_store(client.db_path) as db:
             db.execute("UPDATE model_calls SET prompt_text = ? WHERE id = (SELECT MAX(id) FROM model_calls WHERE role = 'planner')",
                        (json.dumps({"picked": pick.slug, "reason": pick.reason, "offered": offered}),))
     except Exception:
