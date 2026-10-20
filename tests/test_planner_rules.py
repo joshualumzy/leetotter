@@ -45,7 +45,6 @@ from companion.store import open_store
 DAY0 = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
 NOW = DAY0 + timedelta(days=60)
 CATALOG = load_catalog()
-UNLOCKED = {entry["slug"] for entry in CATALOG.entries if not entry["locked"]}
 LOCKED = {entry["slug"] for entry in CATALOG.entries if entry["locked"]}
 NC150 = {entry["slug"] for entry in CATALOG.neetcode150()}
 
@@ -63,6 +62,7 @@ LONGEST_SUB = "longest-substring-without-duplicates"  # Longest Substring Withou
 PERMUTATION = "permutation-string"                 # Permutation In String, Medium, Sliding Window, 150
 REPLACEMENT = "longest-repeating-substring-with-replacement"  # Longest Repeating Character Replacement, Medium, Sliding Window
 MIN_SUBARRAY = "minimum-size-subarray-sum"         # Minimum Size Subarray Sum, Medium, Sliding Window, beyond the 150
+MIN_RECOLORS = "minimum-recolors-to-get-k-consecutive-black-blocks"  # Sliding Window, beyond the 250
 ISLANDS = "count-number-of-islands"                # Number of Islands, Medium, Graphs, 150
 CLONE_GRAPH = "clone-graph"                        # Clone Graph, Medium, Graphs, 150
 TRIES = ("implement-prefix-tree", "design-word-search-data-structure", "search-for-word-ii",
@@ -159,9 +159,10 @@ def db(tmp_path):
 
 # --- what the list holds --------------------------------------------------------------------------
 
-def test_with_no_history_every_free_problem_is_allowed_and_no_locked_one(db):
+def test_with_no_history_every_free_problem_on_the_lists_is_allowed_and_no_other_or_locked_one(db):
     candidates = allowed_next(db, session_id=None, now=NOW)
-    assert {c["slug"] for c in candidates} == UNLOCKED
+    on_lists = {e["slug"] for e in CATALOG.entries if (e["neetcode150"] or e["neetcode250"]) and not e["locked"]}
+    assert {c["slug"] for c in candidates} == on_lists
     assert not {c["slug"] for c in candidates} & LOCKED
     assert all(c["retry"] is False for c in candidates)
     first = next(c for c in candidates if c["slug"] == HOUSE_ROBBER)
@@ -179,6 +180,26 @@ def test_candidates_carry_their_reference_patterns(db):
     by_slug = {c["slug"]: c for c in allowed_next(db, session_id=None, now=NOW)}
     assert by_slug[PERMUTATION]["patterns"] == ["sliding-window", "frequency-count"]
     assert by_slug[MIN_SUBARRAY]["patterns"] == []
+
+
+def test_candidates_carry_the_250_list_flag(db):
+    by_slug = {c["slug"]: c for c in allowed_next(db, session_id=None, now=NOW)}
+    assert by_slug[PERMUTATION]["neetcode250"] is True
+    assert by_slug[MIN_SUBARRAY]["neetcode250"] is True
+
+
+def test_a_wider_pool_problem_waits_while_its_category_has_an_unseen_250_extra(db):
+    candidates = allowed(db)
+    assert MIN_SUBARRAY in candidates
+    assert MIN_RECOLORS not in candidates
+
+
+def test_a_wider_pool_problem_is_allowed_once_the_250_extras_have_none_unseen(db):
+    session = new_session(db)
+    for entry_ in CATALOG.entries:
+        if entry_["category"] == "Sliding Window" and entry_["neetcode250"] and not entry_["neetcode150"] and not entry_["locked"]:
+            attempt(db, session, entry_["slug"], accepted=False)
+    assert MIN_RECOLORS in allowed(db, session, NOW + timedelta(minutes=1))
 
 
 # --- the retry rule ---------------------------------------------------------------------------------
@@ -396,6 +417,17 @@ def test_fallback_takes_the_weakest_category(db):
 def test_fallback_prefers_a_problem_not_done_on_your_own_to_an_unseen_one_beyond_the_150(db):
     candidates = only(db, MIN_SUBARRAY, PERMUTATION)
     assert code_ranked(candidates, learner_summary(db, now=NOW))["slug"] == PERMUTATION
+
+
+def test_fallback_puts_a_150_problem_before_a_250_extra_and_a_250_extra_before_the_wider_pool(db):
+    def candidate(slug):
+        found = entry(slug)
+        return {"slug": slug, "title": found["title"], "category": found["category"],
+                "difficulty": found["difficulty"], "retry": False, "patterns": [], "done": False,
+                "neetcode150": found["neetcode150"], "neetcode250": found["neetcode250"]}
+    summary = learner_summary(db, now=NOW)
+    assert code_ranked([candidate(MIN_SUBARRAY), candidate(PERMUTATION)], summary)["slug"] == PERMUTATION
+    assert code_ranked([candidate(MIN_RECOLORS), candidate(MIN_SUBARRAY)], summary)["slug"] == MIN_SUBARRAY
 
 
 def test_fallback_ranks_from_the_list_it_is_given(db):

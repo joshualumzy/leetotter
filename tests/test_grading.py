@@ -530,7 +530,8 @@ def test_an_imported_solve_makes_the_problem_seen(tmp_path):
     assert [(r["item_type"], r["grade"], r["first_attempt"]) for r in reviews(run.path)] == [("problem", "good", 0)]
 
 
-@pytest.mark.parametrize("earlier, first", [("opened", 1), ("ran", 0), ("submitted", 0), ("asked", 0)])
+@pytest.mark.parametrize("earlier, first", [("opened", 1), ("ran", 0), ("submitted", 0), ("asked", 0),
+                                            ("chat only", 1), ("thanks", 1)])
 def test_an_unfinished_attempt_makes_the_problem_seen_only_if_you_worked_on_it(tmp_path, earlier, first):
     run = Run(tmp_path)
     put_reference(run.path)
@@ -542,6 +543,12 @@ def test_an_unfinished_attempt_makes_the_problem_seen_only_if_you_worked_on_it(t
         run.send(submit(MEDIUM, False))
     elif earlier == "asked":
         run.help("question")
+    elif earlier == "chat only":
+        out, turn = run.coord.begin_turn("chat", "why does this fail?")
+        assert turn is not None
+        run.sent += out
+    elif earlier == "thanks":
+        run.help("none")
     run.end()
     run.advance_days(1)
     attempt(run)

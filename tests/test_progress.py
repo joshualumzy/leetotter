@@ -545,3 +545,64 @@ def test_a_debrief_miss_keeps_its_own_reason(tmp_path):
         add_review(db, slug, "again", at(-1), session=session, event_id=left)
     item = problem_item(category_state(path, "Arrays & Hashing", now=NOW), slug)
     assert item["latest"]["reason"] == "chose the debrief at the time cap"
+
+
+def test_correcting_a_solve_to_missed_removes_that_attempts_analysis_review(tmp_path):
+    path = tmp_path / "db"
+    slug = ARRAYS[0]
+    category = "Arrays & Hashing"
+    with open_store(path) as db:
+        session = add_session(db)
+        ts = at(-1).isoformat()
+        db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'problem_opened', ?)",
+                   (session, ts, json.dumps({"site": "neetcode", "slug": slug, "title": CATALOG.by_slug(slug)["title"]})))
+        db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'submit_result', ?)",
+                   (session, ts, json.dumps({"slug": slug, "accepted": True, "error_type": None, "error_message": "",
+                                             "runtime": "0.02", "memory": 1, "passed": 1, "total": 1,
+                                             "failing_case": None})))
+        question = db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'followup_asked', ?)",
+                              (session, ts, json.dumps({"slug": slug, "question": "Time complexity?",
+                                                        "complexity": True}))).lastrowid
+        left = db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'problem_left', ?)",
+                          (session, ts, json.dumps({"slug": slug, "accepted": True}))).lastrowid
+        review_id = add_review(db, slug, "good", at(-1), first=True, session=session, event_id=left)
+        db.execute("INSERT INTO reviews (session_id, event_id, item_type, item_key, grade, first_attempt, "
+                   "difficulty, reviewed_at) VALUES (?, ?, 'category:analysis', ?, 'good', 1, ?, ?)",
+                   (session, question, category, CATALOG.by_slug(slug)["difficulty"], ts))
+
+    correct_grade(path, review_id=review_id, grade="again")
+
+    with open_store(path) as db:
+        assert db.execute("SELECT grade FROM reviews WHERE item_type = 'problem' AND event_id = ?",
+                          (left,)).fetchone() == ("again",)
+        assert db.execute("SELECT count(*) FROM reviews WHERE item_type = 'category:analysis'").fetchone() == (0,)
+
+
+def test_correcting_to_missed_without_a_link_to_the_attempt_fails_loudly(tmp_path):
+    path = tmp_path / "db"
+    slug = ARRAYS[0]
+    with open_store(path) as db:
+        session = add_session(db)
+        left = db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'problem_left', ?)",
+                          (session, at(-1).isoformat(), json.dumps({"slug": slug, "accepted": True}))).lastrowid
+        review_id = add_review(db, slug, "good", at(-1), session=session, event_id=left)
+    with pytest.raises(ValueError, match="link|attempt|analysis"):
+        correct_grade(path, review_id=review_id, grade="again")
+
+
+def test_correcting_a_miss_with_no_accept_to_missed_changes_nothing_else(tmp_path):
+    path = tmp_path / "db"
+    slug = ARRAYS[0]
+    with open_store(path) as db:
+        session = add_session(db)
+        ts = at(-1).isoformat()
+        db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'problem_opened', ?)",
+                   (session, ts, json.dumps({"site": "neetcode", "slug": slug, "title": CATALOG.by_slug(slug)["title"]})))
+        debrief = db.execute("INSERT INTO events (session_id, ts, type, payload) VALUES (?, ?, 'debrief_request', ?)",
+                             (session, ts, json.dumps({"slug": slug}))).lastrowid
+        review_id = add_review(db, slug, "again", at(-1), session=session, event_id=debrief)
+
+    correct_grade(path, review_id=review_id, grade="again")
+
+    with open_store(path) as db:
+        assert db.execute("SELECT grade FROM reviews WHERE id = ?", (review_id,)).fetchone() == ("again",)

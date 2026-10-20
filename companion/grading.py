@@ -25,9 +25,10 @@ marked 'usually', breaking ties by space complexity. Correct only help labels th
 return their turn_id and correct help_kind.
 Judge independently from the other grader. Do not assign an FSRS grade; code applies the fixed table."""
 ANALYSIS_PROMPT = """Judge the learner's complexity answer and reasoning against the checked reference.
-Return complexity_verdict: right, right_after_followup, wrong, wrong_reasoning, or no_reasoning.
-Set complexity_stated_earlier if the Tutor gave the complexity before the question. Judge independently;
-code applies the fixed grade table."""
+Return complexity_verdict: right, right_after_followup, right_after_stated, wrong, wrong_reasoning, or no_reasoning.
+right_after_stated means the learner gave the right answer only after the Tutor stated the complexity during the
+follow-up discussion. Set complexity_stated_earlier if the Tutor gave the complexity before the question. Judge
+independently; code applies the fixed grade table."""
 
 
 def solve_grade(kinds, *, meets_expected):
@@ -45,8 +46,8 @@ def done_on_your_own(grade, meets):
 
 
 def analysis_grade(verdict):
-    mapping = {"right": "good", "right_after_followup": "hard", "wrong": "again",
-               "wrong_reasoning": "again", "no_reasoning": None}
+    mapping = {"right": "good", "right_after_followup": "hard", "right_after_stated": "again",
+               "wrong": "again", "wrong_reasoning": "again", "no_reasoning": None}
     if verdict not in mapping:
         raise ValueError(f"Unknown complexity verdict: {verdict}")
     return mapping[verdict]
@@ -89,7 +90,8 @@ class SolveVerdict(BaseModel):
 
 class AnalysisVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    complexity_verdict: Literal["right", "right_after_followup", "wrong", "wrong_reasoning", "no_reasoning"]
+    complexity_verdict: Literal["right", "right_after_followup", "right_after_stated", "wrong",
+                                "wrong_reasoning", "no_reasoning"]
     complexity_stated_earlier: bool
 
 
@@ -160,9 +162,10 @@ def _first_attempt(db, events, start, slug):
             return False
         if db.execute("SELECT 1 FROM handled_attempts WHERE start_event_id = ?", (earlier["start"],)).fetchone():
             return False
-        if earlier["accepted"] or any(kind in {"run_result", "submit_result", "help_request", "chat_message", "help_turn",
-                                               "time_up_choice", "debrief_request"}
-                                      and payload.get("slug") == slug for _, _, _, kind, payload in earlier["events"]):
+        if earlier["accepted"] or any(
+                (kind in {"run_result", "submit_result", "help_request", "time_up_choice", "debrief_request"}
+                 or kind == "help_turn" and payload.get("help_kind") != "none")
+                and payload.get("slug") == slug for _, _, _, kind, payload in earlier["events"]):
             return False
     return True
 

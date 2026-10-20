@@ -271,8 +271,10 @@ def allowed_next(db, *, session_id, now):
                     continue
         candidates.append({"slug": slug, "title": entry["title"], "category": entry["category"],
                            "difficulty": entry["difficulty"], "retry": retry, "patterns": patterns.get(slug, []),
-                           "neetcode150": entry["neetcode150"], "done": done})
-    return candidates
+                           "neetcode150": entry["neetcode150"], "neetcode250": entry["neetcode250"], "done": done})
+    unseen_250 = {c["category"] for c in candidates if c["neetcode250"] and not c["neetcode150"] and not c["retry"]}
+    return [c for c in candidates
+            if c["retry"] or c["neetcode150"] or c["neetcode250"] or c["category"] not in unseen_250]
 
 
 def _matches(candidate, focus):
@@ -292,7 +294,7 @@ def _focused(candidates, focuses):
 
 def _rank_key(c, summary):
     return (summary[c["category"]]["solve"].recall if summary[c["category"]]["solve"] else -1,
-            3 if c["done"] else 0 if c["retry"] else 2 if not c["neetcode150"] else 1,
+            3 if c["done"] else 0 if c["retry"] else 1 if c["neetcode150"] else 2 if c["neetcode250"] else 3,
             c["title"])
 
 
@@ -343,12 +345,16 @@ def _pool(allowed, focuses):
 
 def _breadth_pool(allowed, category, imported, unseen=False):
     """The chosen category's untried problems, plus every due retry: imported ones first when it has any,
-    or only unseen ones on the second pass."""
+    or only unseen ones on the second pass; the 150 before the 250 extras before the wider pool."""
     fresh = [c for c in allowed if not c["retry"] and c["category"] == category]
     if unseen:
         fresh = [c for c in fresh if c["slug"] not in imported]
     elif any(c["slug"] in imported for c in fresh):
         fresh = [c for c in fresh if c["slug"] in imported]
+    if any(c["neetcode150"] for c in fresh):
+        fresh = [c for c in fresh if c["neetcode150"]]
+    elif any(c["neetcode250"] for c in fresh):
+        fresh = [c for c in fresh if c["neetcode250"]]
     return fresh + [c for c in allowed if c["retry"]]
 
 
@@ -441,7 +447,8 @@ def ask_planner(client, request):
         return PlannerReply("cannot", f"I couldn't find a problem called \"{reading.named_title.strip()}\".{guess}")
     elif not focuses and steer:
         focuses = steer["focus"]
-    if reading.reading in ("ask", "clear") and request.breadth and not focuses and not reading.named_title.strip() and not steer:
+    if (reading.reading in ("ask", "clear", "steer") and request.breadth and not focuses
+            and not reading.named_title.strip()):
         pool, fits = _breadth_pool(request.allowed, request.breadth, imported, request.breadth_unseen), True
     else:
         pool, fits = _pool(request.allowed, focuses)
@@ -489,6 +496,12 @@ class Planner:
             fresh = [c for c in allowed if not c["retry"]]
             reviewed = {catalog.by_slug(slug)["category"] for (slug,) in
                         db.execute("SELECT DISTINCT item_key FROM reviews WHERE item_type = 'problem'") if catalog.by_slug(slug)}
+            for attempt in attempts:
+                attempt_entry = catalog.by_slug(attempt["slug"])
+                if (attempt_entry and attempt["accepted"] and not db.execute(
+                        "SELECT 1 FROM reviews WHERE item_type = 'problem' AND event_id = ? AND grade IS NOT NULL",
+                        (attempt["left_id"],)).fetchone()):
+                    reviewed.add(attempt_entry["category"])
             untouched = sorted(category for category in CATEGORIES
                                if category not in reviewed
                                and any(c["category"] == category for c in fresh))
@@ -501,6 +514,14 @@ class Planner:
                     remaining = [category for category in categories if category not in tried]
                     breadth, breadth_unseen = self.rng.choice(remaining or categories), unseen
                     break
+            if breadth is None:
+                rusty = [category for category in CATEGORIES
+                         if summary[category]["solve"] is not None and summary[category]["solve"].recall < .9
+                         and category not in tried
+                         and any(c["category"] == category and c["slug"] not in imported_slugs for c in fresh)]
+                if rusty:
+                    breadth = min(rusty, key=lambda category: (summary[category]["solve"].recall, category))
+                    breadth_unseen = True
             recent = _recent_problems(db, session_id, attempts)
         session_problems = []
         for a in attempts:

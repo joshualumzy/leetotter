@@ -9,13 +9,16 @@ from companion.catalog import CATEGORIES
 from companion.planner import Planner, _read, ask_planner
 from companion.store import open_store
 from tests.test_planner_flow import RecordedPlanner, reply
-from tests.test_planner_rules import (CATALOG, CLIMBING, CLONE_GRAPH, COIN_CHANGE, GOOD_NODES, HOUSE_ROBBER, INVERT, ISLANDS,
-                                      LEVEL_ORDER, NOW, RIGHT_VIEW, SAME_TREE, TRIES, attempt, category_review, entry,
-                                      imported, new_session, review)
+from tests.test_planner_rules import (CATALOG, CLIMBING, CLONE_GRAPH, COIN_CHANGE, GOOD_NODES, HOUSE_ROBBER, INVERT,
+                                      ISLANDS, LEVEL_ORDER, LONGEST_SUB, NOW, RIGHT_VIEW, SAME_TREE, TRIES, attempt,
+                                      category_review, entry, imported, new_session, review)
 from tests.test_planner_steer import focus, steering
 from tests.test_session import make, start_msg
 
 DP = "1-D Dynamic Programming"
+MIN_SUBARRAY = "minimum-size-subarray-sum"  # Sliding Window, a 250 extra
+MIN_RECOLORS = "minimum-recolors-to-get-k-consecutive-black-blocks"  # Sliding Window, beyond the 250
+PERMUTATION = "permutation-string"  # Sliding Window, 150
 
 
 def offered(client):
@@ -88,6 +91,16 @@ def test_a_plain_chat_ask_stays_in_the_breadth_category(tmp_path):
     assert {c["category"] for c in offered(client)} == {"Trees"}
 
 
+def test_a_note_only_steer_stays_in_the_breadth_category(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    request = replace(Planner(path, clock).panel_opened("idle"), breadth="Trees")
+    client = RecordedPlanner(reply(INVERT, "steer", steer=steering("something short", note="something short"),
+                                   understood="A short one coming."))
+    assert ask_planner(client, request).slug == INVERT
+    assert {c["category"] for c in offered(client)} == {"Trees"}
+
+
 def test_with_evidence_everywhere_breadth_is_none_and_the_old_shortlist_holds(tmp_path):
     _, clock, path = make(tmp_path)
     clock.now = NOW
@@ -149,6 +162,61 @@ def test_pass_two_skips_a_category_with_no_unseen_problem(tmp_path):
     assert (request.breadth, request.breadth_unseen) == ("Graphs", True)
 
 
+def test_pass_two_offers_the_150_before_the_250_extras_and_the_wider_pool(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category != "Sliding Window":
+                touch(db, category)
+        review(db, LONGEST_SUB, "good", NOW - timedelta(days=1), first=True)
+    request = Planner(path, clock).panel_opened("idle")
+    assert (request.breadth, request.breadth_unseen) == ("Sliding Window", True)
+    client = RecordedPlanner(reply(PERMUTATION))
+    assert ask_planner(client, request).slug == PERMUTATION
+    entries = {e["slug"]: e for e in CATALOG.entries}
+    assert offered(client) and all(entries[c["slug"]]["neetcode150"] for c in offered(client))
+
+
+def test_pass_two_moves_to_the_250_extras_when_the_150_has_none_unseen(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category != "Sliding Window":
+                touch(db, category)
+        for e in CATALOG.entries:
+            if e["category"] == "Sliding Window" and e["neetcode150"] and not e["locked"]:
+                review(db, e["slug"], "good", NOW - timedelta(days=1), first=True)
+    request = Planner(path, clock).panel_opened("idle")
+    assert (request.breadth, request.breadth_unseen) == ("Sliding Window", True)
+    client = RecordedPlanner(reply(MIN_SUBARRAY))
+    assert ask_planner(client, request).slug == MIN_SUBARRAY
+    entries = {e["slug"]: e for e in CATALOG.entries}
+    assert offered(client)
+    assert all(entries[c["slug"]]["neetcode250"] and not entries[c["slug"]]["neetcode150"] for c in offered(client))
+
+
+def test_pass_two_moves_to_the_wider_pool_when_the_250_extras_have_none_unseen(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    rest = MIN_RECOLORS
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category != "Sliding Window":
+                touch(db, category)
+        for e in CATALOG.entries:
+            if e["category"] == "Sliding Window" and not e["locked"] and (e["neetcode150"] or e["neetcode250"]):
+                review(db, e["slug"], "good", NOW - timedelta(days=1), first=True)
+    request = Planner(path, clock).panel_opened("idle")
+    assert (request.breadth, request.breadth_unseen) == ("Sliding Window", True)
+    client = RecordedPlanner(reply(rest))
+    assert ask_planner(client, request).slug == rest
+    entries = {e["slug"]: e for e in CATALOG.entries}
+    assert offered(client)
+    assert all(not entries[c["slug"]]["neetcode250"] and not entries[c["slug"]]["neetcode150"] for c in offered(client))
+
+
 def test_pass_one_beats_pass_two(tmp_path):
     _, clock, path = make(tmp_path)
     clock.now = NOW
@@ -159,6 +227,68 @@ def test_pass_one_beats_pass_two(tmp_path):
         review(db, ISLANDS, "good", NOW - timedelta(days=1))
     request = Planner(path, clock).panel_opened("idle")
     assert (request.breadth, request.breadth_unseen) == ("Trees", False)
+
+
+def test_a_third_pass_takes_the_rustiest_category_with_an_unseen_problem(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category not in ("Trees", DP):
+                touch(db, category)
+        for category, slug, days in (("Trees", INVERT, 30), (DP, HOUSE_ROBBER, 45)):
+            review(db, slug, "good", NOW - timedelta(days=1), first=True)
+            category_review(db, category, "good", NOW - timedelta(days=days))
+    request = Planner(path, clock).panel_opened("idle")
+    assert (request.breadth, request.breadth_unseen) == (DP, True)
+    client = RecordedPlanner(reply(COIN_CHANGE))
+    assert ask_planner(client, request).slug == COIN_CHANGE
+    assert {c["category"] for c in offered(client)} == {DP}
+
+
+def test_third_pass_ties_are_alphabetical(tmp_path):
+    _, clock, path = make(tmp_path)
+    clock.now = NOW
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category not in ("Graphs", "Trees"):
+                touch(db, category)
+        for category, slug in (("Trees", INVERT), ("Graphs", ISLANDS)):
+            review(db, slug, "good", NOW - timedelta(days=1), first=True)
+            category_review(db, category, "good", NOW - timedelta(days=30))
+    request = Planner(path, clock).panel_opened("idle")
+    assert (request.breadth, request.breadth_unseen) == ("Graphs", True)
+
+
+def test_the_third_pass_does_not_reuse_a_rusty_category_tried_this_session(tmp_path):
+    coordinator, clock, path = make(tmp_path)
+    clock.now = NOW
+    coordinator.handle(start_msg())
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category not in ("Trees", DP):
+                touch(db, category)
+        for category, slug, days in (("Trees", INVERT, 30), (DP, HOUSE_ROBBER, 45)):
+            review(db, slug, "good", NOW - timedelta(days=1), first=True)
+            category_review(db, category, "good", NOW - timedelta(days=days))
+        attempt(db, coordinator.session_id, SAME_TREE, accepted=True)
+        attempt(db, coordinator.session_id, CLIMBING, accepted=True)
+    request = Planner(path, clock).resume(coordinator.session_id)
+    assert request.breadth is None
+
+
+def test_a_pending_accept_counts_as_an_attempt_in_the_first_breadth_pass(tmp_path):
+    coordinator, clock, path = make(tmp_path)
+    clock.now = NOW
+    coordinator.handle(start_msg())
+    with open_store(path) as db:
+        for category in CATEGORIES:
+            if category != DP:
+                touch(db, category)
+        category_review(db, DP, "good", NOW - timedelta(days=1))
+        attempt(db, coordinator.session_id, CLIMBING, accepted=True)
+    request = Planner(path, clock).resume(coordinator.session_id)
+    assert request.breadth is None
 
 
 def test_pass_two_avoids_a_category_tried_this_session_while_another_is_left(tmp_path):

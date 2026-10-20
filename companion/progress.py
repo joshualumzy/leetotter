@@ -345,6 +345,31 @@ def _normal_grade(grade):
     raise ValueError(f"Unknown grade: {grade}")
 
 
+def _attempt_analysis_review(db, *, session_id, slug, left_id):
+    """The analysis review keyed by the complexity question asked after this attempt's accept, or None."""
+    events = [(id_, kind, json.loads(raw)) for id_, kind, raw in db.execute(
+        "SELECT id, type, payload FROM events WHERE session_id = ? ORDER BY id", (session_id,))]
+    start = max((id_ for id_, kind, payload in events
+                 if id_ < left_id and kind == "problem_opened" and payload.get("slug") == slug), default=None)
+    if start is None:
+        raise ValueError("Cannot tell which attempt's analysis review to remove")
+    accepted = [id_ for id_, kind, payload in events
+                if start < id_ < left_id and kind == "submit_result"
+                and payload.get("slug") == slug and payload.get("accepted")]
+    if not accepted:
+        return None
+    questions = [id_ for id_, kind, payload in events
+                 if min(accepted) < id_ < left_id and kind == "followup_asked" and payload.get("slug") == slug]
+    if not questions:
+        return None
+    marks = ", ".join("?" for _ in questions)
+    rows = db.execute(f"SELECT id FROM reviews WHERE item_type = 'category:analysis' AND event_id IN ({marks})",
+                      questions).fetchall()
+    if len(rows) > 1:
+        raise ValueError("More than one analysis review belongs to this attempt")
+    return rows[0][0] if rows else None
+
+
 def correct_grade(db_path, *, grade, review_id=None, problem=None, attempt=None):
     grade = _normal_grade(grade)
     if review_id is not None and (problem is not None or attempt is not None):
@@ -352,16 +377,15 @@ def correct_grade(db_path, *, grade, review_id=None, problem=None, attempt=None)
     if review_id is None and (problem is None or attempt is None):
         raise ValueError("Name a review id or a problem and attempt")
     with open_store(db_path) as db:
+        columns = "id, session_id, event_id, item_type, item_key, grade, first_attempt, difficulty"
         if review_id is not None:
-            row = db.execute("SELECT id, event_id, item_type, item_key, grade, first_attempt, difficulty "
-                             "FROM reviews WHERE id = ?", (review_id,)).fetchone()
+            row = db.execute(f"SELECT {columns} FROM reviews WHERE id = ?", (review_id,)).fetchone()
         else:
-            row = db.execute("SELECT id, event_id, item_type, item_key, grade, first_attempt, difficulty "
-                             "FROM reviews WHERE item_type = 'problem' AND item_key = ? AND event_id = ?",
+            row = db.execute(f"SELECT {columns} FROM reviews WHERE item_type = 'problem' AND item_key = ? AND event_id = ?",
                              (problem, attempt)).fetchone()
-        if row is None or (review_id is not None and row[2] != "problem"):
+        if row is None or (review_id is not None and row[3] != "problem"):
             raise ValueError("Problem review not found")
-        review_id, event_id, _, _, old_grade, _, difficulty = row
+        review_id, session_id, event_id, _, slug, old_grade, _, difficulty = row
         if old_grade is None:
             raise ValueError("This attempt has no grade yet")
         # Hard keeps the grader's own verdict: a worse approach is Hard with meets_expected false.
@@ -373,6 +397,10 @@ def correct_grade(db_path, *, grade, review_id=None, problem=None, attempt=None)
         if category is not None:
             db.execute("UPDATE reviews SET grade = ?, meets_expected = COALESCE(?, meets_expected) WHERE id = ?",
                        (category_grade(grade, category[1] or difficulty), meets, category[0]))
+        if grade == "again":
+            analysis_id = _attempt_analysis_review(db, session_id=session_id, slug=slug, left_id=event_id)
+            if analysis_id is not None:
+                db.execute("DELETE FROM reviews WHERE id = ?", (analysis_id,))
         return review_id
 
 

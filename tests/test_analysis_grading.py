@@ -4,7 +4,8 @@ grade, into the category's `analysis` memory. Graders are faked with recorded re
 Interface to build:
 
     companion.grading.AnalysisVerdict (pydantic, strict, extra forbidden):
-        complexity_verdict: "right" | "right_after_followup" | "wrong" | "wrong_reasoning" | "no_reasoning"
+        complexity_verdict: "right" | "right_after_followup" | "right_after_stated" | "wrong" |
+                            "wrong_reasoning" | "no_reasoning"
         complexity_stated_earlier: bool   # the Tutor had stated the complexity earlier in the attempt (§8)
 
     companion.grading.grade_pending(...)  (same signature) also grades answered complexity questions
@@ -112,7 +113,8 @@ def solve_rows(path):
 @pytest.mark.parametrize("verdict, grade", [
     ("right", "good"),                 # right, with right reasoning
     ("right_after_followup", "hard"),  # right after one guiding question that doesn't state the answer
-    ("wrong", "again"),                # wrong, or right only after the Tutor stated it
+    ("right_after_stated", "again"),   # right only after the Tutor stated the complexity
+    ("wrong", "again"),                # wrong
     ("wrong_reasoning", "again"),      # right with wrong reasoning
 ])
 def test_a_complexity_answer_is_graded_into_the_category_analysis_memory(tmp_path, verdict, grade):

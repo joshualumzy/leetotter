@@ -54,7 +54,8 @@ def test_an_unknown_help_kind_is_a_loud_error():
 @pytest.mark.parametrize("verdict, expected", [
     ("right", "good"),                 # right, with right reasoning
     ("right_after_followup", "hard"),  # right after one guiding question that doesn't state the answer
-    ("wrong", "again"),                # wrong, or right only after the Tutor stated it
+    ("right_after_stated", "again"),   # right only after the Tutor stated the complexity
+    ("wrong", "again"),                # wrong
     ("wrong_reasoning", "again"),      # right with wrong reasoning
 ])
 def test_complexity_verdicts_map_to_the_analysis_rows(verdict, expected):
