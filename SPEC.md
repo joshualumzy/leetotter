@@ -1,6 +1,6 @@
 # Leetotter: Spec
 
-This is the build spec. The product page (https://claude.ai/artifact/NuRZpv5EcrmcRdmnsihAcG) says what Leetotter does and how it works, in plain words. This file says how to build it, what can go wrong, and in what order to build it. Where they disagree, fix the disagreement rather than picking one silently.
+This is the build spec: what Leetotter does, how to build it, what can go wrong, and in what order to build it.
 
 ## 1. Scope
 

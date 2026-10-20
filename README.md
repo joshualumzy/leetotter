@@ -203,3 +203,7 @@ Nothing is installed system-wide, with Homebrew or with `sudo`. Python 3.14 and 
 | Your provider key | you | macOS Keychain, service `NUS_SOCLAAS_API_KEY` | `security delete-generic-password -a "$USER" -s NUS_SOCLAAS_API_KEY` |
 
 `uv` and `npm` also keep download caches in `~/.cache/uv` and `~/.npm`, which are not specific to Leetotter.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
