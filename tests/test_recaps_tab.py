@@ -45,7 +45,10 @@ def test_recaps_state_lists_ended_recaps_newest_first_with_status_and_unread(tmp
     assert by_id[failed]["message"] == "Session review is missing: offline"
     assert by_id[feedback]["message"] == "Feedback offline"
     assert by_id[seen]["date"] == "2026-10-15T09:00:00+00:00"
-    assert state["unread"] is True
+    assert state["unread"] is False  # an unseen smooth recap has nothing to read
+    with open_store(path) as db:
+        db.execute("UPDATE sessions SET recap_bullets = ? WHERE id = ?", (json.dumps(["New: edge cases."]), unseen))
+    assert recaps_state(path)["unread"] is True
     with open_store(path) as db:
         db.execute("UPDATE sessions SET recap_seen = 1 WHERE id = ?", (unseen,))
     assert recaps_state(path)["unread"] is False

@@ -324,7 +324,7 @@ def recaps_state(db_path):
                        "bullets": bullets, "has_bullets": bool(bullets), "seen": bool(seen),
                        "message": feedback_failure if feedback_failure else failure if raw_bullets is None else None})
     return {"type": "recaps_state", "recaps": recaps,
-            "unread": any(item["status"] == "ready" and not item["seen"] for item in recaps)}
+            "unread": any(item["status"] == "ready" and item["has_bullets"] and not item["seen"] for item in recaps)}
 
 
 def submit_feedback(client, db_path, session_id, text):
