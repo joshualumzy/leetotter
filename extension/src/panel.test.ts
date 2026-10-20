@@ -941,8 +941,8 @@ describe("panel actions", () => {
           latest: null, earlier_count: 0, earlier: [] },
       ],
     };
-    const recap = (session_id: number, status: "preparing" | "ready" | "failed" | "feedback_failed", bullets: string[], seen = false, date = "2026-10-15T09:00:00+00:00", message: string | null = null) =>
-      ({ session_id, date, status, bullets, has_bullets: Boolean(bullets.length), seen, message });
+    const recap = (session_id: number, status: "preparing" | "ready" | "updating" | "failed" | "feedback_failed", bullets: string[], seen = false, date = "2026-10-15T09:00:00+00:00", message: string | null = null, grades: any[] = []) =>
+      ({ session_id, date, status, bullets, has_bullets: Boolean(bullets.length), seen, message, grades });
     const recaps = (items: ReturnType<typeof recap>[], unread = false) =>
       notify({ kind: "recaps_state", state: { type: "recaps_state", ts: "now", recaps: items, unread } });
     const openRecaps = () => { click("tab-recaps"); sendMessage.mockClear(); };
@@ -990,6 +990,7 @@ describe("panel actions", () => {
       expect(items[3].getAttribute("role")).toBe("alert");
       expect(items[3].textContent).toContain("Session review is missing: offline");
       expect(items[4].querySelector("[role=alert]")?.textContent).toContain("your note was saved");
+      expect(document.querySelector("[id^=recap-close-]")).toBeNull();
       expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 14 });
       expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_seen", session_id: 13 });
       expect(sendMessage).not.toHaveBeenCalledWith({ kind: "recap_seen", session_id: 15 });
@@ -998,23 +999,84 @@ describe("panel actions", () => {
       expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_seen" }));
     });
 
-    it("sends recap feedback from the box and shows Noted without resending seen", () => {
+    it("opens a ready recap with its grade lines above the bullets and corrects one", () => {
+      showStart();
+      openRecaps();
+      const grades = [
+        { review_id: 4, problem: "two-sum", title: "Two Sum", word: "solid", reason: "solved on your own", pending: false },
+        { review_id: 5, problem: "valid-anagram", title: "Valid Anagram", word: "grading…", reason: "", pending: true },
+      ];
+      recaps([recap(14, "ready", ["Dropped: visited marking."], false, "2026-10-18T09:00:00+00:00", null, grades)]);
+      const item = document.querySelector<HTMLElement>(".recap-item")!;
+      const gradeList = item.querySelector(".recap-grades")!;
+      const bullets = item.querySelector(".recap-bullets")!;
+      expect(gradeList.textContent).toContain("Two Sum");
+      expect(gradeList.textContent).toContain("solid");
+      expect(gradeList.textContent).toContain("solved on your own");
+      expect(gradeList.textContent).toContain("grading…");
+      expect(document.getElementById("correct-5")).toBeNull();
+      expect(gradeList.compareDocumentPosition(bullets) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      click("correct-4");
+      expect(document.getElementById("grade-4-shaky")).toBeTruthy();
+      click("grade-4-shaky");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "grade_correct", review_id: 4, grade: "shaky" });
+    });
+
+    it("shows grade lines on a smooth recap with no bullets and no feedback box", () => {
+      showStart();
+      openRecaps();
+      const grades = [{ review_id: 6, problem: "two-sum", title: "Two Sum", word: "missed", reason: "needed a snippet", pending: false }];
+      recaps([recap(13, "ready", [], false, "2026-10-17T09:00:00+00:00", null, grades)]);
+      const item = document.querySelector<HTMLElement>(".recap-item")!;
+      expect(item.textContent).toContain("Two Sum");
+      expect(item.textContent).toContain("Smooth session. Nothing to flag.");
+      expect(document.getElementById("recap-feedback-13")).toBeNull();
+      expect(document.getElementById("correct-6")).toBeTruthy();
+    });
+
+    it("shows the otter and Updating while a feedback review runs, with no feedback box", () => {
+      showStart();
+      openRecaps();
+      recaps([recap(14, "updating", ["Dropped: visited marking."], true, "2026-10-18T09:00:00+00:00", null,
+        [{ review_id: 4, problem: "two-sum", title: "Two Sum", word: "solid", reason: "solved on your own", pending: false }])]);
+      const item = document.querySelector<HTMLElement>(".recap-item")!;
+      expect(item.querySelector("svg.otter")).toBeTruthy();
+      expect(item.textContent).toContain("Updating…");
+      expect(document.getElementById("recap-feedback-14")).toBeNull();
+      expect(document.getElementById("recap-send-14")).toBeNull();
+    });
+
+    it("sends recap feedback from the box and shows Noted without hiding the recap", () => {
       showStart();
       openRecaps();
       recaps([recap(14, "ready", ["Dropped: visited marking."])]);
       const input = document.getElementById("recap-feedback-14") as HTMLInputElement;
+      const send = document.getElementById("recap-send-14") as HTMLButtonElement;
       expect(input.placeholder).toBe("Anything off or missing?");
+      expect(send.disabled).toBe(true);
       input.value = "That drop was wrong";
       input.dispatchEvent(new window.Event("input", { bubbles: true }));
-      click("recap-close-14");
+      expect(send.disabled).toBe(false);
+      click("recap-send-14");
       expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_feedback", session_id: 14, text: "That drop was wrong" });
-      notify({ kind: "recap_noted", message: { type: "recap_noted", session_id: 14, note_id: 9, message: "Noted. For a grade correction, use Progress." } });
+      notify({ kind: "recap_noted", message: { type: "recap_noted", session_id: 14, note_id: 9, message: "Noted." } });
       expect(document.querySelector(".recap-noted")?.textContent).toContain("Noted");
       expect(document.getElementById("recap-feedback-14")).toBeNull();
+      expect(document.querySelectorAll(".recap-item")).toHaveLength(1);
       sendMessage.mockClear();
-      click("recap-close-14");
       expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_feedback" }));
       expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "recap_seen" }));
+    });
+
+    it("sends recap feedback with Enter", () => {
+      showStart();
+      openRecaps();
+      recaps([recap(14, "ready", ["Dropped: visited marking."])]);
+      const input = document.getElementById("recap-feedback-14") as HTMLInputElement;
+      input.value = "That drop was wrong";
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "recap_feedback", session_id: 14, text: "That drop was wrong" });
     });
 
     it("draws the Progress map in category order with the three-part header and rusty tags", () => {

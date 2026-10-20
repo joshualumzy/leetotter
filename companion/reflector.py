@@ -10,18 +10,25 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from companion.catalog import load_catalog
 from companion.grading import done_on_your_own
+from companion.progress import session_grade_lines
 from companion.store import open_store
 
 logger = logging.getLogger(__name__)
 
+BULLET_RULES = ("Recap bullets: at most three. Each is one plain sentence, a lesson that carries to other "
+                "problems (a mistake turned into something to check, a reusable idea) or something that went "
+                "well. Never write homework or a to-do, a typing or editing slip, a follow-up you skipped, a "
+                "style preference when the approach worked, or a fixed bug restated without its lesson. A "
+                "hypothesis is a pattern: one slip on one problem is not one, and neither is a style preference "
+                "when the approach worked.")
 CHANGE_RULES = ("Field rules: use null, never 0 or an empty string, for a field that does not apply. An add "
                 "change has hypothesis_id null and rejected_id null (unless it returns a rejected hypothesis) "
                 "and needs text; a reword or drop change needs the existing hypothesis_id and rejected_id null. "
                 "Wording: every recap_line and bullet is one plain sentence of at most 160 characters, addressed "
-                "to the learner, about what they did or need to practise. Put event ids only in the "
+                "to the learner. Put event ids only in the "
                 "cited_event_ids fields, never in any text; never name logging or system events (restores, "
                 "snapshots, pauses, focus changes). A hypothesis change already appears as its own recap line, so never "
-                "repeat it as a bullet; bullets are only for other things worth saying.")
+                "repeat it as a bullet; bullets are only for other things worth saying. " + BULLET_RULES)
 PROMPT = ("Review only the given session. Summarize briefly. Hypotheses and teaching entries need real "
           "event citations. Every hypothesis change needs a one-line recap_line. Carried-over bullets "
           "need new evidence of recurrence or improvement. A smooth session may have no bullets. "
@@ -29,6 +36,7 @@ PROMPT = ("Review only the given session. Summarize briefly. Hypotheses and teac
 FEEDBACK_PROMPT = ("Use the learner's note to add, reword, or drop hypotheses. Cite the note id or "
                    "existing event ids. Every change needs a one-line recap_line. Drop means rejection. " + CHANGE_RULES)
 QUIET_LINE = "You finished all 150 problems on your own."
+INTERRUPTED_FEEDBACK = "The feedback review was interrupted when the companion restarted; your note was saved."
 
 
 class StrictModel(BaseModel):
@@ -265,6 +273,8 @@ def reflect_session(client, db_path, session_id):
                 raise ValueError("Teaching idea must be one line")
             if not any(payload.get("slug") == item.problem_slug for _, _, payload in events):
                 raise ValueError("Teaching names a problem absent from the session")
+        if len(reply.bullets) > 3:
+            raise ValueError("A recap has at most three bullets")
         for bullet in reply.bullets:
             if not _plain(bullet.text):
                 raise ValueError(f"Recap bullet needs plain one-line text of at most {LINE_LIMIT} characters, with no event ids or system event names")
@@ -309,21 +319,25 @@ def recap_state(db_path, session_id):
 
 
 def recaps_state(db_path):
-    """Every ended session's recap, newest first, with its own seen flag and whether one is still unread."""
+    """Every ended session's recap, newest first, with its grades, seen flag and whether one is still unread."""
     with open_store(db_path) as db:
         rows = db.execute(
             "SELECT s.id, s.started_at, s.recap_bullets, s.recap_seen, r.message, f.message "
             "FROM sessions s LEFT JOIN reflector_failures r ON r.session_id = s.id "
             "LEFT JOIN recap_feedback_failures f ON f.session_id = s.id "
             "WHERE s.ended_at IS NOT NULL ORDER BY s.id DESC").fetchall()
+        updating = {session_id for (session_id,) in db.execute("SELECT session_id FROM recap_feedback_pending")}
+    grades = session_grade_lines(db_path, [row[0] for row in rows])
     recaps = []
     for session_id, started_at, raw_bullets, seen, failure, feedback_failure in rows:
         bullets = json.loads(raw_bullets) if raw_bullets is not None else []
-        status = ("feedback_failed" if feedback_failure else "ready" if raw_bullets is not None
-                  else "failed" if failure else "preparing")
+        status = ("updating" if session_id in updating else "feedback_failed" if feedback_failure
+                  else "ready" if raw_bullets is not None else "failed" if failure else "preparing")
         recaps.append({"session_id": session_id, "date": started_at, "status": status,
                        "bullets": bullets, "has_bullets": bool(bullets), "seen": bool(seen),
-                       "message": feedback_failure if feedback_failure else failure if raw_bullets is None else None})
+                       "grades": grades[session_id],
+                       "message": feedback_failure if feedback_failure and session_id not in updating
+                       else failure if raw_bullets is None else None})
     return {"type": "recaps_state", "recaps": recaps,
             "unread": any(item["status"] == "ready" and item["has_bullets"] and not item["seen"] for item in recaps)}
 
@@ -337,6 +351,8 @@ def submit_feedback(client, db_path, session_id, text):
             raise ValueError("Feedback needs a recap with bullets")
         note_id = db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES (?, 'recap_feedback', ?, ?)",
                              (datetime.now(timezone.utc).isoformat(), text.strip(), session_id)).lastrowid
+        db.execute("INSERT INTO recap_feedback_pending (session_id, note_id) VALUES (?, ?) "
+                   "ON CONFLICT(session_id) DO UPDATE SET note_id = excluded.note_id", (session_id, note_id))
     return note_id
 
 
@@ -371,7 +387,20 @@ def reflect_feedback(client, db_path, session_id, note_id):
         bullets += [change.recap_line for change in effective]
         db.execute("UPDATE sessions SET recap_bullets = ? WHERE id = ?", (json.dumps(bullets), session_id))
         db.execute("DELETE FROM recap_feedback_failures WHERE session_id = ?", (session_id,))
+        db.execute("DELETE FROM recap_feedback_pending WHERE session_id = ?", (session_id,))
     return recap_state(db_path, session_id)
+
+
+def recover_feedback(db_path):
+    """A feedback call cannot be resumed after a restart, so stop showing it as updating and say it failed."""
+    with open_store(db_path) as db:
+        sessions = [session_id for (session_id,) in db.execute("SELECT session_id FROM recap_feedback_pending")]
+        for session_id in sessions:
+            if db.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is not None:
+                db.execute("INSERT INTO recap_feedback_failures (session_id, message) VALUES (?, ?) "
+                           "ON CONFLICT(session_id) DO UPDATE SET message = excluded.message",
+                           (session_id, INTERRUPTED_FEEDBACK))
+        db.execute("DELETE FROM recap_feedback_pending")
 
 
 def pending_sessions(db_path):

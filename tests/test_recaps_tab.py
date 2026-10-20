@@ -91,3 +91,117 @@ def test_planner_hides_only_hypotheses_changed_by_an_unseen_recap(tmp_path):
 
     assert {item["text"] for item in request.context["hypotheses"]} == {
         "Predates the recaps", "Changed in an opened recap"}
+
+
+def test_recaps_state_opens_each_recap_with_the_grades_from_that_session(tmp_path):
+    from tests.test_progress import add_attempt, add_review
+
+    path = tmp_path / "grades.sqlite3"
+    good, hard, pending, other = "duplicate-integer", "is-anagram", "two-integer-sum", "anagram-groups"
+    when = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc)
+    with open_store(path) as db:
+        session = db.execute("INSERT INTO sessions (started_at, ended_at, summary, recap_bullets, recap_seen) "
+                             "VALUES ('2026-10-17T09:00:00+00:00', '2026-10-17T09:30:00+00:00', 'Done.', '[\"A lesson.\"]', 1)").lastrowid
+        good_left = add_attempt(db, session, good, accepted=True)
+        good_id = add_review(db, good, "good", when, session=session, event_id=good_left)
+        hard_left = add_attempt(db, session, hard, accepted=True, help=("question",))
+        hard_id = add_review(db, hard, "hard", when, session=session, event_id=hard_left)
+        pending_left = add_attempt(db, session, pending, accepted=True)
+        pending_id = add_review(db, pending, None, when, session=session, event_id=pending_left)
+        earlier = db.execute("INSERT INTO sessions (started_at, ended_at, summary, recap_bullets) "
+                             "VALUES ('2026-10-16T09:00:00+00:00', '2026-10-16T09:30:00+00:00', 'Done.', '[]')").lastrowid
+        other_left = add_attempt(db, earlier, other, accepted=True)
+        add_review(db, other, "again", when, session=earlier, event_id=other_left)
+        titles = {slug: db_title(slug) for slug in (good, hard, pending, other)}
+
+    item = next(item for item in recaps_state(path)["recaps"] if item["session_id"] == session)
+    assert item["grades"] == [
+        {"review_id": good_id, "problem": good, "title": titles[good], "word": "solid",
+         "reason": "solved on your own", "pending": False},
+        {"review_id": hard_id, "problem": hard, "title": titles[hard], "word": "shaky",
+         "reason": "needed help, with a question", "pending": False},
+        {"review_id": pending_id, "problem": pending, "title": titles[pending], "word": "grading…",
+         "reason": "", "pending": True},
+    ]
+
+
+def db_title(slug):
+    from companion.catalog import load_catalog
+    return load_catalog().by_slug(slug)["title"]
+
+
+def test_recaps_state_reports_a_feedback_review_as_updating_while_it_runs(tmp_path):
+    path = tmp_path / "feedback.sqlite3"
+    with open_store(path) as db:
+        session = db.execute("INSERT INTO sessions (started_at, ended_at, summary, recap_bullets, recap_seen) "
+                             "VALUES ('2026-10-17T09:00:00+00:00', '2026-10-17T09:30:00+00:00', 'Done.', '[\"A lesson.\"]', 1)").lastrowid
+        note = db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES ('2026-10-17T09:30:00+00:00', "
+                          "'recap_feedback', 'That drop was wrong.', ?)", (session,)).lastrowid
+        db.execute("INSERT INTO recap_feedback_pending (session_id, note_id) VALUES (?, ?)", (session, note))
+
+    item = next(item for item in recaps_state(path)["recaps"] if item["session_id"] == session)
+    assert item["status"] == "updating"
+    assert item["message"] is None and item["has_bullets"] is True
+
+
+def test_recap_feedback_is_noted_and_broadcasts_updating(tmp_path, monkeypatch):
+    async def scenario():
+        path = recap_store(tmp_path, monkeypatch)
+        session_id = add_session(path, recap=["Dropped: visited marking."])
+        scheduled = []
+        monkeypatch.setattr(socket, "_schedule_feedback", lambda session, note: scheduled.append((session, note)))
+        connection = Connection([msg("recap_feedback", {"session_id": session_id, "text": "That drop was wrong."})])
+        await socket._handle(connection)
+        noted = [item for item in connection.sent if item["type"] == "recap_noted"]
+        assert noted and noted[0]["message"] == "Noted."
+        states = [item for item in connection.sent if item["type"] == "recaps_state"]
+        assert states and states[-1]["recaps"][0]["status"] == "updating"
+        assert scheduled == [(session_id, noted[0]["note_id"])]
+
+    asyncio.run(scenario())
+
+
+def test_a_restart_marks_interrupted_feedback_as_failed_instead_of_stuck(tmp_path):
+    from companion.reflector import recover_feedback
+
+    path = tmp_path / "restart.sqlite3"
+    with open_store(path) as db:
+        session = db.execute("INSERT INTO sessions (started_at, ended_at, summary, recap_bullets, recap_seen) "
+                             "VALUES ('2026-10-17T09:00:00+00:00', '2026-10-17T09:30:00+00:00', 'Done.', '[\"A lesson.\"]', 1)").lastrowid
+        note = db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES ('2026-10-17T09:30:00+00:00', "
+                          "'recap_feedback', 'That drop was wrong.', ?)", (session,)).lastrowid
+        db.execute("INSERT INTO recap_feedback_pending (session_id, note_id) VALUES (?, ?)", (session, note))
+
+    recover_feedback(path)
+
+    item = recaps_state(path)["recaps"][0]
+    assert item["status"] == "feedback_failed"
+    assert "interrupted" in item["message"].lower()
+    with open_store(path) as db:
+        assert db.execute("SELECT count(*) FROM recap_feedback_pending").fetchone() == (0,)
+
+
+def test_starting_the_companion_recovers_an_interrupted_feedback_call(tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    path = tmp_path / "serve.sqlite3"
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(path))
+    with open_store(path) as db:
+        session = db.execute("INSERT INTO sessions (started_at, ended_at, summary, recap_bullets, recap_seen) "
+                             "VALUES ('2026-10-17T09:00:00+00:00', '2026-10-17T09:30:00+00:00', 'Done.', '[\"A lesson.\"]', 1)").lastrowid
+        note = db.execute("INSERT INTO notes (ts, kind, text, session_id) VALUES ('2026-10-17T09:30:00+00:00', "
+                          "'recap_feedback', 'That drop was wrong.', ?)", (session,)).lastrowid
+        db.execute("INSERT INTO recap_feedback_pending (session_id, note_id) VALUES (?, ?)", (session, note))
+
+    @asynccontextmanager
+    async def fake_server(*args, **kwargs):
+        yield object()
+
+    monkeypatch.setattr(socket, "serve", fake_server)
+    monkeypatch.setattr(socket, "_schedule_grading", lambda trigger="initial": None)
+
+    async def scenario():
+        async with socket.serve_companion(port=0):
+            assert recaps_state(path)["recaps"][0]["status"] == "feedback_failed"
+
+    asyncio.run(scenario())

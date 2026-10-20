@@ -259,6 +259,34 @@ def _grade_entry(review, attempt):
             "failed_grader": review["failed_grader"]}
 
 
+def _session_grade_lines(snapshot, session_id):
+    """One line per problem attempted in a session, built like the Progress tab's latest grade."""
+    entries_by_slug = {entry["slug"]: entry for entry in snapshot["entries"]}
+    lines = []
+    for slug, rows in snapshot["reviews"].items():
+        rows = [row for row in rows if row["session_id"] == session_id]
+        if not rows:
+            continue
+        graded = [row for row in rows if row["grade"] is not None]
+        title = entries_by_slug[slug]["title"] if slug in entries_by_slug else slug
+        if not graded:
+            lines.append({"review_id": rows[-1]["id"], "problem": slug, "title": title,
+                          "word": "grading…", "reason": "", "pending": True})
+            continue
+        latest = _grade_entry(graded[-1], snapshot["attempts_by_event"].get(graded[-1]["event_id"]))
+        lines.append({"review_id": latest["review_id"], "problem": slug, "title": title,
+                      "word": latest["word"], "reason": latest["reason"], "pending": False})
+    return sorted(lines, key=lambda line: line["review_id"])
+
+
+def session_grade_lines(db_path, session_ids, *, now=None):
+    """The recap grade lines for each session, from the same review log and helpers as the Progress tab."""
+    now = _now(now)
+    with open_store(db_path) as db:
+        snapshot = _snapshot(db, now)
+        return {session_id: _session_grade_lines(snapshot, session_id) for session_id in session_ids}
+
+
 def _problem_state(snapshot, slug, entries_by_slug):
     rows = snapshot["reviews"].get(slug, [])
     graded = [row for row in rows if row["grade"] is not None]

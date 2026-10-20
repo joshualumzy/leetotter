@@ -1454,6 +1454,28 @@ p {
   color:var(--mute)
 }
 
+.recap-grades {
+  margin:0 0 10px
+}
+
+.recap-grade {
+  margin:0 0 3px
+}
+
+.recap-grade-title {
+  font-weight:600
+}
+
+.grade-word.pending {
+  color:var(--mute)
+}
+
+.recap-feedback-row .recap-feedback {
+  flex:1;
+  width:auto;
+  margin:0
+}
+
 .correction,.exclude-row {
   display:flex;
   flex-wrap:wrap;

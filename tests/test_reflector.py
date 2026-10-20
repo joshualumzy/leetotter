@@ -289,3 +289,53 @@ def test_only_the_last_session_can_be_pending(tmp_path):
     assert pending_sessions(path) == [newest]
     reflect_session(RecordedReflector(answer()), path, newest)
     assert pending_sessions(path) == []
+
+
+def test_more_than_three_bullets_is_sent_back_for_correction(tmp_path):
+    path, session_id, event_id = ended(tmp_path)
+    four = [{"text": f"Lesson {index}.", "carried_over": False, "cited_event_ids": [event_id]} for index in range(4)]
+    three = four[:3]
+    client = RecordedReflector(answer(bullets=four), answer(bullets=three))
+    state = reflect_session(client, path, session_id)
+    assert state["bullets"] == ["Lesson 0.", "Lesson 1.", "Lesson 2."]
+    assert "at most three" in client.calls[1][1][-1]["content"]
+
+
+def test_feedback_stays_pending_until_the_review_finishes_then_clears(tmp_path):
+    from companion.reflector import recaps_state, reflect_feedback, submit_feedback
+
+    path, session_id, event_id = ended(tmp_path)
+    reflect_session(RecordedReflector(answer([added([event_id])])), path, session_id)
+    with open_store(path) as db:
+        hypothesis_id = db.execute("SELECT id FROM hypotheses").fetchone()[0]
+    note_id = submit_feedback(None, path, session_id, "That weakness is wrong.")
+    assert recaps_state(path)["recaps"][0]["status"] == "updating"
+    drop = {"action": "drop", "hypothesis_id": hypothesis_id, "rejected_id": None,
+            "text": None, "category": None, "skill": None, "cited_event_ids": [],
+            "cited_note_id": note_id, "recap_line": "Dropped: visited marking."}
+    reflect_feedback(RecordedReflector({"changes": [drop]}), path, session_id, note_id)
+    assert recaps_state(path)["recaps"][0]["status"] == "ready"
+    with open_store(path) as db:
+        assert db.execute("SELECT count(*) FROM recap_feedback_pending").fetchone() == (0,)
+
+
+def test_a_failed_feedback_review_clears_pending_and_shows_feedback_failed(tmp_path, monkeypatch):
+    import asyncio
+
+    import companion.socket as socket
+    from companion.reflector import recaps_state, submit_feedback
+
+    path, session_id, event_id = ended(tmp_path)
+    reflect_session(RecordedReflector(answer([added([event_id])])), path, session_id)
+    note_id = submit_feedback(None, path, session_id, "That weakness is wrong.")
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(path))
+    socket._models = RecordedReflector(RuntimeError("offline"))
+    socket._reflection_lock = asyncio.Lock()
+
+    asyncio.run(socket._run_feedback(session_id, note_id))
+
+    item = recaps_state(path)["recaps"][0]
+    assert item["status"] == "feedback_failed"
+    assert "your note was saved" in item["message"]
+    with open_store(path) as db:
+        assert db.execute("SELECT count(*) FROM recap_feedback_pending").fetchone() == (0,)

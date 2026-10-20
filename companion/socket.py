@@ -18,7 +18,7 @@ from companion.planner import Planner, ask_planner
 from companion.progress import category_state, correct_grade, exclude_session, progress_state
 from companion.reference import write_and_check
 from companion.reference_review import apply_verdict, flag_tutor_message, review_state
-from companion.reflector import pending_sessions, recap_state, recaps_state, reflect_feedback, reflect_session, submit_feedback
+from companion.reflector import pending_sessions, recap_state, recaps_state, recover_feedback, reflect_feedback, reflect_session, submit_feedback
 from companion.session import SessionCoordinator
 from companion.store import open_store, reset_progress, store_path
 from companion.tutor import ask_tutor, failure
@@ -458,7 +458,7 @@ async def _handle(connection):
                     payload = message["payload"]
                     correct_grade(store_path(), grade=payload["grade"], review_id=payload.get("review_id"),
                                   problem=payload.get("problem"), attempt=payload.get("attempt"))
-                    await _broadcast([progress_state(store_path())], None)
+                    await _broadcast([progress_state(store_path()), _recaps_message()], None)
                 elif kind == "session_exclude":
                     exclude_session(store_path(), message["payload"]["session_id"])
                     await _broadcast([progress_state(store_path())], None)
@@ -467,9 +467,10 @@ async def _handle(connection):
                 elif kind == "recap_feedback":
                     session_id = message["payload"]["session_id"]
                     note_id = submit_feedback(None, store_path(), session_id, message["payload"]["text"])
-                    await connection.send(json.dumps({"type": "recap_noted", "session_id": session_id, "note_id": note_id,
-                                                      "message": "Noted. For a grade correction, use Progress."}))
+                    await connection.send(json.dumps({"type": "recap_noted", "session_id": session_id,
+                                                      "note_id": note_id, "message": "Noted."}))
                     _schedule_feedback(session_id, note_id)
+                    await _broadcast([_recaps_message()], None)
                 elif kind == "recap_seen":
                     session_id = message["payload"]["session_id"]
                     with open_store() as db:
@@ -822,6 +823,7 @@ async def _run_feedback(session_id, note_id):
                 db.execute("INSERT INTO recap_feedback_failures (session_id, message) VALUES (?, ?) "
                            "ON CONFLICT(session_id) DO UPDATE SET message = excluded.message",
                            (session_id, message))
+                db.execute("DELETE FROM recap_feedback_pending WHERE session_id = ?", (session_id,))
                 bullets = json.loads(db.execute("SELECT recap_bullets FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
             await _broadcast([{"type": "recap_state", "session_id": session_id, "status": "feedback_failed",
                                "bullets": bullets, "message": message}], None)
@@ -866,6 +868,7 @@ async def serve_companion(port=8765, models=None):
     _models = models
     _grading_lock = asyncio.Lock()
     _reflection_lock = asyncio.Lock()
+    recover_feedback(store_path())
     async with serve(_handle, "127.0.0.1", port, origins=[ALLOWED_ORIGIN]) as server:
         tick_task = asyncio.create_task(_ticker())
         _schedule_grading("next_start")

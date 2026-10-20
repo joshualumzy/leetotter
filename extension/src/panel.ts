@@ -56,7 +56,6 @@ let activeTab: "session" | "recaps" | "progress" = "session";
 let recaps: RecapsState["recaps"] | undefined;
 let recapsUnread = false;
 const recapSeenSent = new Set<number>();
-const recapHidden = new Set<number>();
 const recapDrafts = new Map<number, string>();
 const recapNoted = new Map<number, string>();
 let progress: ProgressState | undefined;
@@ -338,19 +337,34 @@ function recapCard(item: RecapItem): HTMLElement {
   const card = element("section", "card recap-item");
   card.dataset.session = String(item.session_id);
   appendText(card, "p", recapDate(item.date), "recap-date");
-  if (item.status === "preparing") {
+  if (item.status === "preparing" || item.status === "updating") {
     const otterNode = element("figure", "recap-otter"); otterNode.innerHTML = otter("doze");
     card.append(otterNode);
-    appendText(card, "h4", "Notes on your session");
-    appendText(card, "p", "The otter is still writing them up. They will appear here when ready.");
+    appendText(card, "h4", item.status === "updating" ? "Updating…" : "Notes on your session");
+    appendText(card, "p", item.status === "updating"
+      ? "The otter is reading your note and updating the recap."
+      : "The otter is still writing them up. They will appear here when ready.");
     return card;
   }
   if (item.status === "failed") {
     card.setAttribute("role", "alert");
     appendText(card, "h4", "Session review is missing");
     appendText(card, "p", item.message || "The recap could not be written; it will be retried next time.");
-    card.append(button(`recap-close-${item.session_id}`, "Close", "link"));
     return card;
+  }
+  if (item.grades.length) {
+    const list = element("div", "recap-grades");
+    for (const grade of item.grades) {
+      if (grade.pending) {
+        const row = element("div", "problem-grade recap-grade");
+        appendText(row, "span", grade.title, "recap-grade-title");
+        appendText(row, "span", grade.word, "grade-word pending");
+        list.append(row);
+      } else {
+        gradeLine(list, grade, grade.title);
+      }
+    }
+    card.append(list);
   }
   appendText(card, "h4", item.status === "feedback_failed" ? "Recap" : "Session recap");
   if (item.status === "feedback_failed") {
@@ -369,20 +383,23 @@ function recapCard(item: RecapItem): HTMLElement {
   if (noted) {
     appendText(card, "p", noted, "recap-noted");
   } else if (item.bullets.length && item.status !== "feedback_failed") {
+    const row = element("div", "row recap-feedback-row");
     const input = element("input", "field recap-feedback") as HTMLInputElement;
     input.id = `recap-feedback-${item.session_id}`;
     input.placeholder = "Anything off or missing?";
     input.value = recapDrafts.get(item.session_id) || "";
     input.maxLength = 500;
     input.setAttribute("aria-label", "Anything off or missing?");
-    card.append(input);
+    const send = button(`recap-send-${item.session_id}`, "Send", "btn");
+    send.disabled = !input.value.trim();
+    row.append(input, send);
+    card.append(row);
   }
-  card.append(button(`recap-close-${item.session_id}`, "Close", "link"));
   return card;
 }
 function renderRecaps(): void {
   const view = element("section", "recaps-view");
-  const visible = (recaps || []).filter(item => !recapHidden.has(item.session_id));
+  const visible = recaps || [];
   if (!visible.length) {
     appendText(view, "p", recaps ? "No recaps yet. They appear here after a session." : "Loading recaps…", "quiet");
   } else {
@@ -417,9 +434,9 @@ function progressBar(): HTMLElement {
 function disagreementMarker(parent: HTMLElement): void {
   appendText(parent, "span", "graders disagreed", "problem-disagreement");
 }
-function gradeRow(parent: HTMLElement, entry: ProgressCategoryState["problems"][number]["latest"], problem: string): void {
-  if (!entry) return;
+function gradeLine(parent: HTMLElement, entry: { review_id: number; word: string; reason: string; disagreement?: boolean }, title?: string): void {
   const row = element("div", "problem-grade");
+  if (title) appendText(row, "span", title, "recap-grade-title");
   appendText(row, "span", entry.word, `grade-word ${entry.word}`);
   appendText(row, "span", entry.reason, "grade-reason");
   if (entry.disagreement) disagreementMarker(row);
@@ -432,6 +449,10 @@ function gradeRow(parent: HTMLElement, entry: ProgressCategoryState["problems"][
     }
     parent.append(choices);
   }
+}
+function gradeRow(parent: HTMLElement, entry: ProgressCategoryState["problems"][number]["latest"], problem: string): void {
+  if (!entry) return;
+  gradeLine(parent, entry);
   const problemItem = categoryDetail?.problems.find(item => item.problem === problem);
   if (problemItem && problemItem.earlier_count > 0) {
     parent.append(button(`earlier-${problem}`, earlierLabel(problemItem.earlier_count), "link earlier-toggle"));
@@ -1092,6 +1113,13 @@ async function send(message: object): Promise<boolean> {
     return true;
   } catch (error) { actionError = error instanceof Error ? error.message : String(error); render(); return false; }
 }
+function sendRecapFeedback(sessionId: number): void {
+  const text = (recapDrafts.get(sessionId) || "").trim();
+  if (!text) return;
+  void send({ kind: "recap_feedback", session_id: sessionId, text }).then(ok => {
+    if (ok) { recapDrafts.delete(sessionId); render(); }
+  });
+}
 function sendBugReport(): void {
   const note = bugText.trim();
   if (!note || bugSending) return;
@@ -1274,15 +1302,8 @@ body.addEventListener("click", event => {
     void send({ kind: "reset_progress", confirm: "RESET" });
     return;
   }
-  if (id?.startsWith("recap-close-")) {
-    const sessionId = Number(id.slice("recap-close-".length));
-    const text = (recapDrafts.get(sessionId) || "").trim();
-    if (text) {
-      void send({ kind: "recap_feedback", session_id: sessionId, text }).then(ok => { if (ok) { recapDrafts.delete(sessionId); render(); } });
-    } else {
-      recapHidden.add(sessionId);
-      render();
-    }
+  if (id?.startsWith("recap-send-")) {
+    sendRecapFeedback(Number(id.slice("recap-send-".length)));
     return;
   }
   if (id === "close-settings") { settingsOpen = false; render(); }
@@ -1358,7 +1379,13 @@ body.addEventListener("input", event => {
     return;
   }
   if (target.classList.contains("flag-line")) { flagDraft = target.value; return; }
-  if (target.id.startsWith("recap-feedback-")) { recapDrafts.set(Number(target.id.slice("recap-feedback-".length)), target.value); return; }
+  if (target.id.startsWith("recap-feedback-")) {
+    const sessionId = Number(target.id.slice("recap-feedback-".length));
+    recapDrafts.set(sessionId, target.value);
+    const send = document.getElementById(`recap-send-${sessionId}`) as HTMLButtonElement | null;
+    if (send) send.disabled = !target.value.trim();
+    return;
+  }
   if (target.id === "reset-confirm") {
     resetText = target.value;
     (document.getElementById("reset-send") as HTMLButtonElement | null)!.disabled = resetText !== "RESET";
@@ -1383,8 +1410,13 @@ controls.addEventListener("click", event => {
   if (command) void send({ kind: "session_command", command, ...(command === "resume" ? { tabId: panelTabId } : {}) });
 });
 body.addEventListener("keydown", event => {
-  if (event.key === "Enter" && (event.target as HTMLElement).id === "first-name") { event.preventDefault(); saveName("first-name"); }
-  if (event.key === "Enter" && (event.target as HTMLElement).id === "settings-name") { event.preventDefault(); saveName("settings-name"); }
+  const target = event.target as HTMLElement;
+  if (event.key === "Enter" && target.id === "first-name") { event.preventDefault(); saveName("first-name"); }
+  if (event.key === "Enter" && target.id === "settings-name") { event.preventDefault(); saveName("settings-name"); }
+  if (event.key === "Enter" && target.id.startsWith("recap-feedback-")) {
+    event.preventDefault();
+    sendRecapFeedback(Number(target.id.slice("recap-feedback-".length)));
+  }
 });
 body.addEventListener("change", event => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
@@ -1483,7 +1515,7 @@ chrome.runtime.onMessage.addListener(message => {
     settingsOpen = false;
     activeTab = "session";
     recaps = undefined; recapsUnread = false;
-    recapSeenSent.clear(); recapHidden.clear(); recapDrafts.clear(); recapNoted.clear();
+    recapSeenSent.clear(); recapDrafts.clear(); recapNoted.clear();
     progress = undefined; categoryDetail = undefined; openCategory = null; correction = null;
     earlierOpen.clear(); excludeSessionId = null; excludeStep = "idle";
     resetStep = "idle"; resetText = "";

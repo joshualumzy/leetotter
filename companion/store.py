@@ -69,11 +69,15 @@ MIGRATIONS = (
         "ALTER TABLE hypotheses ADD COLUMN recap_session_id INTEGER REFERENCES sessions(id)",
         "CREATE TABLE recap_feedback_failures (session_id INTEGER PRIMARY KEY REFERENCES sessions(id), message TEXT NOT NULL)",
     ),
+    (
+        "CREATE TABLE recap_feedback_pending (session_id INTEGER PRIMARY KEY REFERENCES sessions(id), note_id INTEGER NOT NULL REFERENCES notes(id))",
+    ),
 )
 
 PERSONAL_TABLES = (
     "grading_failures", "grader_retries", "handled_attempts", "reviews", "hypotheses", "teaching",
-    "model_calls", "reflector_failures", "recap_feedback_failures", "events", "notes", "sessions", "settings",
+    "model_calls", "reflector_failures", "recap_feedback_failures", "recap_feedback_pending", "events", "notes",
+    "sessions", "settings",
 )
 
 

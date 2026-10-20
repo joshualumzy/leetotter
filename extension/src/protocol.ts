@@ -7,7 +7,8 @@ export type ReferenceFlagged = { type: "reference_flagged"; ts: string; message_
 export type ReferenceVerdict = { type: "reference_verdict"; ts: string; slug: string; accepted: boolean; reason: string; graded?: number[] };
 export type RecapState = { type: "recap_state"; ts?: string; session_id: number; status: "preparing" | "ready" | "failed" | "feedback_failed"; bullets: string[]; message?: string };
 export type RecapNoted = { type: "recap_noted"; ts?: string; session_id: number; note_id: number; message: string };
-export type RecapItem = { session_id: number; date: string; status: "preparing" | "ready" | "failed" | "feedback_failed"; bullets: string[]; has_bullets: boolean; seen: boolean; message: string | null };
+export type RecapGradeLine = { review_id: number; problem: string; title: string; word: GradeWord | "grading…"; reason: string; pending: boolean };
+export type RecapItem = { session_id: number; date: string; status: "preparing" | "ready" | "updating" | "failed" | "feedback_failed"; bullets: string[]; has_bullets: boolean; seen: boolean; message: string | null; grades: RecapGradeLine[] };
 export type RecapsState = { type: "recaps_state"; ts: string; recaps: RecapItem[]; unread: boolean };
 export type ProgressLevel = "not started" | "building" | "solid" | "strong";
 export type ProgressHealth = { graded: number; disagreements: number; disagreement_share: number; ungraded: number };
@@ -255,13 +256,23 @@ export function parseMessage(raw: string): Message {
   }
   if (message.type === "recap_noted" && (!positiveInteger(message.session_id) || !positiveInteger(message.note_id) || !nonempty(message.message))) throw new Error("Invalid recap_noted payload");
   if (message.type === "recaps_state") {
+    const gradeWord = (value: unknown): boolean => ["solid", "shaky", "missed"].includes(String(value));
+    const gradeLine = (value: unknown): boolean => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const line = value as Record<string, unknown>;
+      const pending = line.pending === true;
+      return positiveInteger(line.review_id) && nonempty(line.problem) && nonempty(line.title) &&
+        typeof line.reason === "string" && typeof line.pending === "boolean" &&
+        (pending ? line.word === "grading…" : gradeWord(line.word));
+    };
     if (typeof message.unread !== "boolean" || !Array.isArray(message.recaps) || !message.recaps.every(value => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return false;
       const item = value as Record<string, unknown>;
       return positiveInteger(item.session_id) && nonempty(item.date) &&
-        ["preparing", "ready", "failed", "feedback_failed"].includes(String(item.status)) &&
+        ["preparing", "ready", "updating", "failed", "feedback_failed"].includes(String(item.status)) &&
         Array.isArray(item.bullets) && item.bullets.every(bullet => typeof bullet === "string") &&
         typeof item.has_bullets === "boolean" && typeof item.seen === "boolean" &&
+        Array.isArray(item.grades) && item.grades.every(gradeLine) &&
         (item.message === null || typeof item.message === "string");
     })) throw new Error("Invalid recaps_state payload");
   }

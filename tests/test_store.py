@@ -15,7 +15,7 @@ def test_first_open_creates_all_spec_tables_and_schema_version(tmp_path):
         "events", "sessions", "reviews", "fsrs", "hypotheses", "teaching",
         "notes", "settings", "references", "model_calls",
     }
-    assert version == 11
+    assert version == 12
     assert path.exists()
 
 
@@ -29,7 +29,7 @@ def test_reopen_preserves_data_and_does_not_reapply_migration(tmp_path):
         version = db.execute("PRAGMA user_version").fetchone()[0]
 
     assert notes == [("quiet",)]
-    assert version == 11
+    assert version == 12
 
 
 def test_environment_can_set_default_store_path(tmp_path, monkeypatch):
@@ -37,7 +37,7 @@ def test_environment_can_set_default_store_path(tmp_path, monkeypatch):
     monkeypatch.setenv("LEETOTTER_DB_PATH", str(path))
 
     with open_store() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
 
     assert path.exists()
 
@@ -52,10 +52,11 @@ def test_recap_seen_migration_marks_existing_ready_recaps_as_seen(tmp_path):
         db.execute("ALTER TABLE sessions DROP COLUMN excluded")
         db.execute("ALTER TABLE hypotheses DROP COLUMN recap_session_id")
         db.execute("DROP TABLE recap_feedback_failures")
+        db.execute("DROP TABLE recap_feedback_pending")
         db.execute("PRAGMA user_version = 8")
 
     with open_store(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert db.execute("SELECT id, recap_seen FROM sessions ORDER BY id").fetchall() == [(1, 1), (2, 0), (3, 1)]
         db.execute("INSERT INTO sessions (started_at) VALUES ('2026-10-17T13:00:00+00:00')")
         assert db.execute("SELECT recap_seen FROM sessions WHERE id = 4").fetchone()[0] == 0
@@ -71,6 +72,7 @@ def test_retired_overrun_events_are_removed_from_an_existing_store(tmp_path):
         db.execute("ALTER TABLE sessions DROP COLUMN excluded")
         db.execute("ALTER TABLE hypotheses DROP COLUMN recap_session_id")
         db.execute("DROP TABLE recap_feedback_failures")
+        db.execute("DROP TABLE recap_feedback_pending")
         db.execute("PRAGMA user_version = 7")
     with open_store(path) as db:
         kinds = [row[0] for row in db.execute("SELECT type FROM events ORDER BY id")]

@@ -17,7 +17,7 @@ from tests.test_session import msg, opened
 
 PERSONAL = ("events", "sessions", "reviews", "hypotheses", "teaching", "notes", "model_calls",
             "settings", "handled_attempts", "grader_retries", "grading_failures", "reflector_failures",
-            "recap_feedback_failures")
+            "recap_feedback_failures", "recap_feedback_pending")
 KEPT = ("references", "fsrs")
 
 
@@ -49,6 +49,7 @@ def seed(path):
         db.execute("INSERT INTO fsrs (library_version, parameters) VALUES ('5.0', '{}')")
         db.execute("INSERT INTO reflector_failures (session_id, message) VALUES (?, 'offline')", (session_id,))
         db.execute("INSERT INTO recap_feedback_failures (session_id, message) VALUES (?, 'offline')", (session_id,))
+        db.execute("INSERT INTO recap_feedback_pending (session_id, note_id) VALUES (?, ?)", (session_id, note_id))
         db.execute("INSERT INTO handled_attempts (start_event_id) VALUES (?)", (event_id,))
         db.execute("INSERT INTO grader_retries (start_event_id, failed_tries) VALUES (?, 1)", (event_id,))
         db.execute("INSERT INTO grading_failures (start_event_id, message) VALUES (?, 'offline')", (event_id,))

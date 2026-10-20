@@ -496,11 +496,13 @@ def test_socket_serves_progress_and_broadcasts_after_a_change(tmp_path, monkeypa
     ])
     asyncio.run(socket._handle(connection))
     assert [message["type"] for message in connection.sent] == [
-        "progress_state", "progress_category_state", "progress_state", "progress_state", "progress_state"]
+        "progress_state", "progress_category_state", "progress_state", "recaps_state", "progress_state",
+        "progress_state"]
     assert connection.sent[0]["header"]["on_your_own"] == 1
     assert connection.sent[1]["category"] == "Arrays & Hashing"
     assert connection.sent[2]["header"]["coming_back"] == 1
-    assert connection.sent[3]["header"]["to_do"] == 150
+    assert connection.sent[3]["recaps"][0]["grades"][0]["word"] == "missed"
+    assert connection.sent[4]["header"]["to_do"] == 150
 
 
 def test_progress_wire_payloads_are_validated():

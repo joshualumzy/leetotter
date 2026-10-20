@@ -22,7 +22,7 @@ def test_running_the_companion_creates_the_store_and_keeps_running(tmp_path):
 
     assert path.exists()
     with open_store(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
 
 
 def test_startup_line_is_written_to_configured_log(tmp_path):

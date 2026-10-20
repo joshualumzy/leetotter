@@ -108,7 +108,7 @@ describe("Planner, recap, time cap and reference messages", () => {
       expect(parsed).toMatchObject(recap);
       if (status !== "preparing") expect(parsed).not.toHaveProperty("ts");
     }
-    expect(parseMessage('{"type":"recap_noted","session_id":12,"note_id":9,"message":"Noted. For a grade correction, use Progress."}')).toMatchObject({ session_id: 12, note_id: 9 });
+    expect(parseMessage('{"type":"recap_noted","session_id":12,"note_id":9,"message":"Noted."}')).toMatchObject({ session_id: 12, note_id: 9 });
     expect(parseMessage('{"type":"recap_get","ts":"now","payload":{"session_id":12}}')).toMatchObject({ type: "recap_get" });
     expect(parseMessage('{"type":"recap_seen","ts":"now","payload":{"session_id":12}}')).toMatchObject({ type: "recap_seen" });
     expect(() => parseMessage('{"type":"recap_seen","ts":"now","payload":{"session_id":0}}')).toThrow("Invalid recap_seen payload");
@@ -151,8 +151,11 @@ describe("Recaps, Progress and reset messages", () => {
     const state = {
       type: "recaps_state", ts: "now", unread: true,
       recaps: [
-        { session_id: 13, date: "2026-10-19T09:00:00+00:00", status: "ready", bullets: ["Dropped: visited marking."], has_bullets: true, seen: false, message: null },
-        { session_id: 12, date: "2026-10-18T09:00:00+00:00", status: "failed", bullets: [], has_bullets: false, seen: true, message: "Session review is missing: offline" },
+        { session_id: 14, date: "2026-10-20T09:00:00+00:00", status: "updating", bullets: ["Dropped: visited marking."], has_bullets: true, seen: true, message: null,
+          grades: [{ review_id: 4, problem: "two-sum", title: "Two Sum", word: "solid", reason: "solved on your own", pending: false }] },
+        { session_id: 13, date: "2026-10-19T09:00:00+00:00", status: "ready", bullets: ["Dropped: visited marking."], has_bullets: true, seen: false, message: null,
+          grades: [{ review_id: 5, problem: "valid-anagram", title: "Valid Anagram", word: "grading…", reason: "", pending: true }] },
+        { session_id: 12, date: "2026-10-18T09:00:00+00:00", status: "failed", bullets: [], has_bullets: false, seen: true, message: "Session review is missing: offline", grades: [] },
       ],
     };
     expect(parseMessage(JSON.stringify(state))).toMatchObject(state);
@@ -162,6 +165,10 @@ describe("Recaps, Progress and reset messages", () => {
       { ...state, unread: "yes" },
       { ...state, recaps: [{ ...state.recaps[0], status: "unknown" }] },
       { ...state, recaps: [{ ...state.recaps[0], bullets: [1] }] },
+      { ...state, recaps: [{ ...state.recaps[0], grades: "none" }] },
+      { ...state, recaps: [{ ...state.recaps[0], grades: [{ ...state.recaps[0].grades[0], word: "great" }] }] },
+      { ...state, recaps: [{ ...state.recaps[0], grades: [{ ...state.recaps[0].grades[0], review_id: 0 }] }] },
+      { ...state, recaps: [{ ...state.recaps[0], grades: [{ ...state.recaps[0].grades[0], pending: true }] }] },
     ]) expect(() => parseMessage(JSON.stringify(invalid))).toThrow();
     expect(() => parseMessage('{"type":"recaps_get","ts":"now","payload":{}}')).toThrow("Invalid recaps_get payload");
   });
