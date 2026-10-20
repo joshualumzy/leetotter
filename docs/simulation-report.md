@@ -155,3 +155,36 @@ Share of runs in which the category was strong for both skills at some point.
 | Bit Manipulation | 7 | 45% | 80% | 100% |
 | Tries, solve only | 3 | 30% | 85% | 100% |
 | Tries, analysis only | 3 | 30% | 80% | 100% |
+
+## When done problems come back (2026-10-20)
+
+Table I: `uv run python -m simulation --only-split`. "split" brings back a done problem when its own recall drops below the stated retention, in the retry slot (no two returns in a row while any of the 150 is untried); "reviews last" only once all 150 have a graded attempt; "sticky done" keeps a problem done after a missed review. SPEC adopts reviews last, without sticky done. Counting Tutor-helped solves (Hard but done) as not done, with reviews last and the wide pool: 90% clean 16/20 reached, 30 weeks to all 150 done (29 before); 70% clean 55 weeks either way.
+
+### I. Split memory (done problems return when due), 7/wk
+
+| Scenario | Reached | Median wk to 100% | Range wk | Median wk all 150 done | Median wk all strong | Max cats strong at once | Real attempts | Retry share | Review share | Retry+review share wk 1-26 | Extras | Idle slots |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 90% clean, spec pool, current | 6/20 | 28 | 26-31 | 28 | 24 | 17 | 363 | 43% | 0% | 9% | 50 | 351 |
+| 90% clean, spec pool, split 0.9 | 0/20 | - | - | - | 30 | 16 | 734 | 20% | 53% | 49% | 34 | 0 |
+| 90% clean, spec pool, split 0.8 | 2/20 | 96 | 95-98 | 101 | 31 | 17 | 732 | 22% | 53% | 48% | 40 | 0 |
+| 90% clean, spec pool, split 0.9, sticky done | 3/20 | 56 | 51-58 | 55 | 33 | 17 | 733 | 3% | 71% | 49% | 40 | 0 |
+| 90% clean, spec pool, split 0.9, reviews last | 4/20 | 30 | 27-39 | 27 | 20 | 17 | 732 | 20% | 50% | 8% | 56 | 0 |
+| 90% clean, spec pool, split 0.9, reviews last, sticky done | 4/20 | 29 | 27-32 | 27 | 20 | 17 | 731 | 2% | 69% | 8% | 58 | 0 |
+| 90% clean, wide pool, current | 19/20 | 29 | 27-38 | 29 | 24 | 18 | 204 | 10% | 0% | 8% | 32 | 2 |
+| 90% clean, wide pool, split 0.9 | 0/20 | - | - | - | 45 | 18 | 733 | 21% | 51% | 49% | 56 | 0 |
+| 90% clean, wide pool, split 0.8 | 5/20 | 100 | 97-104 | 102 | 41 | 18 | 732 | 21% | 51% | 47% | 50 | 0 |
+| 90% clean, wide pool, split 0.9, sticky done | 10/20 | 60 | 55-73 | 61 | 45 | 18 | 622 | 4% | 61% | 49% | 54 | 0 |
+| 90% clean, wide pool, split 0.9, reviews last | 16/20 | 31 | 26-47 | 29 | 24 | 18 | 228 | 12% | 4% | 9% | 41 | 0 |
+| 90% clean, wide pool, split 0.9, reviews last, sticky done | 16/20 | 32 | 26-39 | 29 | 24 | 18 | 228 | 7% | 10% | 9% | 41 | 0 |
+| 70% clean, spec pool, current | 0/20 | - | - | 34 | - | 13 | 416 | 44% | 0% | 21% | 80 | 317 |
+| 70% clean, spec pool, split 0.9 | 0/20 | - | - | - | - | 11 | 733 | 26% | 45% | 49% | 66 | 0 |
+| 70% clean, spec pool, split 0.8 | 0/20 | - | - | - | - | 12 | 732 | 25% | 47% | 48% | 64 | 0 |
+| 70% clean, spec pool, split 0.9, sticky done | 0/20 | - | - | 70 | - | 12 | 733 | 8% | 63% | 49% | 66 | 0 |
+| 70% clean, spec pool, split 0.9, reviews last | 0/20 | - | - | 36 | - | 13 | 733 | 25% | 42% | 22% | 83 | 0 |
+| 70% clean, spec pool, split 0.9, reviews last, sticky done | 0/20 | - | - | 35 | - | 12 | 732 | 8% | 61% | 22% | 82 | 0 |
+| 70% clean, wide pool, current | 0/20 | - | - | 56 | - | 12 | 532 | 30% | 0% | 16% | 212 | 200 |
+| 70% clean, wide pool, split 0.9 | 0/20 | - | - | - | - | 11 | 733 | 18% | 36% | 49% | 201 | 0 |
+| 70% clean, wide pool, split 0.8 | 0/20 | - | - | - | - | 11 | 734 | 20% | 35% | 48% | 184 | 0 |
+| 70% clean, wide pool, split 0.9, sticky done | 0/20 | - | - | 91 | - | 11 | 732 | 8% | 46% | 49% | 184 | 0 |
+| 70% clean, wide pool, split 0.9, reviews last | 0/20 | - | - | 55 | - | 12 | 734 | 21% | 28% | 16% | 218 | 0 |
+| 70% clean, wide pool, split 0.9, reviews last, sticky done | 0/20 | - | - | 55 | - | 12 | 732 | 7% | 41% | 16% | 228 | 0 |

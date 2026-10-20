@@ -9,7 +9,8 @@ from simulation.memory import RETENTION, Item, Rating
 # How much a difficulty scales the chance of failing: easy fails less, hard more.
 FAIL_SCALE = {"E": 0.6, "M": 1.0, "H": 1.6}
 IMPROVE_ATTEMPTS = 150
-KINDS = ("new", "test", "retry", "refresh", "transfer", "extra", "filler")
+KINDS = ("new", "test", "retry", "review", "refresh", "transfer", "extra", "filler")
+EARLY_DAYS = 182  # weeks 1-26
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,10 @@ class Scenario:
     min_category_gap: int = 5  # days between first attempts in one category (mixing)
     retry_days: int = 3  # a problem needing help or brute force returns "a few days" later
     horizon_days: int = 730
+    policy: str = "current"  # "current" or "split"
+    done_retention: float = 0.9  # split: a done problem returns when its recall falls below this
+    reviews_last: bool = False  # split: due done problems come back only when no new work is allowed
+    sticky_done: bool = False  # a missed review of a done problem leaves it done
 
 
 @dataclass
@@ -56,6 +61,8 @@ class Result:
     max_strong: int  # most categories strong at once
     kinds: dict
     first_strong: dict  # category -> {"solve", "analysis", "both"} -> day or None
+    early_attempts: int  # attempts before day 182
+    early_returns: int  # retry or review attempts before day 182
 
 
 class _Run:
@@ -74,6 +81,8 @@ class _Run:
         self.attempts = 0
         self.kinds = dict.fromkeys(KINDS, 0)
         self.day_coverage = self.day_transfer = self.day_all_attempted = None
+        self.early_attempts = self.early_returns = 0
+        self.prev_kind: str | None = None
 
     # --- state ---------------------------------------------------------
     def strong(self, name: str, skill: str) -> bool:
@@ -104,23 +113,51 @@ class _Run:
 
     # --- the Planner stand-in (SPEC §8) ---------------------------------
     def pick(self) -> tuple[Problem, str] | None:
+        if self.sc.policy == "split":
+            return self.pick_split()
         retries = [p for p in self.core if p.graded and not p.done and self.day - p.last_day >= self.sc.retry_days]
         if retries:
-            return min(retries, key=lambda p: p.last_day), "retry"
+            return self.chosen(min(retries, key=lambda p: p.last_day), "retry")
+        return self.pick_supply() or self.pick_filler()
 
+    def pick_split(self) -> tuple[Problem, str] | None:
+        due = []
+        for p in self.core:
+            if not p.graded or p.last_day == self.day:
+                continue
+            recall = p.memory.recall(self.day)
+            if not p.done and self.day - p.last_day >= self.sc.retry_days:
+                due.append((recall, p, "retry"))
+            elif p.done and recall < self.sc.done_retention:
+                due.append((recall, p, "review"))
+        late = [item for item in due if item[2] == "review"] if self.sc.reviews_last else []
+        early = [item for item in due if item[2] != "review"] if self.sc.reviews_last else due
+        returning = min(early, key=lambda item: item[0]) if early else None
+        hold = self.prev_kind in ("retry", "review") and any(p.graded == 0 for p in self.core)
+        if returning and not hold:
+            return self.chosen(returning[1], returning[2])
+        picked = self.pick_supply()
+        if picked:
+            return picked
+        if due:
+            returning = min(due, key=lambda item: item[0])
+            return self.chosen(returning[1], returning[2])
+        return self.pick_filler()
+
+    def pick_supply(self) -> tuple[Problem, str] | None:
         due = [n for n in self.cats if self.due(n) and (self.unseen(n) or self.unseen_extra(n))]
         for name in sorted(due, key=lambda n: (self.both_strong(n), self.cats[n].solve.recall(self.day))):
             checking = self.solid(name) and not self.both_strong(name)
             if self.unseen(name):
-                return self.unseen(name)[0], "transfer" if checking else "refresh"
-            return self.unseen_extra(name)[0], "extra"
+                return self.chosen(self.unseen(name)[0], "transfer" if checking else "refresh")
+            return self.chosen(self.unseen_extra(name)[0], "extra")
 
         for name in self.cats:  # solid but never tested on a new problem: imported solves only
             if not self.cats[name].solve.reviewed and self.solid(name):
                 if self.unseen(name):
-                    return self.unseen(name)[0], "transfer"
+                    return self.chosen(self.unseen(name)[0], "transfer")
                 if self.unseen_extra(name):
-                    return self.unseen_extra(name)[0], "extra"
+                    return self.chosen(self.unseen_extra(name)[0], "extra")
 
         open_cats = [n for n in self.cats if self.eligible(n) and any(p.graded == 0 for p in self.in_cat(n))]
         if open_cats:
@@ -129,13 +166,19 @@ class _Run:
             imported = [p for p in ungraded if p.imported]
             fresh = [p for p in ungraded if not p.imported]
             if imported and (not fresh or self.rng.random() < self.sc.imported_first):
-                return self.rng.choice(imported), "test"
-            return self.rng.choice(fresh), "new"
+                return self.chosen(self.rng.choice(imported), "test")
+            return self.chosen(self.rng.choice(fresh), "new")
+        return None
 
+    def pick_filler(self) -> tuple[Problem, str] | None:
         filler = [p for p in self.core if p.done and p.last_day != self.day]
         if filler:
-            return min(filler, key=lambda p: p.memory.recall(self.day)), "filler"
+            return self.chosen(min(filler, key=lambda p: p.memory.recall(self.day)), "filler")
         return None
+
+    def chosen(self, p: Problem, kind: str) -> tuple[Problem, str]:
+        self.prev_kind = kind
+        return p, kind
 
     def due(self, name: str) -> bool:
         """Rusty (SPEC §9), or its complexity skill is weak and has slipped below 0.9 too."""
@@ -184,9 +227,12 @@ class _Run:
         p.memory.review(grade, self.day)
         p.graded += 1
         p.last_day = self.day
-        p.done = done and not p.extra
+        p.done = (done or (self.sc.sticky_done and p.done)) and not p.extra
         self.attempts += 1
         self.kinds[kind] += 1
+        if self.day < EARLY_DAYS:
+            self.early_attempts += 1
+            self.early_returns += kind in ("retry", "review")
         if not first:
             return
         cat = self.cats[p.category]
@@ -241,6 +287,7 @@ class _Run:
         return Result(
             reached, self.attempts, self.day_coverage, self.day_transfer, self.day_all_attempted,
             self.max_strong, self.kinds, {n: c.first_strong for n, c in self.cats.items()},
+            self.early_attempts, self.early_returns,
         )
 
 
