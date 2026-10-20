@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -18,11 +19,28 @@ def bugs_dir() -> Path:
     return store_path().parent / "bugs"
 
 
-def count_bug_reports() -> int:
+def _report_folders():
     folder = bugs_dir()
     if not folder.is_dir():
-        return 0
-    return sum(1 for item in folder.iterdir() if item.is_dir())
+        return []
+    return [item for item in folder.iterdir() if item.is_dir() and not item.is_symlink()]
+
+
+def count_bug_reports() -> int:
+    return len(_report_folders())
+
+
+def clear_bug_reports():
+    """Delete every report folder in bugs/. Stray files and anything outside are untouched."""
+    failures = []
+    for folder in _report_folders():
+        try:
+            shutil.rmtree(folder)
+        except Exception as error:
+            failures.append(error)
+    if failures:
+        count = len(failures)
+        raise OSError(f"{count} bug report{'s' if count != 1 else ''} could not be deleted: {failures[0]}") from failures[0]
 
 
 def save_bug_report(note, extension_trace, session_state=None):

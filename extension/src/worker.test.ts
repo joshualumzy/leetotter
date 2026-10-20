@@ -713,13 +713,24 @@ describe("Bug reports", () => {
     expect(await dispatch({ kind: "bug_report", note: "It froze" })).toEqual({ sent: true });
     expect(socket.sent.at(-1).payload.trace.map((entry: any) => entry.direction)).toEqual(["in", "out"]);
   });
-  it("relays a saved report and a failed one to the panel", async () => {
+  it("relays a saved report, a cleared one and a failed one to the panel", async () => {
     await start(); socket.readyState = 1;
     const saved = { type: "bug_saved", ts: "now" };
     socket.onmessage?.({ data: JSON.stringify(saved) });
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "bug_saved" });
+    const cleared = { type: "bug_cleared", ts: "now" };
+    socket.onmessage?.({ data: JSON.stringify(cleared) });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "bug_cleared" });
     const failed = { type: "bug_failed", ts: "now", payload: { error: "disk full" } };
     socket.onmessage?.({ data: JSON.stringify(failed) });
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ kind: "bug_failed", message: failed });
+  });
+  it("clears all reports and refuses to clear when disconnected", async () => {
+    await start();
+    expect(await dispatch({ kind: "bug_clear" })).toEqual({ error: "Tutor service isn't connected." });
+    socket.readyState = 1;
+    expect(await dispatch({ kind: "bug_clear" })).toEqual({ sent: true });
+    expect(socket.sent.at(-1)).toMatchObject({ type: "bug_clear" });
+    expect(socket.sent.at(-1)).not.toHaveProperty("payload");
   });
 });

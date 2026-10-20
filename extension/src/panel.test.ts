@@ -1242,6 +1242,71 @@ describe("panel actions", () => {
       expect((document.getElementById("bug-note") as HTMLTextAreaElement).value).toBe("It froze");
     });
 
+    it("offers Clear all reports only when some are saved, with a singular or plural confirm", () => {
+      showStart();
+      click("header-otter");
+      expect(document.getElementById("clear-bug-reports")).toBeNull();
+      notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 1 } });
+      expect(document.getElementById("clear-bug-reports")?.textContent).toBe("Clear all reports");
+      click("clear-bug-reports");
+      expect(document.getElementById("settings-card")?.textContent).toContain("Delete 1 bug report? This can't be undone.");
+      click("bug-clear-cancel");
+      expect(document.getElementById("bug-clear-confirm")).toBeNull();
+      notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 3 } });
+      click("clear-bug-reports");
+      expect(document.getElementById("settings-card")?.textContent).toContain("Delete 3 bug reports? This can't be undone.");
+    });
+
+    it("clears every report after a confirm and shows the notice", () => {
+      showStart();
+      click("header-otter");
+      notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 2 } });
+      click("clear-bug-reports");
+      sendMessage.mockClear();
+      click("bug-clear-confirm");
+      expect(sendMessage).toHaveBeenCalledWith({ kind: "bug_clear" });
+      expect((document.getElementById("bug-clear-confirm") as HTMLButtonElement).disabled).toBe(true);
+      notify({ kind: "bug_cleared" });
+      expect(document.getElementById("bug-clear-confirm")).toBeNull();
+      expect(document.getElementById("settings-card")?.textContent).toContain("Cleared.");
+    });
+
+    it("returns to idle with the error when clearing fails or cannot be sent", async () => {
+      showStart();
+      click("header-otter");
+      notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 2 } });
+      sendMessage.mockImplementation(async (message: any) => message.kind === "bug_clear"
+        ? { error: "Tutor service isn't connected." }
+        : { sent: true });
+      click("clear-bug-reports");
+      click("bug-clear-confirm");
+      await vi.waitFor(() => expect(document.getElementById("bug-error")?.textContent).toContain("Tutor service isn't connected."));
+      expect(document.getElementById("bug-clear-confirm")).toBeNull();
+      expect(document.getElementById("report-bug")).toBeTruthy();
+
+      click("clear-bug-reports");
+      click("bug-clear-confirm");
+      notify({ kind: "bug_failed", message: { type: "bug_failed", ts: "now", payload: { error: "folder is locked" } } });
+      expect(document.getElementById("bug-error")?.textContent).toContain("folder is locked");
+      expect(document.getElementById("bug-clear-confirm")).toBeNull();
+      expect(document.getElementById("report-bug")).toBeTruthy();
+    });
+
+    it("hides the clear confirm when a report starts and the report box when clearing starts", () => {
+      showStart();
+      click("header-otter");
+      notify({ kind: "settings_state", settings: { type: "settings_state", ts: "now", name: "Ada", theme: "match", bug_reports: 2 } });
+      click("clear-bug-reports");
+      expect(document.getElementById("bug-clear-confirm")).toBeTruthy();
+      click("report-bug");
+      expect(document.getElementById("bug-clear-confirm")).toBeNull();
+      expect(document.getElementById("bug-note")).toBeTruthy();
+      click("bug-cancel");
+      click("clear-bug-reports");
+      expect(document.getElementById("bug-clear-confirm")).toBeTruthy();
+      expect(document.getElementById("bug-note")).toBeNull();
+    });
+
     it("keeps linked reply slugs in the conversation without rendering extra lines", () => {
       const active = { ...session, state: "active" as const, mode: "watching" as const, running: true, problem: { slug: "two-sum", title: "Two Sum" } };
       notify({ kind: "session_state", state: active });

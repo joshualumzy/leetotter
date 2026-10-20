@@ -68,7 +68,7 @@ let excludeSessionId: number | null = null;
 let excludeStep: "idle" | "confirm" = "idle";
 let resetStep: "idle" | "warning" | "confirm" = "idle";
 let resetText = "";
-let bugStep: "idle" | "compose" = "idle";
+let bugStep: "idle" | "compose" | "confirm" = "idle";
 let bugText = "";
 let bugSending = false;
 let bugError = "";
@@ -666,10 +666,14 @@ function settingsCard(): HTMLElement {
     card.append(row);
   }
   appendText(card, "h4", "Bug reports", "section-title");
-  if (bugStep === "idle") {
-    const count = settings?.bug_reports ?? 0;
-    card.append(button("report-bug", count > 0 ? `Report a bug (${count} saved)` : "Report a bug", "btn"));
-  } else {
+  const bugCount = settings?.bug_reports ?? 0;
+  if (bugStep !== "compose") {
+    const row = element("div", "row");
+    row.append(button("report-bug", bugCount > 0 ? `Report a bug (${bugCount} saved)` : "Report a bug", "btn"));
+    if (bugCount > 0) row.append(button("clear-bug-reports", "Clear all reports", "link"));
+    card.append(row);
+  }
+  if (bugStep === "compose") {
     const note = element("textarea", "field bug-note") as HTMLTextAreaElement;
     note.id = "bug-note"; note.placeholder = "What went wrong?"; note.rows = 3;
     note.value = bugText; note.maxLength = 4000;
@@ -678,6 +682,13 @@ function settingsCard(): HTMLElement {
     const sendReport = button("bug-send", "Send", "btn");
     sendReport.disabled = !bugText.trim() || bugSending;
     row.append(sendReport, button("bug-cancel", "Cancel", "link"));
+    card.append(row);
+  } else if (bugStep === "confirm") {
+    appendText(card, "p", `Delete ${bugCount} bug report${bugCount === 1 ? "" : "s"}? This can't be undone.`);
+    const row = element("div", "row");
+    const clear = button("bug-clear-confirm", "Delete", "btn");
+    clear.disabled = bugSending;
+    row.append(clear, button("bug-clear-cancel", "Cancel", "link"));
     card.append(row);
   }
   if (bugError) {
@@ -1091,6 +1102,20 @@ function sendBugReport(): void {
     bugSending = false; bugError = error instanceof Error ? error.message : String(error); render();
   });
 }
+function clearBugReports(): void {
+  if (bugSending) return;
+  bugSending = true; bugError = ""; render();
+  void chrome.runtime.sendMessage({ kind: "bug_clear" }).then(result => {
+    if (result?.error) { bugSending = false; bugStep = "idle"; bugError = String(result.error); render(); }
+  }, error => {
+    bugSending = false; bugStep = "idle"; bugError = error instanceof Error ? error.message : String(error); render();
+  });
+}
+function showBugNotice(text: string): void {
+  bugNotice = text;
+  window.clearTimeout(bugNoticeTimer);
+  bugNoticeTimer = window.setTimeout(() => { bugNotice = ""; render(); }, 4000);
+}
 function requestChatState(): void {
   void chrome.runtime.sendMessage({ kind: "chat_get" }).then(result => {
     if (result?.error && transport.kind === "connected") {
@@ -1232,8 +1257,15 @@ body.addEventListener("click", event => {
     window.clearTimeout(bugNoticeTimer);
     render(); return;
   }
+  if (id === "clear-bug-reports") {
+    bugStep = "confirm"; bugError = ""; bugNotice = "";
+    window.clearTimeout(bugNoticeTimer);
+    render(); return;
+  }
   if (id === "bug-cancel") { bugStep = "idle"; bugText = ""; bugError = ""; render(); return; }
   if (id === "bug-send") { sendBugReport(); return; }
+  if (id === "bug-clear-cancel") { bugStep = "idle"; bugError = ""; render(); return; }
+  if (id === "bug-clear-confirm") { clearBugReports(); return; }
   if (id === "reset-progress") { resetStep = "warning"; resetText = ""; render(); return; }
   if (id === "reset-continue") { resetStep = "confirm"; resetText = ""; render(); return; }
   if (id === "reset-cancel") { resetStep = "idle"; resetText = ""; render(); return; }
@@ -1433,13 +1465,17 @@ chrome.runtime.onMessage.addListener(message => {
   }
   if (message?.kind === "bug_saved") {
     bugStep = "idle"; bugText = ""; bugSending = false; bugError = "";
-    bugNotice = "Saved. Thanks!";
-    window.clearTimeout(bugNoticeTimer);
-    bugNoticeTimer = window.setTimeout(() => { bugNotice = ""; render(); }, 4000);
+    showBugNotice("Saved. Thanks!");
+    render();
+  }
+  if (message?.kind === "bug_cleared") {
+    bugStep = "idle"; bugText = ""; bugSending = false; bugError = "";
+    showBugNotice("Cleared.");
     render();
   }
   if (message?.kind === "bug_failed") {
     bugSending = false;
+    if (bugStep === "confirm") bugStep = "idle";
     bugError = message.message?.payload?.error || "The bug report could not be saved.";
     render();
   }

@@ -153,6 +153,7 @@ const connection = new CompanionConnection(
     if (message.type === "progress_state") { progressState = message; panel({ kind: "progress_state", state: message }); return; }
     if (message.type === "progress_category_state") { progressCategoryState = message; panel({ kind: "progress_category_state", state: message }); return; }
     if (message.type === "bug_saved") { panel({ kind: "bug_saved" }); return; }
+    if (message.type === "bug_cleared") { panel({ kind: "bug_cleared" }); return; }
     if (message.type === "bug_failed") { panel({ kind: "bug_failed", message }); return; }
     if (message.type === "reset_done") {
       recapState = undefined; recapsState = undefined; progressState = undefined; progressCategoryState = undefined;
@@ -334,6 +335,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const note = typeof message.note === "string" ? message.note.trim() : "";
       if (!note || [...note].length > 4000) return { error: "Message must be 1 to 4000 characters." };
       return companionSend({ type: "bug_report", ts: new Date().toISOString(), payload: { note, trace: [...trace] } })
+        ? { sent: true } : { error: "Tutor service isn't connected." };
+    }
+    if (message?.kind === "bug_clear") {
+      return companionSend({ type: "bug_clear", ts: new Date().toISOString() })
         ? { sent: true } : { error: "Tutor service isn't connected." };
     }
     if (message?.kind === "reference_get") {

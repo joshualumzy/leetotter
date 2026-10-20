@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
-from companion.bug_reports import count_bug_reports, save_bug_report
+from companion.bug_reports import clear_bug_reports, count_bug_reports, save_bug_report
 from companion.catalog import CATEGORIES, load_catalog, normalize_link
 from companion.grading import GRADES, grade_pending
 from companion.history import import_history, import_status
@@ -47,7 +47,7 @@ SESSION_TYPES = frozenset({"session_start", "session_pause", "session_resume", "
 TUTOR_TYPES = frozenset({"help_request", "chat_message"})
 PLANNER_TYPES = frozenset({"planner_go", "planner_swap", "planner_clear", "planner_chat"})
 PROGRESS_TYPES = frozenset({"progress_get", "progress_category", "grade_correct", "session_exclude"})
-MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "reset_progress", "reset_done", "bug_report", "bug_saved", "bug_failed", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recaps_get", "recaps_state", "recap_feedback", "recap_noted", "recap_seen", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
+MESSAGE_TYPES = frozenset({"hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_state", "settings_get", "settings_set", "settings_state", "reset_progress", "reset_done", "bug_report", "bug_saved", "bug_failed", "bug_clear", "bug_cleared", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_get", "chat_state", "recap_get", "recap_state", "recaps_get", "recaps_state", "recap_feedback", "recap_noted", "recap_seen", "suggestion", "planner_get", "planner_open"}) | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES
 REFERENCE_TYPES = frozenset({"reference_get", "reference_flag", "reference_apply"})
 MESSAGE_TYPES |= REFERENCE_TYPES | PROGRESS_TYPES | {"reference_state", "reference_flagged", "reference_verdict", "progress_state", "progress_category_state"}
 CHAT_LIMIT = 4000  # characters; a few minutes of dictation
@@ -297,6 +297,8 @@ def _validate(raw):
         if (not isinstance(note, str) or not note.strip() or len(note.strip()) > CHAT_LIMIT
                 or not isinstance(trace, list)):
             raise ValueError(f"Invalid bug_report payload: note must be 1 to {CHAT_LIMIT} characters and trace a list")
+    if kind == "bug_clear" and "payload" in message:
+        raise ValueError("Invalid bug_clear payload")
     if kind == "import_history":
         payload = message.get("payload")
         urls = payload.get("urls") if isinstance(payload, dict) else None
@@ -318,7 +320,7 @@ async def _handle(connection):
             try:
                 message = _validate(raw)
                 kind = message["type"]
-                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "reset_progress", "bug_report", "chat_get", "recap_get", "recaps_get", "recap_feedback", "recap_seen", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES | PROGRESS_TYPES:
+                if kind not in {"hello", "ping", "get_import_status", "import_history", "settings_get", "settings_set", "reset_progress", "bug_report", "bug_clear", "chat_get", "recap_get", "recaps_get", "recap_feedback", "recap_seen", "planner_get"} | READER_TYPES | SESSION_TYPES | TUTOR_TYPES | PLANNER_TYPES | REFERENCE_TYPES | PROGRESS_TYPES:
                     raise ValueError(f"Unexpected client message type: {kind}")
                 if kind == "hello":
                     await connection.send(json.dumps({"type": "status", "ts": _timestamp(), "state": "connected"}))
@@ -402,6 +404,16 @@ async def _handle(connection):
                                                           "payload": {"error": str(error)}}))
                     else:
                         await _broadcast([{"type": "bug_saved", "ts": _timestamp()}, _settings_state()], None)
+                elif kind == "bug_clear":
+                    try:
+                        await _in_thread(clear_bug_reports)
+                    except Exception as error:
+                        logger.exception("Bug reports could not be cleared")
+                        await connection.send(json.dumps({"type": "bug_failed", "ts": _timestamp(),
+                                                          "payload": {"error": str(error)}}))
+                        await _broadcast([_settings_state()], None)
+                    else:
+                        await _broadcast([{"type": "bug_cleared", "ts": _timestamp()}, _settings_state()], None)
                 elif kind == "settings_get":
                     await connection.send(json.dumps(_settings_state()))
                 elif kind == "settings_set":

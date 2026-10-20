@@ -252,12 +252,16 @@ describe("Bug reports", () => {
     expect(parseMessage(JSON.stringify(report))).toMatchObject(report);
     expect(parseMessage('{"type":"bug_saved","ts":"now"}')).toMatchObject({ type: "bug_saved" });
     expect(parseMessage('{"type":"bug_failed","ts":"now","payload":{"error":"disk full"}}')).toMatchObject({ type: "bug_failed" });
+    expect(parseMessage('{"type":"bug_clear","ts":"now"}')).toMatchObject({ type: "bug_clear" });
+    expect(parseMessage('{"type":"bug_cleared","ts":"now"}')).toMatchObject({ type: "bug_cleared" });
     expect(parseMessage('{"type":"settings_state","ts":"now","name":null,"theme":"match","bug_reports":3}')).toMatchObject({ bug_reports: 3 });
     for (const payload of [{ note: " ", trace: [] }, { note: "x".repeat(4001), trace: [] }, { note: "fine", trace: "no" }, {}]) {
       expect(() => parseMessage(JSON.stringify({ type: "bug_report", ts: "now", payload }))).toThrow("Invalid bug_report payload");
     }
     expect(() => parseMessage('{"type":"bug_saved","ts":"now","payload":{}}')).toThrow("Invalid bug_saved payload");
     expect(() => parseMessage('{"type":"bug_failed","ts":"now","payload":{}}')).toThrow("Invalid bug_failed payload");
+    expect(() => parseMessage('{"type":"bug_clear","ts":"now","payload":{}}')).toThrow("Invalid bug_clear payload");
+    expect(() => parseMessage('{"type":"bug_cleared","ts":"now","payload":{}}')).toThrow("Invalid bug_cleared payload");
     expect(() => parseMessage('{"type":"settings_state","ts":"now","name":null,"theme":"match"}')).toThrow("Invalid settings_state payload");
     expect(() => parseMessage('{"type":"settings_state","ts":"now","name":null,"theme":"match","bug_reports":-1}')).toThrow("Invalid settings_state payload");
   });

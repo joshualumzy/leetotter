@@ -47,6 +47,7 @@ export type Message =
   | { type: "session_exclude"; ts: string; payload: { session_id: number } }
   | { type: "reset_progress"; ts: string; payload: { confirm: "RESET" } }
   | { type: "bug_report"; ts: string; payload: { note: string; trace: unknown[] } }
+  | { type: "bug_clear"; ts: string }
   | { type: "reference_get"; ts: string }
   | { type: "reference_flag"; ts: string; payload: { message_id: number; line?: string } }
   | { type: "reference_apply"; ts: string; payload: { slug: string; reply: string } }
@@ -64,6 +65,7 @@ export type Message =
   | { type: "reset_done"; ts: string }
   | { type: "bug_saved"; ts: string }
   | { type: "bug_failed"; ts: string; payload: { error: string } }
+  | { type: "bug_cleared"; ts: string }
   | ReferenceState
   | ReferenceFlagged
   | ReferenceVerdict
@@ -89,7 +91,7 @@ export type ReaderMessageType = "problem_opened" | "problem_statement" | "code_c
 export const MISSING_READER_MESSAGE = "Leetotter can't see this NeetCode page. Reload the tab.";
 export const readerTypes = new Set<ReaderMessageType>(["problem_opened", "problem_statement", "code_changed", "code_snapshot", "run_result", "submit_result", "focus_changed", "reader_check"]);
 
-const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "followup_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "recaps_get", "recaps_state", "progress_get", "progress_state", "progress_category", "progress_category_state", "grade_correct", "session_exclude", "reset_progress", "reset_done", "bug_report", "bug_saved", "bug_failed", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
+const types = new Set<Message["type"]>(["hello", "ping", "status", "error", "get_import_status", "import_status", "import_history", "import_result", "session_start", "session_pause", "session_resume", "session_end", "tab_closed", "session_time_up", "session_done", "session_skip", "followup_skip", "session_get_state", "session_state", "settings_get", "settings_set", "settings_state", "help_request", "chat_message", "chat_get", "tutor_start", "tutor_chunk", "tutor_done", "tutor_error", "chat_state", "suggestion", "planner_get", "planner_go", "planner_swap", "planner_clear", "planner_chat", "planner_open", "recap_get", "recap_state", "recap_feedback", "recap_noted", "recap_seen", "recaps_get", "recaps_state", "progress_get", "progress_state", "progress_category", "progress_category_state", "grade_correct", "session_exclude", "reset_progress", "reset_done", "bug_report", "bug_saved", "bug_failed", "bug_clear", "bug_cleared", "reference_get", "reference_state", "reference_flag", "reference_flagged", "reference_apply", "reference_verdict", ...readerTypes]);
 
 export function validateImportUrls(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every(url => typeof url === "string" && /^https:\/\/(?:www\.)?leetcode\.com\/problems\/[^/?#]+\/?(?:[?#].*)?$/.test(url))) {
@@ -172,7 +174,7 @@ export function parseMessage(raw: string): Message {
   if ("session_id" in message && !numericSession && (typeof message.session_id !== "string" || !message.session_id)) throw new Error("Invalid session_id");
   if (message.type === "status" && message.state !== "connected") throw new Error("Invalid status state");
   if (message.type === "error" && (typeof message.message !== "string" || !message.message)) throw new Error("Error requires message");
-  if (["help_request", "chat_get", "planner_get", "planner_go", "planner_swap", "planner_clear", "session_done", "session_skip", "reference_get", "recaps_get", "progress_get", "reset_done"].includes(String(message.type)) && "payload" in message) throw new Error(`Invalid ${message.type} payload`);
+  if (["help_request", "chat_get", "planner_get", "planner_go", "planner_swap", "planner_clear", "session_done", "session_skip", "reference_get", "recaps_get", "progress_get", "reset_done", "bug_clear", "bug_cleared"].includes(String(message.type)) && "payload" in message) throw new Error(`Invalid ${message.type} payload`);
   for (const type of ["chat_message", "planner_chat"]) {
     if (message.type !== type) continue;
     const payload = message.payload as Record<string, unknown> | undefined;

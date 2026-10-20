@@ -3,14 +3,16 @@
 import asyncio
 import json
 import re
+import shutil
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from websockets.asyncio.client import connect
 
 import companion.bug_reports as bug_reports
 import companion.socket as socket
-from companion.bug_reports import count_bug_reports, save_bug_report
+from companion.bug_reports import clear_bug_reports, count_bug_reports, save_bug_report
 from companion.session import SessionCoordinator
 from companion.socket import ALLOWED_ORIGIN, serve_companion
 from companion.store import open_store
@@ -125,6 +127,58 @@ def test_count_bug_reports_counts_folders_only(tmp_path, monkeypatch):
     assert count_bug_reports() == 2
 
 
+def test_clear_bug_reports_deletes_every_folder_and_leaves_stray_files_and_the_store(tmp_path, monkeypatch):
+    path = tmp_path / "store.sqlite3"
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(path))
+    monkeypatch.setenv("LEETOTTER_LOG_PATH", str(tmp_path / "companion.log"))
+    (tmp_path / "companion.log").write_text("log\n")
+    seed_store(path)
+    save_bug_report("one", [])
+    save_bug_report("two", [])
+    (tmp_path / "bugs" / "stray.txt").write_text("not a report")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+
+    clear_bug_reports()
+
+    assert count_bug_reports() == 0
+    assert [item.name for item in (tmp_path / "bugs").iterdir()] == ["stray.txt"]
+    assert (tmp_path / "bugs" / "stray.txt").read_text() == "not a report"
+    assert path.exists()
+    assert (outside / "keep.txt").read_text() == "keep"
+
+
+def test_clear_bug_reports_is_fine_without_a_bugs_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(tmp_path / "store.sqlite3"))
+
+    clear_bug_reports()
+
+    assert not (tmp_path / "bugs").exists()
+
+
+def test_clear_bug_reports_keeps_going_and_names_the_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(tmp_path / "store.sqlite3"))
+    bugs = tmp_path / "bugs"
+    for name in ("first", "locked", "third"):
+        (bugs / name).mkdir(parents=True)
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path).name == "locked":
+            raise OSError("folder is locked")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(bug_reports.shutil, "rmtree", rmtree)
+
+    with pytest.raises(OSError) as raised:
+        clear_bug_reports()
+
+    assert "1 bug report could not be deleted" in str(raised.value)
+    assert "folder is locked" in str(raised.value)
+    assert [item.name for item in bugs.iterdir()] == ["locked"]
+
+
 def test_socket_saves_a_report_and_broadcasts_the_new_count(tmp_path, monkeypatch):
     monkeypatch.setenv("LEETOTTER_DB_PATH", str(tmp_path / "store.sqlite3"))
     monkeypatch.setenv("LEETOTTER_LOG_PATH", str(tmp_path / "companion.log"))
@@ -196,6 +250,68 @@ def test_a_failed_save_reaches_only_the_sender(tmp_path, monkeypatch):
                 assert failed["type"] == "bug_failed" and failed["payload"]["error"] == "disk full"
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(b.recv(), 0.2)
+
+    asyncio.run(check())
+
+
+def test_socket_clears_every_report_and_broadcasts_zero(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(tmp_path / "store.sqlite3"))
+    monkeypatch.setenv("LEETOTTER_LOG_PATH", str(tmp_path / "companion.log"))
+    (tmp_path / "companion.log").write_text("log\n")
+    save_bug_report("one", [])
+    save_bug_report("two", [])
+
+    async def check():
+        async with serve_companion(port=0) as server:
+            uri = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            async with connect(uri, origin=ALLOWED_ORIGIN, proxy=None) as a, connect(uri, origin=ALLOWED_ORIGIN, proxy=None) as b:
+                await a.send(json.dumps({"type": "bug_clear", "ts": "now"}))
+                first = json.loads(await asyncio.wait_for(a.recv(), 2))
+                second = json.loads(await asyncio.wait_for(a.recv(), 2))
+                assert first["type"] == "bug_cleared" and first["ts"]
+                assert second["type"] == "settings_state" and second["bug_reports"] == 0
+                assert json.loads(await asyncio.wait_for(b.recv(), 2))["type"] == "bug_cleared"
+                assert json.loads(await asyncio.wait_for(b.recv(), 2))["bug_reports"] == 0
+
+    asyncio.run(check())
+    assert count_bug_reports() == 0
+
+
+def test_a_failed_clear_reaches_only_the_sender_and_shows_the_remaining_count(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(tmp_path / "store.sqlite3"))
+    monkeypatch.setenv("LEETOTTER_LOG_PATH", str(tmp_path / "companion.log"))
+    (tmp_path / "companion.log").write_text("log\n")
+    save_bug_report("one", [])
+    save_bug_report("two", [])
+    monkeypatch.setattr(socket, "clear_bug_reports",
+                        lambda: (_ for _ in ()).throw(OSError("folder is locked")))
+
+    async def check():
+        async with serve_companion(port=0) as server:
+            uri = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            async with connect(uri, origin=ALLOWED_ORIGIN, proxy=None) as a, connect(uri, origin=ALLOWED_ORIGIN, proxy=None) as b:
+                await a.send(json.dumps({"type": "bug_clear", "ts": "now"}))
+                failed = json.loads(await asyncio.wait_for(a.recv(), 2))
+                assert failed["type"] == "bug_failed" and failed["payload"]["error"] == "folder is locked"
+                state = json.loads(await asyncio.wait_for(a.recv(), 2))
+                assert state["type"] == "settings_state" and state["bug_reports"] == 2
+                assert json.loads(await asyncio.wait_for(b.recv(), 2))["bug_reports"] == 2
+
+    asyncio.run(check())
+
+
+def test_socket_rejects_a_bug_clear_payload(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEETOTTER_DB_PATH", str(tmp_path / "store.sqlite3"))
+    (tmp_path / "bugs").mkdir()
+    (tmp_path / "bugs" / "20261020-090807").mkdir()
+
+    async def check():
+        async with serve_companion(port=0) as server:
+            uri = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            async with connect(uri, origin=ALLOWED_ORIGIN, proxy=None) as ws:
+                await ws.send(json.dumps({"type": "bug_clear", "ts": "now", "payload": {}}))
+                assert json.loads(await asyncio.wait_for(ws.recv(), 2))["type"] == "error"
+                assert count_bug_reports() == 1
 
     asyncio.run(check())
 
