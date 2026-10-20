@@ -1,4 +1,34 @@
-# Leetotter companion
+# Leetotter
+
+**An AI tutor for the NeetCode 150 that remembers how you did.**
+
+Practising with a chatbot in the sidebar works, but every chat starts from zero. It doesn't know what you solved last week, which topics you keep slipping on, or what you should do next. Leetotter sits beside NeetCode's editor in Chrome and keeps track of all of that for you.
+
+- **Picks your next problem.** It spreads practice across categories instead of grinding one topic, and you can steer it in plain words ("something harder", "more graphs").
+- **Brings problems back before you forget them.** Spaced repetition (FSRS) schedules reviews from how cleanly you actually solved each one.
+- **Helps like an interviewer.** Hints come only when you ask, sized to what you need. After a solve it may ask you about complexity or trade-offs, the way an interviewer would.
+- **Learns how you think.** It notes patterns in your mistakes, backed by evidence from your sessions, and uses them to plan and teach.
+- **Shows real progress.** You can see how many of the 150 you can solve on your own right now, and how strong each category is.
+
+The goal is to get you through all 150 on your own and keep you there, so you're ready whenever an interview comes. It watches only during a session, never runs your code, and keeps everything in one local file on your Mac.
+
+## How it works
+
+A Chrome side panel reads the NeetCode page you're on: your code, and your Run and Submit results. It talks to a small companion app running on your Mac, which holds your history and calls the AI model. Your history stays on your Mac. During a session, the problem, your code, your messages and a summary of your progress go to the model provider you configure. Nothing from outside a session is sent.
+
+## Requirements
+
+- macOS, Chrome, Python 3.14 with [`uv`](https://docs.astral.sh/uv/), and Node.js
+- An API key for an OpenAI-compatible model provider
+- Python as your NeetCode language
+
+Setup is manual for now: build the extension, load it unpacked, and install the companion. See [Development](#development) below.
+
+## Development
+
+`SPEC.md` is the full build spec.
+
+### Build and run
 
 Install with `uv sync`. The companion uses Python 3.14. Run the tests with
 `uv run pytest`. `uv run python -m companion` creates or migrates the store,
@@ -22,7 +52,7 @@ The unpacked extension has a fixed ID through the public manifest key; its
 private key is not in this repository. The panel reports whether the local
 companion is connected and reconnects automatically after a restart.
 
-## NeetCode reader test
+### NeetCode reader test
 
 The extension injects a page script on neetcode.io to read the single Python
 editor tab from localStorage and observe Run and Submit requests and responses.
@@ -38,7 +68,7 @@ storage so a worker restart can restore the page mode. The NeetCode host
 permission limits tab URL access; the extension does not request the broader
 `tabs` permission.
 
-## NeetCode catalog and history
+### NeetCode catalog and history
 
 The checked-in `companion/data/catalog.json` contains the 588 problems from
 NeetCode's page script that have an editor link. To refresh it when online, run
@@ -82,7 +112,7 @@ The SQLite file defaults to
 `~/Library/Application Support/Leetotter/companion.sqlite3`. Set
 `LEETOTTER_DB_PATH` to choose another location.
 
-## NeetCode 150 reference batch
+### NeetCode 150 reference batch
 
 From the repository root, with the provider environment configured, try three
 unfinished problems first:
@@ -107,7 +137,7 @@ Ctrl-C leaves completed references in SQLite. Each run prints its progress and
 overwrites `docs/reference-batch-report.md` with counts and review/failure
 reasons. An unavailable model pauses the batch; fix it before rerunning.
 
-## Start the companion at login (macOS)
+### Start the companion at login (macOS)
 
 From the repository root, first store your provider API key in the macOS
 Keychain. This command prompts for the key without putting it in the command
@@ -159,7 +189,7 @@ This setup implements the login-start requirement in [SPEC §3](SPEC.md#3-compon
 the environment and Keychain configuration in [SPEC §12](SPEC.md#12-models),
 and the key storage rule in [SPEC §14](SPEC.md#14-privacy).
 
-## What this puts on your Mac
+### What this puts on your Mac
 
 Nothing is installed system-wide, with Homebrew or with `sudo`. Python 3.14 and `uv` are assumed to be there already.
 
