@@ -628,13 +628,13 @@ function settingsCard(): HTMLElement {
   nameLabel.append(nameRow); card.append(nameLabel);
   const hint = appendText(card, "p", "Type a name to save it.", "name-hint");
   hint.id = "name-hint"; hint.hidden = true;
+  appendText(card, "p", "Your name stays on this Mac and is only used for the otter's remarks.", "fine name-note");
   const themeLabel = element("label"); appendText(themeLabel, "span", "Theme");
   const select = element("select", "field") as HTMLSelectElement; select.id = "settings-theme";
   for (const [value, label] of [["match", "Match my Mac"], ["light", "Light"], ["dark", "Dark"]]) {
     const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option);
   }
   select.value = settings?.theme || "match"; themeLabel.append(select); card.append(themeLabel);
-  appendText(card, "p", "Your name stays on this Mac and is only used for the otter's remarks.", "fine");
   appendText(card, "h4", "Reset", "reset-title");
   if (resetStep === "idle") {
     card.append(button("reset-progress", "Reset all my progress", "btn"));
