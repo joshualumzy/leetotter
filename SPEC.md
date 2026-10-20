@@ -172,7 +172,7 @@ There's no fixed hint ladder in code. The Tutor works live from the problem and 
 | Can't write the code (idea right, implementation won't come) | Help with structure and Python, not the idea |
 | Bugs and edge cases (nearly right) | Help you find it yourself: "try the smallest input" |
 
-Brute force is never a wrong path. Going straight for the optimal solution is fine; only when it has left you with nothing working does the Tutor suggest getting a brute force working first. The Tutor follows your approach, even when it isn't one the reference lists.
+Brute force is never a wrong path. Going straight for the optimal solution is fine; only when it has left you with nothing working does the Tutor suggest getting a brute force working first. The Tutor follows your approach, even when it isn't one the reference lists. If your approach can work, it backs it: help points at the smallest change that makes your own code work, never at reshaping it toward a cleaner or reference-like version, because in an interview a working approach is what you submit. A cleaner way waits until after the accept, as a follow-up question or when you ask, and only when it teaches something.
 
 From the diagnosis it chooses the next move. Its default is to build your intuition with questions, the way a good tutor would, and to go direct only where questions can't help (a tool you've never seen, Python mechanics). It gets more concrete only as needed: a question, a trace or illustrative example, an analogy, a code snippet, and eventually the full solution. Its instructions also say:
 - help should match how long and how hard you've struggled
