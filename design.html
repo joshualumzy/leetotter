@@ -184,7 +184,7 @@ p { margin:0; }
       "Under the recap, an optional box asks \"Anything off or missing?\". What you write is saved as a note at once, then the Reflector drops, rewords or adds weaknesses from it and the card shows what changed. A dropped weakness returns only with newer evidence, and the recap says so. Notes never change grades."
     ] },
     planner: { name: "Planner", logic: [
-      "Starts when you leave a problem (at session start, when the panel opens) and doesn't wait for the Graders, so the last problem's grade reaches it one problem late. Also runs on a swap and when you type a request. If it hasn't answered after about 30 seconds, a simple ranking by weakest category stands in.",
+      "Starts when you leave a problem (at session start, when the panel opens) and doesn't wait for the Graders, so the last problem's grade reaches it one problem late. Also runs on a swap and when you type a request. If it hasn't answered after a minute, a simple ranking by weakest category stands in.",
       "Code first limits the choices: a problem you haven't solved without help comes back a few days later, one you have comes back when it fades but only once all 150 are tried, a fresh same-pattern problem after a miss, a new problem for a rusty category, free problems only.",
       "The Planner then picks one, favouring weak categories and the Reflector's suspected weaknesses, and spreading out hard problems. Now and then it adds an unseen problem or one from beyond the 150.",
       "Plain-word requests (\"more DP\") change what it suggests, never your grades. They last for this session or until you clear them."
